@@ -1,0 +1,2212 @@
+diff --git a/packages/dsh-games/README.md b/packages/dsh-games/README.md
+index dcc7f63..24751af 100644
+--- a/packages/dsh-games/README.md
++++ b/packages/dsh-games/README.md
+@@ -1,11 +1,11 @@
+ # @thsoctop/dsh-games
+ 
+-thsoctop 小游戏面板：**五子棋** + **打飞机**。纯本地运行 —— 不联网、不读账号、不落盘。
++thsoctop 小游戏面板：**五子棋** + **打飞机** + **贪吃蛇**。纯本地运行 —— 不联网、不读账号、不落盘。
+ 
+ ## 面板
+ 
+ - 侧栏入口：`小游戏`（`sidebar.panellist`，order 16）
+-- 主面板 key：`ths-octop-games`，一个面板两个 Tab，切 Tab 只切显隐不卸载
++- 主面板 key：`ths-octop-games`，一个面板三个 Tab，切 Tab 只切显隐不卸载
+ 
+ ## 五子棋
+ 
+@@ -23,17 +23,27 @@ thsoctop 小游戏面板：**五子棋** + **打飞机**。纯本地运行 —
+ - 撞机掉命并进入 2.2 秒无敌，同时火力降一级、损失一架僚机；结束面板给出得分、本难度最高分与重新开始
+ - 面板不可见（切 Tab、切窗口）自动暂停；卸载时取消动画帧、移除键盘与可见性监听
+ 
++## 贪吃蛇
++
++- SVG 网格棋盘（pattern 画格），盘面按难度 15×15 / 17×17 / 19×19，宽度自适应
++- 方向键 / WASD 转向；屏幕方向按钮（可点按）同样能转；空格 / P / Esc 暂停，Enter 开始，R 重开
++- 三档难度 悠闲 / 标准 / 大师：步进速度、盘面大小、能否穿墙、金苹果概率与分数目标都不同
++- 普通食物 10 分；每 3 个食物有机会掉金苹果（30 分，6 秒倒计时，只加分不加长）
++- 结束：撞墙（悠闲档穿墙不结束）或咬到自己；胜利：分数达标或把整个盘面吃满
++- 自动暂停：切 Tab（`hidden`）、切窗口（`visibilitychange`）、滚出视口（IntersectionObserver）
++- 快捷键**只在游戏区域有焦点时**生效（监听器挂在棋盘舞台上，不是 window）
++
+ ## 同源接口
+ 
+-`GET /ths-octop-games/api/status` → `{ ok: true, data: { games: ['gomoku', 'plane'], local: true, note: '纯本地小游戏，不联网、不读账号' } }`
++`GET /ths-octop-games/api/status` → `{ ok: true, data: { games: ['gomoku', 'plane', 'snake'], local: true, note: '纯本地小游戏，不联网、不读账号' } }`
+ 
+ ## 开发
+ 
+ ```bash
+ pnpm --filter @thsoctop/dsh-games run build      # host（tsc）+ client（esbuild + 模块加载器外壳）
+-pnpm --filter @thsoctop/dsh-games run typecheck  # 仅 host 半区（与其它插件一致）
++pnpm --filter @thsoctop/dsh-games run typecheck  # host 半区 + client 半区（tsconfig.client.json）
+ pnpm --filter @thsoctop/dsh-games run test       # 引擎与路由单测
+ ```
+ 
+-游戏规则、AI、掉落与难度全部在 `src/client/gomoku.ts` / `src/client/plane.ts` 里以纯函数实现，
+-组件只负责画与收输入，所以规则改动可以直接用单测锁住。
++游戏规则、AI、掉落、难度与蛇的移动全部在 `src/client/gomoku.ts` / `src/client/plane.ts` /
++`src/client/snake.ts` 里以纯函数实现，组件只负责画与收输入，所以规则改动可以直接用单测锁住。
+diff --git a/packages/dsh-games/package.json b/packages/dsh-games/package.json
+index e5068c3..a0c12d3 100644
+--- a/packages/dsh-games/package.json
++++ b/packages/dsh-games/package.json
+@@ -19,7 +19,7 @@
+   "scripts": {
+     "build": "node ../../scripts/build-plugin.mjs .",
+     "build:client": "node ../../scripts/build-plugin.mjs . --client-only",
+-    "typecheck": "tsc --noEmit -p tsconfig.json",
++    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json",
+     "test": "vitest run"
+   },
+   "dependencies": { "@thsoctop/shared": "workspace:*" },
+diff --git a/packages/dsh-games/src/client/index.tsx b/packages/dsh-games/src/client/index.tsx
+index f67c404..ff777dd 100644
+--- a/packages/dsh-games/src/client/index.tsx
++++ b/packages/dsh-games/src/client/index.tsx
+@@ -1,13 +1,14 @@
+ /**
+- * @thsoctop/dsh-games 的 Client 半区：一个「小游戏」面板，两个 Tab。
++ * @thsoctop/dsh-games 的 Client 半区：一个「小游戏」面板，三个 Tab。
+  *
+- * 两个游戏各自独立成组件，Tab 切换只切显隐、不卸载 —— 五子棋下到一半去看一眼
+- * 打飞机，回来棋盘还在（打飞机会因为面板不可见自动暂停）。
++ * 三个游戏各自独立成组件，Tab 切换只切显隐、不卸载 —— 五子棋下到一半去看一眼
++ * 打飞机或贪吃蛇，回来棋盘还在（打飞机与贪吃蛇会因为面板不可见自动暂停）。
+  * 样式与交互只依赖主题 token，不引入任何第三方库。
+  */
+ import { useState, type ReactNode } from 'react'
+ import { GomokuPanel } from './gomoku-view.js'
+ import { PlanePanel } from './plane-view.js'
++import { SnakePanel } from './snake-view.js'
+ import { GAMES_CSS } from './styles.js'
+ 
+ interface SlotsService {
+@@ -26,6 +27,7 @@ const PANEL_ID = 'ths-octop-games'
+ const TABS = [
+   { key: 'gomoku', label: '五子棋' },
+   { key: 'plane', label: '打飞机' },
++  { key: 'snake', label: '贪吃蛇' },
+ ] as const
+ 
+ type TabKey = (typeof TABS)[number]['key']
+@@ -62,6 +64,7 @@ function GamesPage(): ReactNode {
+ 
+       <GomokuPanel hidden={tab !== 'gomoku'} />
+       <PlanePanel hidden={tab !== 'plane'} />
++      <SnakePanel hidden={tab !== 'snake'} />
+     </div>
+   )
+ }
+diff --git a/packages/dsh-games/src/client/styles.ts b/packages/dsh-games/src/client/styles.ts
+index 82116ca..7e9dbe5 100644
+--- a/packages/dsh-games/src/client/styles.ts
++++ b/packages/dsh-games/src/client/styles.ts
+@@ -96,6 +96,55 @@ export const GAMES_CSS = `
+ }
+ .thsoctop-games__pill.is-warn { border-color: var(--dsw-alias-state-warn-primary); color: var(--dsw-alias-state-warn-primary); }
+ 
++/* ---- 贪吃蛇 ---- */
++.thsoctop-games__stage--snake {
++  position: relative; width: 100%; max-width: 460px; flex: 1 1 300px; min-width: 240px;
++  border-radius: 12px; outline: none;
++}
++.thsoctop-games__stage--snake:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
++.thsoctop-games__snake-svg {
++  display: block; width: 100%; height: auto; border-radius: 12px;
++  border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-2);
++  shape-rendering: crispEdges; touch-action: manipulation;
++}
++.thsoctop-games__snake-bg { fill: var(--dsw-alias-bg-layer-2); }
++.thsoctop-games__snake-cell { stroke: var(--dsw-alias-border-l1); stroke-width: 0.04; opacity: 0.75; }
++.thsoctop-games__snake-seg { fill: var(--dsw-alias-brand-primary); }
++.thsoctop-games__snake-seg.is-head { fill: var(--dsw-alias-brand-primary); stroke: var(--dsw-alias-label-primary); stroke-width: 0.08; }
++.thsoctop-games__snake-eye { fill: var(--dsw-alias-bg-layer-1); }
++.thsoctop-games__snake-food { fill: #ff2436; }
++.thsoctop-games__snake-gold-core { fill: #f0a12a; }
++.thsoctop-games__snake-gold-ring { fill: none; stroke: #f0a12a; stroke-width: 0.08; opacity: 0.7; }
++.thsoctop-games__progress {
++  height: 4px; border-radius: 999px; overflow: hidden; background: var(--dsw-alias-bg-layer-2);
++  border: 1px solid var(--dsw-alias-border-l1);
++}
++.thsoctop-games__progress-bar { height: 100%; background: var(--dsw-alias-brand-primary); transition: width 160ms ease-out; }
++.thsoctop-games__pad {
++  display: grid; grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(3, 44px);
++  gap: 6px; justify-content: center; align-content: center;
++}
++.thsoctop-games__pad-btn {
++  appearance: none; display: flex; align-items: center; justify-content: center;
++  border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px;
++  background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
++  font: inherit; font-size: 14px; line-height: 1; cursor: pointer; touch-action: manipulation;
++  -webkit-user-select: none; user-select: none;
++}
++.thsoctop-games__pad-btn:hover:not(:disabled) { border-color: var(--dsw-alias-brand-primary); }
++.thsoctop-games__pad-btn:active:not(:disabled) { background: var(--dsw-alias-bg-layer-1); }
++.thsoctop-games__pad-btn:disabled { opacity: 0.4; cursor: not-allowed; }
++.thsoctop-games__pad-btn.is-up { grid-area: 1 / 2; }
++.thsoctop-games__pad-btn.is-left { grid-area: 2 / 1; }
++.thsoctop-games__pad-btn.is-right { grid-area: 2 / 3; }
++.thsoctop-games__pad-btn.is-down { grid-area: 3 / 2; }
++
++@media (max-width: 720px) {
++  .thsoctop-games { padding: 14px 14px 20px; gap: 10px; }
++  .thsoctop-games__stage--snake { max-width: 100%; flex-basis: 100%; }
++  .thsoctop-games__side { max-width: 100%; flex-basis: 100%; min-width: 0; }
++}
++
+ @media (prefers-reduced-motion: reduce) {
+   .thsoctop-games *, .thsoctop-games *::before, .thsoctop-games *::after {
+     animation: none !important; transition: none !important;
+diff --git a/packages/dsh-games/src/index.ts b/packages/dsh-games/src/index.ts
+index bca828f..c66320f 100644
+--- a/packages/dsh-games/src/index.ts
++++ b/packages/dsh-games/src/index.ts
+@@ -1,8 +1,8 @@
+ /**
+- * @thsoctop/dsh-games —— Host 半区：小游戏（五子棋 + 打飞机）。
++ * @thsoctop/dsh-games —— Host 半区：小游戏（五子棋 + 打飞机 + 贪吃蛇）。
+  *
+- * 这两个游戏完全跑在浏览器里（棋盘是 SVG、飞机是 Canvas），Host 半区只提供一条
+- * 自描述接口，让前端不必把面板 id / 玩法清单在两处各写一份字面量，也方便用
++ * 这三个游戏完全跑在浏览器里（棋盘是 SVG、飞机是 Canvas、贪吃蛇是 SVG 网格），Host 半区
++ * 只提供一条自描述接口，让前端不必把面板 id / 玩法清单在两处各写一份字面量，也方便用
+  * `curl /ths-octop-games/api/status` 确认插件挂上了。
+  *
+  * 刻意不做的事：不读账号、不取 Cookie、不发任何外部请求 —— 小游戏没有联网需求。
+@@ -25,7 +25,7 @@ const PREFIX = apiPrefix('games')
+ export const PANEL_ID = 'ths-octop-games'
+ 
+ export interface GamesStatus {
+-  readonly games: readonly ['gomoku', 'plane']
++  readonly games: readonly ['gomoku', 'plane', 'snake']
+   readonly local: true
+   readonly note: string
+ }
+@@ -36,7 +36,7 @@ const routes: readonly ApiRoute[] = [
+     path: '/status',
+     handle: (_request, response) => {
+       const status: GamesStatus = {
+-        games: ['gomoku', 'plane'],
++        games: ['gomoku', 'plane', 'snake'],
+         local: true,
+         note: '纯本地小游戏，不联网、不读账号',
+       }
+diff --git a/packages/dsh-games/test/host.test.ts b/packages/dsh-games/test/host.test.ts
+index cfebe3e..0e0382e 100644
+--- a/packages/dsh-games/test/host.test.ts
++++ b/packages/dsh-games/test/host.test.ts
+@@ -75,7 +75,7 @@ describe('host 半区', () => {
+     expect(result.body).toEqual({
+       ok: true,
+       data: {
+-        games: ['gomoku', 'plane'],
++        games: ['gomoku', 'plane', 'snake'],
+         local: true,
+         note: '纯本地小游戏，不联网、不读账号',
+       },
+diff --git a/packages/dsh-games/src/client/snake-hud.ts b/packages/dsh-games/src/client/snake-hud.ts
+new file mode 100644
+index 0000000..39a06fb
+--- /dev/null
++++ b/packages/dsh-games/src/client/snake-hud.ts
+@@ -0,0 +1,104 @@
++/**
++ * 贪吃蛇的「渲染摘要」（view-model）：把可变世界压成一份可比较的纯数据。
++ *
++ * 为什么单独一个文件、而且**一个 import 都不许有**：
++ *  - 它是「棋盘什么时候需要重绘」的唯一判据，必须能被单测直接锁住；
++ *  - 视图文件 import 了 react，而本包的测试跑在 node 环境、没有 react 依赖，
++ *    把这段逻辑留在视图里就没法测（这正是当初漏掉「普通移动不重绘」那个 bug 的原因）。
++ *
++ * 关键约束：签名必须覆盖**所有会改变画面的状态**。React 只在 state 变化时重渲染，
++ * 而棋盘是从可变 world 引用上读的；签名漏掉任何一项，那种变化就不会触发重绘。
++ */
++import {
++  occupancy,
++  progressOf,
++  type Dir,
++  type DifficultyKey,
++  type EndReason,
++  type Phase,
++  type Point,
++  type World,
++} from './snake.js'
++
++export interface Hud {
++  phase: Phase
++  score: number
++  length: number
++  difficulty: DifficultyKey
++  high: number
++  progress: number
++  eaten: number
++  reason?: EndReason
++  /**
++   * 下面这组字段不显示在 HUD 上，但它们决定棋盘画什么：
++   * steps 覆盖「走了一步」，dir 覆盖「还没走但已转向」，foodKey 覆盖「重开/吃到后
++   * 换了食物位置」，goldKey 覆盖「金苹果出现或超时消失」。
++   * 它们是离散逻辑步的结果，所以刷新频率是「一步一次」，不是 60fps。
++   */
++  steps: number
++  /**
++   * 棋盘上「现在朝哪边」：有已按键但还没生效的转向时取那个方向。
++   *
++   * 为什么不用 `world.dir`：引擎要等这一步真正走完才改 dir（否则会在走之前就撞死），
++   * 但玩家已经按键了，蛇头眼睛应该立刻转过去，所见即所得。
++   */
++  facing: Dir
++  foodKey: string
++  goldKey: string
++}
++
++/** 渲染朝向 = 输入缓冲里最后一个待生效方向，没有就是当前方向。 */
++export function facingOf(world: World): Dir {
++  const queued = world.queue[world.queue.length - 1]
++  return queued ?? world.dir
++}
++
++export const PHASE_LABEL: Readonly<Record<Phase, string>> = {
++  ready: '准备开始',
++  playing: '进行中',
++  paused: '已暂停',
++  over: '本局结束',
++  won: '通关！',
++}
++
++export const REASON_LABEL: Readonly<Record<EndReason, string>> = {
++  wall: '撞到墙了',
++  self: '咬到自己了',
++  'win-board': '蛇填满了整个盘面',
++  'win-score': '达成分数目标',
++}
++
++/** 格子坐标压成字符串；空位用 '-'，DOM 里也用它当调试标记。 */
++export function cellKey(point: Point | undefined): string {
++  return point === undefined ? '-' : `${String(point.x)},${String(point.y)}`
++}
++
++/**
++ * 读一份渲染摘要。
++ * @param world - 当前世界（可变引用，原地更新）。
++ * @param high - 当前难度的最高分。
++ */
++export function readHud(world: World, high: number): Hud {
++  return {
++    phase: world.phase,
++    score: world.score,
++    length: occupancy(world),
++    difficulty: world.difficulty,
++    high,
++    progress: progressOf(world),
++    eaten: world.eaten,
++    reason: world.reason,
++    steps: world.steps,
++    facing: facingOf(world),
++    foodKey: cellKey(world.food),
++    goldKey: cellKey(world.gold),
++  }
++}
++
++/** 摘要签名：只要它变了就 setState 重渲染棋盘。 */
++export function hudSignature(hud: Hud): string {
++  return [
++    hud.phase, hud.score, hud.length, hud.difficulty, hud.high, hud.progress, hud.eaten,
++    hud.reason ?? '', hud.steps, hud.facing, hud.foodKey, hud.goldKey,
++  ].join('|')
++}
+diff --git a/packages/dsh-games/src/client/snake-view.tsx b/packages/dsh-games/src/client/snake-view.tsx
+new file mode 100644
+index 0000000..ebeb559
+--- /dev/null
++++ b/packages/dsh-games/src/client/snake-view.tsx
+@@ -0,0 +1,578 @@
++/**
++ * 贪吃蛇面板：SVG 棋盘 + requestAnimationFrame 循环。
++ *
++ * 分工和 plane-view 一样：snake.ts 决定「世界怎么变」，这里只决定「世界怎么画」和
++ * 「输入怎么收」。世界对象是可变引用，不在 state 里，所以 60fps 不会触发 60 次重渲染；
++ * 只有 HUD 摘要（阶段/得分/长度/难度）变了才 setState。
++ *
++ * 键盘只挂在游戏舞台元素上（tabIndex=0），不是 window：面板里翻别的 Tab、或者在页面
++ * 其它地方打字，都不会误触贪吃蛇。焦点离开时清空输入队列，避免「回来还在转」。
++ *
++ * 生命周期：rAF、键盘、visibilitychange、IntersectionObserver 在卸载时全部清理；
++ * 面板不可见（切 Tab / 切窗口 / 滚出视口）自动暂停。
++ */
++import { useEffect, useRef, useState, type ReactNode } from 'react'
++import {
++  DIFFICULTIES,
++  FOOD_SCORE,
++  GOLD_EVERY,
++  GOLD_SCORE,
++  beginRun,
++  createWorld,
++  difficultyOf,
++  emptyHighScores,
++  recordHighScore,
++  setDifficulty as applyDifficulty,
++  tick,
++  togglePause,
++  turn,
++  type Dir,
++  type DifficultyKey,
++  type Point,
++  type World,
++} from './snake.js'
++import {
++  PHASE_LABEL,
++  REASON_LABEL,
++  cellKey,
++  hudSignature,
++  readHud,
++  type Hud,
++} from './snake-hud.js'
++
++/** 一个格子在 viewBox 里的边长；网格用 pattern 画，蛇身用 1×1 的圆角矩形。 */
++const CELL = 1
++const PAD = 1
++/** 蛇身圆角半径（相对格子边长） */
++const SEG_RADIUS = 0.3
++
++/** 每个方向按钮的位移，用来显示方向图标。 */
++const DIR_PAD: readonly { readonly dir: Dir; readonly glyph: string; readonly label: string }[] = [
++  { dir: 'up', glyph: '▲', label: '向上' },
++  { dir: 'left', glyph: '◀', label: '向左' },
++  { dir: 'right', glyph: '▶', label: '向右' },
++  { dir: 'down', glyph: '▼', label: '向下' },
++]
++
++/** 蛇身颜色：蛇头用 brand，往后逐渐变浅（用 opacity 表达，避免依赖具体色值）。 */
++function segmentOpacity(index: number, total: number): number {
++  if (total <= 1) return 1
++  return 1 - (index / total) * 0.55
++}
++
++export function SnakePanel({ hidden = false }: { readonly hidden?: boolean }): ReactNode {
++  const stageRef = useRef<HTMLDivElement | null>(null)
++  const worldRef = useRef<World | null>(null)
++  if (worldRef.current === null) worldRef.current = createWorld('standard')
++  // 世界对象只建一次、之后原地更新，所以这个引用全程有效
++  const world: World = worldRef.current
++
++  const [hud, setHud] = useState<Hud>(() => readHud(world, 0))
++  const [highScores, setHighScores] = useState<Record<DifficultyKey, number>>(emptyHighScores)
++  const [newRecord, setNewRecord] = useState(false)
++
++  const hudRef = useRef(hud)
++  hudRef.current = hud
++  const highRef = useRef(highScores)
++  highRef.current = highScores
++  const visibleRef = useRef(true)
++  const reducedRef = useRef(false)
++  /** 已经结算过的那一局（签名 = 本局步数/得分/结果），保证最高分只记一次 */
++  const settledRef = useRef('')
++
++  const syncHud = (): void => {
++    const next = readHud(world, highRef.current[world.difficulty])
++    if (hudSignature(next) !== hudSignature(hudRef.current)) {
++      hudRef.current = next
++      setHud(next)
++    }
++  }
++
++  /**
++   * 自动化实测用的探针：把「推进一帧」暴露到 window，好让浏览器脚本用固定步长驱动，
++   * 不依赖 requestAnimationFrame 的节奏（headless 下 rAF 可能被饿死）。
++   * 只有地址以 `#ths-octop-games-probe` 结尾时才挂，不写死任何调试全局。
++   * @internal
++   */
++  useEffect(() => {
++    if (!window.location.hash.endsWith('#ths-octop-games-probe')) return undefined
++    Object.assign(window, {
++      __thsOctopSnakeProbe: {
++        tick: (dtMs: number): number => {
++          const spent = tick(world, dtMs)
++          syncHud()
++          return spent
++        },
++        world,
++      },
++    })
++    return () => { Reflect.deleteProperty(window, '__thsOctopSnakeProbe') }
++  }, [])
++
++  const start = (difficulty?: DifficultyKey): void => {
++    beginRun(world, difficulty ?? world.difficulty)
++    settledRef.current = ''
++    setNewRecord(false)
++    syncHud()
++  }
++
++  const pause = (): void => {
++    togglePause(world)
++    syncHud()
++  }
++
++  const steer = (dir: Dir): void => {
++    if (turn(world, dir)) syncHud()
++  }
++
++  // 键盘：只在游戏舞台拿到焦点时生效（监听器挂在舞台上，不是 window）
++  useEffect(() => {
++    const stage = stageRef.current
++    if (stage === null) return undefined
++
++    const onKeyDown = (event: KeyboardEvent): void => {
++      const target = event.target
++      if (target instanceof HTMLElement
++        && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
++      const key = event.key.toLowerCase()
++      const arrows: Readonly<Record<string, Dir>> = {
++        arrowup: 'up', w: 'up',
++        arrowdown: 'down', s: 'down',
++        arrowleft: 'left', a: 'left',
++        arrowright: 'right', d: 'right',
++      }
++      const dir = arrows[key]
++      if (dir !== undefined) {
++        // 方向键会滚动面板，必须拦掉
++        event.preventDefault()
++        stage.focus({ preventScroll: true })
++        steer(dir)
++        return
++      }
++      if (key === ' ' || key === 'p' || key === 'escape') {
++        event.preventDefault()
++        // 直接读 world.phase，不要闭包里的 hud（监听器只挂一次，闭包会读到旧值）
++        if (world.phase === 'playing' || world.phase === 'paused') pause()
++        else start()
++        return
++      }
++      if (key === 'enter') {
++        if (world.phase === 'playing' || world.phase === 'paused') pause()
++        else start()
++        return
++      }
++      if (key === 'r') {
++        event.preventDefault()
++        start()
++      }
++    }
++
++    // 焦点离开游戏区域就断开键盘（含移动端软键盘弹起）
++    const onBlur = (): void => { world.queue = [] }
++
++    stage.addEventListener('keydown', onKeyDown)
++    stage.addEventListener('blur', onBlur)
++    return () => {
++      stage.removeEventListener('keydown', onKeyDown)
++      stage.removeEventListener('blur', onBlur)
++    }
++  }, [])
++
++  // ① 切 Tab：hidden 变 true 时暂停
++  useEffect(() => {
++    if (hidden) {
++      visibleRef.current = false
++      if (world.phase === 'playing') {
++        togglePause(world)
++        syncHud()
++      }
++    } else {
++      visibleRef.current = !document.hidden
++    }
++  }, [hidden])
++
++  // ② 切窗口 / ③ 滚出视口：都自动暂停
++  useEffect(() => {
++    const pauseIfPlaying = (): void => {
++      if (world.phase === 'playing') {
++        togglePause(world)
++        syncHud()
++      }
++    }
++    const onVisibility = (): void => {
++      visibleRef.current = !document.hidden
++      if (document.hidden) pauseIfPlaying()
++    }
++    document.addEventListener('visibilitychange', onVisibility)
++
++    const stage = stageRef.current
++    const observer = stage === null || typeof IntersectionObserver === 'undefined'
++      ? undefined
++      : new IntersectionObserver((entries) => {
++        const visible = entries[0]?.isIntersecting ?? true
++        visibleRef.current = visible && !document.hidden
++        if (!visible) pauseIfPlaying()
++      }, { threshold: 0.2 })
++    if (stage !== null) observer?.observe(stage)
++
++    return () => {
++      document.removeEventListener('visibilitychange', onVisibility)
++      observer?.disconnect()
++    }
++  }, [])
++
++  // 主循环：攒够一步才走一格，走完把 HUD 同步出去
++  useEffect(() => {
++    let raf = 0
++    let last = performance.now()
++
++    const media = window.matchMedia?.('(prefers-reduced-motion: reduce)')
++    const onReducedMotionChange = (): void => { reducedRef.current = media?.matches ?? false }
++    if (media !== undefined) {
++      reducedRef.current = media.matches
++      media.addEventListener('change', onReducedMotionChange)
++    }
++
++    const loop = (now: number): void => {
++      raf = requestAnimationFrame(loop)
++      const dtMs = Math.max(now - last, 0)
++      last = now
++
++      // 时间归一化（NaN / 负数 / 超长帧）统一由引擎的 tick 负责，这里不再二次加工
++      const spent = tick(world, dtMs)
++      if (spent > 0) syncHud()
++
++      // 收尾只结算一次：同一局（步数/得分/结果 相同）不会反复写最高分
++      if (world.phase === 'over' || world.phase === 'won') {
++        const key = world.difficulty
++        const signature = `${String(world.steps)}:${String(world.score)}:${world.phase}`
++        if (settledRef.current !== signature) {
++          settledRef.current = signature
++          setNewRecord(world.score > (highRef.current[key] ?? 0))
++          setHighScores((previous) => recordHighScore(previous, key, world.score))
++          syncHud()
++        }
++      }
++    }
++
++    raf = requestAnimationFrame(loop)
++    return () => {
++      cancelAnimationFrame(raf)
++      media?.removeEventListener('change', onReducedMotionChange)
++    }
++  }, [])
++
++  const spec = difficultyOf(hud.difficulty)
++  const playing = hud.phase === 'playing'
++  const board = world.grid
++  const viewW = board.width + PAD * 2
++  const viewH = board.height + PAD * 2
++  const status = hud.phase === 'over' && hud.reason !== undefined
++    ? REASON_LABEL[hud.reason]
++    : hud.phase === 'won' && hud.reason !== undefined
++      ? REASON_LABEL[hud.reason]
++      : PHASE_LABEL[hud.phase]
++
++  return (
++    <div
++      className="thsoctop-games__pane"
++      role="tabpanel"
++      id="ths-octop-games-panel-snake"
++      aria-labelledby="ths-octop-games-tab-snake"
++      hidden={hidden}
++    >
++      <div
++        className="thsoctop-games__stage thsoctop-games__stage--snake"
++        ref={stageRef}
++        tabIndex={0}
++        role="application"
++        data-phase={hud.phase}
++        data-steps={hud.steps}
++        data-head={cellKey(world.snake[0])}
++        data-facing={hud.facing}
++        aria-label={`贪吃蛇游戏区域，${status}，当前得分 ${String(hud.score)}，蛇长 ${String(hud.length)} 节`}
++      >
++        <svg
++          className="thsoctop-games__snake-svg"
++          viewBox={`${String(-PAD)} ${String(-PAD)} ${String(viewW)} ${String(viewH)}`}
++          role="img"
++          aria-hidden="true"
++          focusable="false"
++        >
++          {/* 网格：用 pattern 画，改盘面尺寸不用重画一堆 line */}
++          <defs>
++            <pattern
++              id="thsoctop-snake-grid"
++              width={CELL}
++              height={CELL}
++              patternUnits="userSpaceOnUse"
++              x={-PAD}
++              y={-PAD}
++            >
++              <path
++                className="thsoctop-games__snake-cell"
++                d={`M ${String(CELL)} 0 L 0 0 0 ${String(CELL)}`}
++                fill="none"
++              />
++            </pattern>
++          </defs>
++          <rect
++            className="thsoctop-games__snake-bg"
++            x={-PAD}
++            y={-PAD}
++            width={viewW}
++            height={viewH}
++            rx={0.6}
++          />
++          <rect
++            className="thsoctop-games__snake-grid"
++            x={-PAD}
++            y={-PAD}
++            width={viewW}
++            height={viewH}
++            fill="url(#thsoctop-snake-grid)"
++          />
++
++          {/* 普通食物 */}
++          <circle
++            className="thsoctop-games__snake-food"
++            data-cell={cellKey(world.food)}
++            cx={world.food.x + 0.5}
++            cy={world.food.y + 0.5}
++            r={0.3}
++          />
++          {/* 金苹果：带倒计时光圈 */}
++          {world.gold !== undefined && (
++            <g className="thsoctop-games__snake-gold" data-cell={cellKey(world.gold)}>
++              <circle
++                className="thsoctop-games__snake-gold-ring"
++                cx={world.gold.x + 0.5}
++                cy={world.gold.y + 0.5}
++                r={0.45}
++              />
++              <circle
++                className="thsoctop-games__snake-gold-core"
++                cx={world.gold.x + 0.5}
++                cy={world.gold.y + 0.5}
++                r={0.28}
++              />
++            </g>
++          )}
++
++          {/* 蛇身：头在最前，逐节变浅；每节单独画，转弯处自然连成一条 */}
++          <g className="thsoctop-games__snake-body">
++            {[...world.snake].reverse().map((segment: Point, reverseIndex: number) => {
++              const index = world.snake.length - 1 - reverseIndex
++              const isHead = index === 0
++              return (
++                <rect
++                  key={`${String(segment.x)}-${String(segment.y)}-${String(index)}`}
++                  className={isHead ? 'thsoctop-games__snake-seg is-head' : 'thsoctop-games__snake-seg'}
++                  data-cell={`${String(segment.x)},${String(segment.y)}`}
++                  x={segment.x + 0.06}
++                  y={segment.y + 0.06}
++                  width={1 - 0.12}
++                  height={1 - 0.12}
++                  rx={SEG_RADIUS}
++                  opacity={segmentOpacity(index, world.snake.length)}
++                />
++              )
++            })}
++          </g>
++
++          {/* 蛇头的两只眼睛，朝当前方向（含已按键、下一步生效的转向） */}
++          <g className="thsoctop-games__snake-eyes">
++            {world.snake[0] !== undefined && (() => {
++              const head = world.snake[0]
++              const facing = hud.facing
++              const eyes: readonly Point[] = facing === 'left' || facing === 'right'
++                ? [
++                  { x: head.x + (facing === 'right' ? 0.72 : 0.28), y: head.y + 0.28 },
++                  { x: head.x + (facing === 'right' ? 0.72 : 0.28), y: head.y + 0.72 },
++                ]
++                : [
++                  { x: head.x + 0.28, y: head.y + (facing === 'down' ? 0.72 : 0.28) },
++                  { x: head.x + 0.72, y: head.y + (facing === 'down' ? 0.72 : 0.28) },
++                ]
++              return eyes.map((eye, i) => (
++                <circle key={i} className="thsoctop-games__snake-eye" cx={eye.x} cy={eye.y} r={0.09} />
++              ))
++            })()}
++          </g>
++        </svg>
++
++        {hud.phase !== 'playing' && (
++          <div className="thsoctop-games__overlay">
++            {hud.phase === 'ready' && (
++              <>
++                <h3>贪吃蛇</h3>
++                <p>
++                  方向键或 WASD 转向，也可以按屏幕方向按钮。
++                  <br />
++                  空格 / P 暂停，Enter 开始，R 重开。
++                </p>
++                <p>
++                  普通食物 {FOOD_SCORE} 分，每 {GOLD_EVERY} 个食物有机会掉金苹果（{GOLD_SCORE} 分，有倒计时）。
++                  <br />
++                  {spec.hint}
++                </p>
++                <button type="button" className="thsoctop-games__btn is-primary" onClick={() => { start() }}>
++                  开始游戏
++                </button>
++              </>
++            )}
++            {hud.phase === 'paused' && (
++              <>
++                <h3>已暂停</h3>
++                <p>切 Tab 或切窗口会自动暂停，回来点继续就好。</p>
++                <div className="thsoctop-games__row">
++                  <button type="button" className="thsoctop-games__btn is-primary" onClick={() => { pause() }}>
++                    继续
++                  </button>
++                  <button type="button" className="thsoctop-games__btn" onClick={() => { start() }}>
++                    重新开始
++                  </button>
++                </div>
++              </>
++            )}
++            {hud.phase === 'over' && (
++              <>
++                <h3>本局结束</h3>
++                <p>
++                  {hud.reason !== undefined ? REASON_LABEL[hud.reason] : '游戏结束'} · 得分{' '}
++                  <strong>{hud.score}</strong>
++                </p>
++                <p>
++                  {spec.label}最高分：<b>{highScores[hud.difficulty]}</b>
++                  {newRecord ? ' · 新纪录！' : ''}
++                </p>
++                <div className="thsoctop-games__row">
++                  <button type="button" className="thsoctop-games__btn is-primary" onClick={() => { start() }}>
++                    再来一局
++                  </button>
++                </div>
++              </>
++            )}
++            {hud.phase === 'won' && (
++              <>
++                <h3>通关！</h3>
++                <p className="thsoctop-games__win">
++                  {hud.reason !== undefined ? REASON_LABEL[hud.reason] : '达成目标'} · 得分{' '}
++                  <strong>{hud.score}</strong>
++                </p>
++                <p>
++                  {spec.label}最高分：<b>{highScores[hud.difficulty]}</b>
++                  {newRecord ? ' · 新纪录！' : ''}
++                </p>
++                <div className="thsoctop-games__row">
++                  <button type="button" className="thsoctop-games__btn is-primary" onClick={() => { start() }}>
++                    再来一局
++                  </button>
++                </div>
++              </>
++            )}
++          </div>
++        )}
++      </div>
++
++      <div className="thsoctop-games__side">
++        <section className="thsoctop-games__card">
++          <h2>战况</h2>
++          <div className="thsoctop-games__score">
++            <span><span className="thsoctop-games__label">得分</span> <b>{hud.score}</b></span>
++            <span><span className="thsoctop-games__label">最高</span> <b>{hud.high}</b></span>
++            <span><span className="thsoctop-games__label">蛇长</span> <b>{hud.length}</b></span>
++            <span><span className="thsoctop-games__label">进度</span> <b>{Math.round(hud.progress * 100)}%</b></span>
++          </div>
++          <div className="thsoctop-games__progress" aria-hidden="true">
++            <div className="thsoctop-games__progress-bar" style={{ width: `${String(Math.round(hud.progress * 100))}%` }} />
++          </div>
++          <div className="thsoctop-games__row">
++            <button
++              type="button"
++              className={`thsoctop-games__btn${playing ? '' : ' is-primary'}`}
++              onClick={() => {
++                if (playing || hud.phase === 'paused') pause()
++                else start()
++              }}
++            >
++              {playing ? '暂停' : hud.phase === 'paused' ? '继续' : '开始'}
++            </button>
++            <button type="button" className="thsoctop-games__btn" onClick={() => { start() }}>
++              重新开始
++            </button>
++          </div>
++          <p className="thsoctop-games__status" aria-live="polite">{status}</p>
++          <p className="thsoctop-games__hint">
++            快捷键只在游戏区域有焦点时生效：点一下棋盘或用方向键即可聚焦。
++          </p>
++        </section>
++
++        <section className="thsoctop-games__card">
++          <h2>方向（可点按）</h2>
++          <div className="thsoctop-games__pad">
++            {DIR_PAD.map((item) => (
++              <button
++                key={item.dir}
++                type="button"
++                className={`thsoctop-games__pad-btn is-${item.dir}`}
++                aria-label={item.label}
++                disabled={!playing}
++                onClick={() => {
++                  // 点按后把焦点留在游戏区域，键盘继续可用
++                  stageRef.current?.focus({ preventScroll: true })
++                  steer(item.dir)
++                }}
++              >
++                {item.glyph}
++              </button>
++            ))}
++          </div>
++          <p className="thsoctop-games__hint">
++            {spec.hint}
++            {playing ? '' : ' · 开始后才能转向'}
++          </p>
++        </section>
++
++        <section className="thsoctop-games__card">
++          <h2>难度</h2>
++          <div className="thsoctop-games__row">
++            {DIFFICULTIES.map((item) => (
++              <button
++                key={item.key}
++                type="button"
++                className={`thsoctop-games__btn${hud.difficulty === item.key ? ' is-active' : ''}`}
++                onClick={() => {
++                  applyDifficulty(worldRef.current ?? world, item.key)
++                  syncHud()
++                }}
++              >
++                {item.label}
++              </button>
++            ))}
++          </div>
++          <p className="thsoctop-games__hint">
++            {spec.grid.width}×{spec.grid.height}（{board.width * board.height} 格）·{' '}
++            {spec.wrap ? '撞墙穿墙' : '撞墙即结束'} · 目标 {spec.scoreTarget} 分或吃满全盘
++            {hud.phase === 'playing' || hud.phase === 'paused' ? ' · 换难度会重新开局' : ''}
++          </p>
++        </section>
++
++        <section className="thsoctop-games__card">
++          <h2>最高分</h2>
++          <div className="thsoctop-games__score">
++            {DIFFICULTIES.map((item) => (
++              <span key={item.key}>
++                <span className="thsoctop-games__label">{item.label}</span>{' '}
++                <b>{highScores[item.key]}</b>
++              </span>
++            ))}
++          </div>
++          <p className="thsoctop-games__hint">
++            最高分只存在本次会话内存里，刷新页面就重置（和打飞机一致，小游戏不落盘）。
++          </p>
++        </section>
++      </div>
++    </div>
++  )
++}
+diff --git a/packages/dsh-games/src/client/snake.ts b/packages/dsh-games/src/client/snake.ts
+new file mode 100644
+index 0000000..51f0511
+--- /dev/null
++++ b/packages/dsh-games/src/client/snake.ts
+@@ -0,0 +1,480 @@
++/**
++ * 贪吃蛇引擎：整局游戏都在这里，纯逻辑，不碰 DOM / requestAnimationFrame / 定时器。
++ *
++ * 与 plane.ts 同一套路：世界是一个可变对象，`tick(world, dtMs, rng)` 每次推进一帧，
++ * 视图片只负责画和收输入。好处是单测可以直接「快进」「构造一个只剩一格的盘面」
++ * 来验证撞墙、撞身体、穿墙、满盘胜利，不用起浏览器。
++ *
++ * 时间粒度是「步」：世界自己攒 accMs，攒够一步才移动一格，所以帧率高低不影响手感
++ * （每帧最多补偿 MAX_STEPS_PER_TICK 步，防止切回前台时一帧冲出去撞死）。
++ */
++
++export const GRID = { width: 17, height: 17 } as const
++export const CELLS = GRID.width * GRID.height
++/** 起点蛇长 */
++export const START_LENGTH = 3
++/** 单帧最多补偿的步数：卡顿/切回前台后的追赶上限 */
++export const MAX_STEPS_PER_TICK = 8
++/** 输入缓冲深度：连按两下可以连续转两个 90°，但缓冲不会无限增长 */
++export const MAX_QUEUED_TURNS = 2
++/** 普通食物 10 分 */
++export const FOOD_SCORE = 10
++/** 金苹果 30 分，且有存活时限 */
++export const GOLD_SCORE = 30
++export const GOLD_TTL_MS = 6000
++/** 每吃掉几个普通食物掷一次金苹果 */
++export const GOLD_EVERY = 3
++/** 单步间隔下限（毫秒），避免高分局快到无法操作 */
++export const MIN_STEP_MS = 60
++
++export type DifficultyKey = 'casual' | 'standard' | 'master'
++export type Phase = 'ready' | 'playing' | 'paused' | 'over' | 'won'
++export type EndReason = 'wall' | 'self' | 'win-board' | 'win-score'
++export type Dir = 'up' | 'down' | 'left' | 'right'
++
++export interface GridSpec {
++  readonly width: number
++  readonly height: number
++}
++
++export interface DifficultySpec {
++  readonly key: DifficultyKey
++  readonly label: string
++  readonly hint: string
++  /** 盘面大小：越难越大 */
++  readonly grid: GridSpec
++  /** 初始「每走一格」的毫秒数，越大越慢 */
++  readonly startMs: number
++  /** 每吃到一个食物，步进间隔乘以这个系数 */
++  readonly speedUp: number
++  /** 间隔下限 */
++  readonly minMs: number
++  /** 撞墙是否穿墙（悠闲档穿墙，另外两档直接结束） */
++  readonly wrap: boolean
++  /** 金苹果出现概率 */
++  readonly goldChance: number
++  /** 分数目标：达成即胜利（满盘胜利之外的第二个胜利条件） */
++  readonly scoreTarget: number
++}
++
++export const DIFFICULTIES: readonly DifficultySpec[] = [
++  {
++    key: 'casual',
++    label: '悠闲',
++    hint: '15×15 小盘、慢速、撞墙穿墙，随便撞也不死',
++    grid: { width: 15, height: 15 },
++    startMs: 200,
++    speedUp: 0.985,
++    minMs: 120,
++    wrap: true,
++    goldChance: 0.5,
++    scoreTarget: 200,
++  },
++  {
++    key: 'standard',
++    label: '标准',
++    hint: '17×17、中速、撞墙即结束，标准玩法',
++    grid: { width: 17, height: 17 },
++    startMs: 150,
++    speedUp: 0.98,
++    minMs: 90,
++    wrap: false,
++    goldChance: 0.4,
++    scoreTarget: 300,
++  },
++  {
++    key: 'master',
++    label: '大师',
++    hint: '19×19 大盘、起步就快、越吃越快，容错极低',
++    grid: { width: 19, height: 19 },
++    startMs: 105,
++    speedUp: 0.975,
++    minMs: 62,
++    wrap: false,
++    goldChance: 0.32,
++    scoreTarget: 450,
++  },
++]
++
++/** 找不到就回落到标准档，绝不返回 undefined。 */
++export function difficultyOf(key: DifficultyKey): DifficultySpec {
++  return DIFFICULTIES.find((item) => item.key === key) ?? DIFFICULTIES[1]!
++}
++
++export interface Point {
++  x: number
++  y: number
++}
++
++export interface World {
++  difficulty: DifficultyKey
++  /** 盘面尺寸：改难度会整体重开，所以它在一局内恒定（对象本身是冻结的） */
++  grid: GridSpec
++  /** 总格数，胜利判定用 */
++  cellCount: number
++  /** 蛇身，[0] 是头 */
++  snake: Point[]
++  dir: Dir
++  queue: Dir[]
++  food: Point
++  gold?: Point
++  goldLeftMs: number
++  score: number
++  eaten: number
++  /** 当前每步毫秒数，吃到食物会变小 */
++  stepMs: number
++  accMs: number
++  elapsedMs: number
++  steps: number
++  phase: Phase
++  reason?: EndReason
++}
++
++/** 四方向位移。 */
++const DELTA: Readonly<Record<Dir, Point>> = {
++  up: { x: 0, y: -1 },
++  down: { x: 0, y: 1 },
++  left: { x: -1, y: 0 },
++  right: { x: 1, y: 0 },
++}
++
++const OPPOSITE: Readonly<Record<Dir, Dir>> = {
++  up: 'down',
++  down: 'up',
++  left: 'right',
++  right: 'left',
++}
++
++function samePoint(a: Point, b: Point): boolean {
++  return a.x === b.x && a.y === b.y
++}
++
++function keyOf(point: Point): string {
++  return `${String(point.x)},${String(point.y)}`
++}
++
++function clampPoint(point: Point, grid: GridSpec): Point {
++  return {
++    x: Math.min(grid.width - 1, Math.max(0, point.x)),
++    y: Math.min(grid.height - 1, Math.max(0, point.y)),
++  }
++}
++
++/** 盘面上除了蛇身（以及显式排除的格子）以外的空格。 */
++function freeCells(snake: readonly Point[], grid: GridSpec, exclude?: Point): Point[] {
++  const taken = new Set(snake.map(keyOf))
++  if (exclude !== undefined) taken.add(keyOf(exclude))
++  const free: Point[] = []
++  for (let y = 0; y < grid.height; y += 1) {
++    for (let x = 0; x < grid.width; x += 1) {
++      if (!taken.has(keyOf({ x, y }))) free.push({ x, y })
++    }
++  }
++  return free
++}
++
++/** 从空格里随机挑一个；没有空格返回 undefined（调用方负责判定胜利）。 */
++function pickFreeCell(
++  snake: readonly Point[],
++  grid: GridSpec,
++  rng: () => number,
++  exclude?: Point,
++): Point | undefined {
++  const free = freeCells(snake, grid, exclude)
++  if (free.length === 0) return undefined
++  const index = Math.min(free.length - 1, Math.max(0, Math.floor(rng() * free.length)))
++  return free[index]
++}
++
++/** 贪吃蛇开局都是横着一条，头在右 —— 这样「向上/向下」都是合法首步。 */
++function makeSnake(grid: GridSpec): Point[] {
++  const midY = Math.floor(grid.height / 2)
++  const headX = Math.floor(grid.width / 2)
++  return Array.from({ length: START_LENGTH }, (_, i) => ({
++    x: Math.max(0, headX - i),
++    y: midY,
++  }))
++}
++
++/** 把 world 原地重置成一局新游戏（createWorld / beginRun / setDifficulty 共用）。 */
++function reset(world: World, key: DifficultyKey, rng: () => number, grid?: GridSpec): void {
++  const spec = difficultyOf(key)
++  const size = grid ?? spec.grid
++  world.difficulty = key
++  world.grid = Object.freeze({ width: size.width, height: size.height })
++  world.cellCount = size.width * size.height
++  world.snake = makeSnake(world.grid)
++  world.dir = 'right'
++  world.queue = []
++  world.gold = undefined
++  world.goldLeftMs = 0
++  world.score = 0
++  world.eaten = 0
++  world.stepMs = spec.startMs
++  world.accMs = 0
++  world.elapsedMs = 0
++  world.steps = 0
++  world.phase = 'ready'
++  delete world.reason
++  world.food = pickFreeCell(world.snake, world.grid, rng) ?? { x: 0, y: 0 }
++}
++
++/**
++ * 建一局新游戏。
++ * @param difficulty - 难度档位，默认标准。
++ * @param grid - 覆盖盘面尺寸（单测用，UI 不传）。
++ * @param rng - 随机源，默认 Math.random；单测注入固定序列。
++ */
++export function createWorld(
++  difficulty: DifficultyKey = 'standard',
++  grid?: GridSpec,
++  rng: () => number = Math.random,
++): World {
++  const spec = difficultyOf(difficulty)
++  const size = grid ?? spec.grid
++  const world: World = {
++    difficulty,
++    grid: Object.freeze({ width: size.width, height: size.height }),
++    cellCount: size.width * size.height,
++    snake: [],
++    dir: 'right',
++    queue: [],
++    food: { x: 0, y: 0 },
++    goldLeftMs: 0,
++    score: 0,
++    eaten: 0,
++    stepMs: spec.startMs,
++    accMs: 0,
++    elapsedMs: 0,
++    steps: 0,
++    phase: 'ready',
++  }
++  reset(world, difficulty, rng, grid)
++  return world
++}
++
++/** 开一局（可以在 ready/over/won/paused 任意阶段调用，等于重新开始）。 */
++export function beginRun(world: World, difficulty?: DifficultyKey, grid?: GridSpec, rng: () => number = Math.random): World {
++  reset(world, difficulty ?? world.difficulty, rng, grid)
++  world.phase = 'playing'
++  return world
++}
++
++/** 换难度：会带着新盘面重新开一局。 */
++export function setDifficulty(world: World, key: DifficultyKey, rng: () => number = Math.random): World {
++  reset(world, key, rng)
++  return world
++}
++
++/** 待生效的转向数量，HUD 用来提示输入缓冲。 */
++export function pendingTurns(world: World): number {
++  return world.queue.length
++}
++
++/**
++ * 请求转向。反向（180°）会被拒绝，也不会重复塞同一个方向。
++ * @returns 是否被接受。
++ */
++export function turn(world: World, dir: Dir): boolean {
++  if (world.phase !== 'playing') return false
++  const queue = world.queue
++  if (queue.length >= MAX_QUEUED_TURNS) return false
++  const base = queue.length > 0 ? queue[queue.length - 1]! : world.dir
++  if (dir === base) return false
++  if (dir === OPPOSITE[base]) return false
++  queue.push(dir)
++  return true
++}
++
++/** 暂停 / 继续。ready / over / won 阶段调用无效果。 */
++export function togglePause(world: World): boolean {
++  if (world.phase === 'playing') {
++    world.phase = 'paused'
++    return true
++  }
++  if (world.phase === 'paused') {
++    world.phase = 'playing'
++    return true
++  }
++  return false
++}
++
++/** 已经占用的格数（含蛇身与食物，用于显示「吃满全场」进度）。 */
++export function occupancy(world: World): number {
++  return world.snake.length
++}
++
++/** 本局的目标进度 0~1：分数目标与满盘目标取更接近完成的那个。 */
++export function progressOf(world: World): number {
++  const spec = difficultyOf(world.difficulty)
++  const byScore = spec.scoreTarget > 0 ? world.score / spec.scoreTarget : 0
++  const byBoard = world.cellCount > 0 ? world.snake.length / world.cellCount : 0
++  return Math.min(1, Math.max(byScore, byBoard))
++}
++
++/**
++ * 走一步。返回 'moved' | 'ate' | 'over' | 'won'。
++ *
++ * 顺序：取方向 → 算新头 → 撞墙 → 撞自己 → 吃食物 → 判定胜利。
++ * 撞自己时不算尾巴那一格：尾巴这一步会让位，所以追着尾巴走不会死。
++ */
++function step(world: World, rng: () => number): 'moved' | 'ate' | 'over' | 'won' {
++  const grid = world.grid
++
++  let dir = world.dir
++  while (world.queue.length > 0) {
++    const next = world.queue.shift()!
++    if (next !== dir && next !== OPPOSITE[dir]) {
++      dir = next
++      break
++    }
++  }
++  world.dir = dir
++
++  const delta = DELTA[dir]
++  const raw: Point = { x: world.snake[0]!.x + delta.x, y: world.snake[0]!.y + delta.y }
++  const outside = raw.x < 0 || raw.y < 0 || raw.x >= grid.width || raw.y >= grid.height
++
++  let head: Point
++  if (outside) {
++    const spec = difficultyOf(world.difficulty)
++    if (!spec.wrap) {
++      world.phase = 'over'
++      world.reason = 'wall'
++      return 'over'
++    }
++    head = { x: (raw.x + grid.width) % grid.width, y: (raw.y + grid.height) % grid.height }
++  } else {
++    head = raw
++  }
++
++  const ateFood = samePoint(head, world.food)
++  const ateGold = world.gold !== undefined && samePoint(head, world.gold)
++
++  // 只有普通食物让蛇变长；金苹果只加分，尾巴照常让位。
++  // 也正因为如此，吃东西时尾巴不让位 → 判撞身体要连尾巴一起算。
++  const body = ateFood ? world.snake : world.snake.slice(0, -1)
++  if (body.some((segment) => samePoint(segment, head))) {
++    world.phase = 'over'
++    world.reason = 'self'
++    return 'over'
++  }
++
++  // 头进：吃到普通食物就保留尾巴（净长 +1），否则把尾巴裁掉（净长不变）
++  world.snake.unshift(head)
++  world.steps += 1
++
++  if (ateFood) {
++    world.score += FOOD_SCORE
++    world.eaten += 1
++    const spec = difficultyOf(world.difficulty)
++    world.stepMs = Math.max(spec.minMs, Math.round(world.stepMs * spec.speedUp))
++    const next = pickFreeCell(world.snake, grid, rng)
++    if (next === undefined) {
++      // 盘面已被蛇填满：这一口就是最后一格
++      world.phase = 'won'
++      world.reason = 'win-board'
++      return 'won'
++    }
++    world.food = next
++  } else if (ateGold) {
++    world.gold = undefined
++    world.goldLeftMs = 0
++    world.score += GOLD_SCORE
++    world.snake.pop()
++  } else {
++    world.snake.pop()
++  }
++
++  // 金苹果：每吃 GOLD_EVERY 个普通食物掷一次，且不压在食物那一格上
++  if (ateFood && world.eaten % GOLD_EVERY === 0 && world.gold === undefined) {
++    const spec = difficultyOf(world.difficulty)
++    if (rng() < spec.goldChance) {
++      const spot = pickFreeCell(world.snake, grid, rng, world.food)
++      if (spot !== undefined) {
++        world.gold = spot
++        world.goldLeftMs = GOLD_TTL_MS
++      }
++    }
++  }
++
++  if (world.score >= difficultyOf(world.difficulty).scoreTarget) {
++    world.phase = 'won'
++    world.reason = 'win-score'
++    return 'won'
++  }
++
++  return ateFood ? 'ate' : 'moved'
++}
++
++/** 单帧最长计入的时间：切回前台时一帧可能带进来好几秒，先截断再归一化。 */
++export const MAX_FRAME_MS = 1000
++
++/**
++ * 把帧间隔归一化成安全的毫秒数：非有限值（NaN / ±Infinity）与负数一律按 0，
++ * 超过 MAX_FRAME_MS 的截断。
++ *
++ * 关键点：`Math.max(0, NaN)` 的结果是 NaN，直接用它会把 accMs / elapsedMs /
++ * goldLeftMs 污染成 NaN，之后 `accMs >= stepMs` 永远为 false —— 游戏会静默卡死。
++ */
++function safeDelta(dtMs: number): number {
++  if (!Number.isFinite(dtMs)) return 0
++  if (dtMs <= 0) return 0
++  return Math.min(dtMs, MAX_FRAME_MS)
++}
++
++/**
++ * 推进一帧。
++ * @param dtMs - 距上一帧的毫秒数；非有限值与负数按 0 处理，并截断到 MAX_FRAME_MS。
++ * @param rng - 随机源，默认 Math.random。
++ * @returns 本帧实际走的步数。
++ */
++export function tick(world: World, dtMs: number, rng: () => number = Math.random): number {
++  const safeDt = safeDelta(dtMs)
++  if (world.phase === 'playing') world.elapsedMs += safeDt
++  if (world.phase !== 'playing') return 0
++
++  if (world.goldLeftMs > 0) {
++    world.goldLeftMs -= safeDt
++    if (world.goldLeftMs <= 0) {
++      world.goldLeftMs = 0
++      world.gold = undefined
++    }
++  }
++
++  world.accMs += safeDt
++  let moved = 0
++  while (world.accMs >= world.stepMs && moved < MAX_STEPS_PER_TICK && world.phase === 'playing') {
++    world.accMs -= world.stepMs
++    const outcome = step(world, rng)
++    moved += 1
++    if (outcome === 'over' || outcome === 'won') {
++      world.accMs = 0
++      break
++    }
++  }
++  // 掉帧太多时丢弃攒下的时间，别让它滚雪球
++  if (world.accMs > world.stepMs * MAX_STEPS_PER_TICK) world.accMs = 0
++  return moved
++}
++
++/** 给视图片用：把蛇头摆在盘内（穿墙后 head 一定在盘内，这里只是保险）。 */
++export function headOf(world: World): Point {
++  return clampPoint(world.snake[0] ?? { x: 0, y: 0 }, world.grid)
++}
++
++/** 各难度最高分（本次会话内存内，不落盘）。 */
++export function emptyHighScores(): Record<DifficultyKey, number> {
++  return { casual: 0, standard: 0, master: 0 }
++}
++
++/** 刷新最高分，返回新对象（便于 React setState）。 */
++export function recordHighScore(
++  scores: Readonly<Record<DifficultyKey, number>>,
++  key: DifficultyKey,
++  score: number,
++): Record<DifficultyKey, number> {
++  const best = scores[key] ?? 0
++  if (score <= best) return { ...scores }
++  return { ...scores, [key]: score }
++}
+diff --git a/packages/dsh-games/test/snake.test.ts b/packages/dsh-games/test/snake.test.ts
+new file mode 100644
+index 0000000..b5a7e0b
+--- /dev/null
++++ b/packages/dsh-games/test/snake.test.ts
+@@ -0,0 +1,804 @@
++import { describe, expect, expectTypeOf, it } from 'vitest'
++import {
++  DIFFICULTIES,
++  FOOD_SCORE,
++  GOLD_EVERY,
++  GOLD_SCORE,
++  GOLD_TTL_MS,
++  MAX_FRAME_MS,
++  MAX_QUEUED_TURNS,
++  MAX_STEPS_PER_TICK,
++  START_LENGTH,
++  beginRun,
++  createWorld,
++  difficultyOf,
++  emptyHighScores,
++  headOf,
++  occupancy,
++  pendingTurns,
++  progressOf,
++  recordHighScore,
++  setDifficulty,
++  tick,
++  togglePause,
++  turn,
++  type Dir,
++  type DifficultyKey,
++  type Point,
++  type World,
++} from '../src/client/snake.js'
++import { hudSignature, readHud } from '../src/client/snake-hud.js'
++
++/** 从不上钩的随机源：金苹果永远不出现，测试才好断言。 */
++const noGold = (): number => 0.99
++
++/** 固定序列随机源，让投食位置可复现。 */
++function sequence(values: readonly number[]): () => number {
++  let index = 0
++  return () => {
++    const value = values[index % values.length] ?? 0
++    index += 1
++    return value
++  }
++}
++
++/**
++ * 推进到「刚好走一步」。
++ *
++ * 必须把攒下的余量清零：加速后 stepMs 会变小，若让 accMs 跨次累积，
++ * 下一次调用就会多走一步，断言步数时会假失败。
++ */
++function stepOnce(world: World, rng: () => number = noGold): number {
++  world.accMs = 0
++  return tick(world, world.stepMs, rng)
++}
++
++function started(key: DifficultyKey = 'standard', grid?: { width: number; height: number }): World {
++  const world = createWorld(key, grid, noGold)
++  beginRun(world, key, grid, noGold)
++  return world
++}
++
++/** 直接摆一个盘面，用来构造撞墙 / 撞自己 / 满盘这些正常玩很难到的局面。 */
++function place(
++  world: World,
++  snake: readonly Point[],
++  dir: Dir,
++  food: Point,
++  score = 0,
++): World {
++  world.snake = snake.map((point) => ({ ...point }))
++  world.dir = dir
++  world.queue = []
++  world.food = { ...food }
++  world.gold = undefined
++  world.goldLeftMs = 0
++  world.score = score
++  world.phase = 'playing'
++  delete world.reason
++  return world
++}
++
++const RIGHT: Point = { x: 1, y: 0 }
++const LEFT: Point = { x: -1, y: 0 }
++
++describe('难度设置', () => {
++  it('三档难度齐全，越难盘面越大、起步越快、容错越低', () => {
++    expect(DIFFICULTIES.map((item) => item.key)).toEqual(['casual', 'standard', 'master'])
++
++    const casual = difficultyOf('casual')
++    const standard = difficultyOf('standard')
++    const master = difficultyOf('master')
++
++    // 盘面单调变大
++    expect(casual.grid.width).toBeLessThan(standard.grid.width)
++    expect(standard.grid.width).toBeLessThan(master.grid.width)
++    // 起步速度单调变快（stepMs 越小越快）
++    expect(casual.startMs).toBeGreaterThan(standard.startMs)
++    expect(standard.startMs).toBeGreaterThan(master.startMs)
++    // 加分目标单调变高
++    expect(casual.scoreTarget).toBeLessThan(standard.scoreTarget)
++    expect(standard.scoreTarget).toBeLessThan(master.scoreTarget)
++    // 只有悠闲档穿墙
++    expect(casual.wrap).toBe(true)
++    expect(standard.wrap).toBe(false)
++    expect(master.wrap).toBe(false)
++    // 每档的间隔下限都不低于全局下限，且不会为 0
++    for (const spec of DIFFICULTIES) {
++      expect(spec.minMs).toBeGreaterThanOrEqual(60)
++      expect(spec.startMs).toBeGreaterThan(spec.minMs)
++      expect(spec.goldChance).toBeGreaterThan(0)
++      expect(spec.goldChance).toBeLessThan(1)
++    }
++  })
++
++  it('未知难度回落到标准档而不是抛错', () => {
++    expect(difficultyOf('nope' as DifficultyKey).key).toBe('standard')
++  })
++})
++
++describe('开局', () => {
++  it('初始蛇是 3 节横排、头在右，全部落在盘内且不重叠', () => {
++    const world = createWorld('standard', undefined, noGold)
++    expect(world.snake).toHaveLength(START_LENGTH)
++    expect(world.dir).toBe('right')
++    expect(world.phase).toBe('ready')
++    expect(world.score).toBe(0)
++    expect(world.reason).toBeUndefined()
++
++    const seen = new Set(world.snake.map((point) => `${String(point.x)},${String(point.y)}`))
++    expect(seen.size).toBe(world.snake.length)
++    for (const point of world.snake) {
++      expect(point.x).toBeGreaterThanOrEqual(0)
++      expect(point.y).toBeGreaterThanOrEqual(0)
++      expect(point.x).toBeLessThan(world.grid.width)
++      expect(point.y).toBeLessThan(world.grid.height)
++    }
++    // 头在最右，身体往左排
++    expect(world.snake[0]!.x).toBe(world.snake[1]!.x + 1)
++    expect(world.snake[1]!.x).toBe(world.snake[2]!.x + 1)
++    expect(world.snake[0]!.y).toBe(world.snake[1]!.y)
++  })
++
++  it('食物不会投在蛇身上，且盘面尺寸走难度档位', () => {
++    const world = createWorld('master', undefined, noGold)
++    expect(world.grid).toEqual({ width: 19, height: 19 })
++    expect(world.cellCount).toBe(361)
++    expect(world.stepMs).toBe(difficultyOf('master').startMs)
++
++    const onSnake = world.snake.some((point) => point.x === world.food.x && point.y === world.food.y)
++    expect(onSnake).toBe(false)
++  })
++
++  it('自定义盘面（单测用小盘）会覆盖难度默认尺寸', () => {
++    const world = createWorld('standard', { width: 4, height: 4 }, noGold)
++    expect(world.grid).toEqual({ width: 4, height: 4 })
++    expect(world.cellCount).toBe(16)
++  })
++
++  it('grid 是冻结的，避免视图层改坏盘面尺寸', () => {
++    const world = createWorld('standard', undefined, noGold)
++    expect(Object.isFrozen(world.grid)).toBe(true)
++  })
++
++  it('ready 阶段 tick 不推进', () => {
++    const world = createWorld('standard', undefined, noGold)
++    const before = { snake: world.snake.map((point) => ({ ...point })), steps: world.steps }
++    expect(tick(world, 5000, noGold)).toBe(0)
++    expect(world.steps).toBe(before.steps)
++    expect(world.snake).toEqual(before.snake)
++  })
++})
++
++describe('移动与转向', () => {
++  it('直行一格：头往前走，尾巴让位，长度不变', () => {
++    const world = started()
++    // 食物挪到远处，避免这一口被吃掉
++    world.food = { x: 0, y: world.grid.height - 1 }
++    const head = { ...world.snake[0]! }
++    const tail = { ...world.snake[world.snake.length - 1]! }
++
++    expect(stepOnce(world)).toBe(1)
++
++    expect(world.snake[0]).toEqual({ x: head.x + RIGHT.x, y: head.y + RIGHT.y })
++    expect(world.snake).toHaveLength(START_LENGTH)
++    expect(world.snake.some((point) => point.x === tail.x && point.y === tail.y)).toBe(false)
++    expect(world.phase).toBe('playing')
++    expect(world.steps).toBe(1)
++  })
++
++  it('转向在下一步生效', () => {
++    const world = started()
++    world.food = { x: 0, y: world.grid.height - 1 }
++    const head = { ...world.snake[0]! }
++
++    expect(turn(world, 'up')).toBe(true)
++    expect(pendingTurns(world)).toBe(1)
++    stepOnce(world)
++
++    expect(world.dir).toBe('up')
++    expect(world.snake[0]).toEqual({ x: head.x, y: head.y - 1 })
++    expect(pendingTurns(world)).toBe(0)
++  })
++
++  it('反向输入被拒绝，蛇不会原地掉头自杀', () => {
++    const world = started()
++    world.food = { x: 0, y: world.grid.height - 1 }
++    const head = { ...world.snake[0]! }
++
++    expect(turn(world, 'left')).toBe(false)
++    expect(pendingTurns(world)).toBe(0)
++    stepOnce(world)
++    expect(world.snake[0]).toEqual({ x: head.x + 1, y: head.y })
++  })
++
++  it('重复同一方向不入队', () => {
++    const world = started()
++    expect(turn(world, 'right')).toBe(false)
++    expect(turn(world, 'up')).toBe(true)
++    expect(turn(world, 'up')).toBe(false)
++    expect(pendingTurns(world)).toBe(1)
++  })
++
++  it(`输入缓冲最多 ${String(MAX_QUEUED_TURNS)} 个，多余的丢弃`, () => {
++    const world = started()
++    expect(turn(world, 'up')).toBe(true)
++    expect(turn(world, 'left')).toBe(true)
++    expect(turn(world, 'down')).toBe(false)
++    expect(pendingTurns(world)).toBe(MAX_QUEUED_TURNS)
++  })
++
++  it('队首反向指令会被跳过，后面的合法指令仍然生效', () => {
++    const world = started()
++    world.food = { x: 0, y: world.grid.height - 1 }
++    const head = { ...world.snake[0]! }
++    turn(world, 'up')
++    // 手动塞一个非法反向指令在队首（模拟「按了上又按了左→右」这种组合）
++    world.queue.unshift('left')
++
++    stepOnce(world)
++
++    expect(world.dir).toBe('up')
++    expect(world.snake[0]).toEqual({ x: head.x, y: head.y - 1 })
++    expect(pendingTurns(world)).toBe(0)
++  })
++
++  it('非 playing 阶段不收转向指令', () => {
++    const world = createWorld('standard', undefined, noGold)
++    expect(turn(world, 'up')).toBe(false)
++    beginRun(world, 'standard', undefined, noGold)
++    togglePause(world)
++    expect(turn(world, 'up')).toBe(false)
++  })
++})
++
++describe('进食与提速', () => {
++  it('吃到食物加长一节的净长度并 +10 分，同时提速', () => {
++    const world = started()
++    const head = { ...world.snake[0]! }
++    world.food = { x: head.x + 1, y: head.y }
++    const lengthBefore = world.snake.length
++    const stepBefore = world.stepMs
++
++    expect(stepOnce(world)).toBe(1)
++
++    expect(world.score).toBe(FOOD_SCORE)
++    expect(world.eaten).toBe(1)
++    expect(world.snake).toHaveLength(lengthBefore + 1)
++    expect(world.snake[0]).toEqual({ x: head.x + 1, y: head.y })
++    expect(world.stepMs).toBeLessThan(stepBefore)
++    expect(world.stepMs).toBeGreaterThanOrEqual(difficultyOf('standard').minMs)
++  })
++
++  it('食物被吃掉后会立刻重新投到一个空格上', () => {
++    const world = started()
++    const head = { ...world.snake[0]! }
++    const oldFood = { x: head.x + 1, y: head.y }
++    world.food = oldFood
++    stepOnce(world)
++
++    expect(world.food).not.toEqual(oldFood)
++    const onSnake = world.snake.some((point) => point.x === world.food.x && point.y === world.food.y)
++    expect(onSnake).toBe(false)
++  })
++
++  it('金苹果 +30 分且不长身体，超时后会自己消失', () => {
++    const world = started()
++    const head = { ...world.snake[0]! }
++    world.food = { x: 0, y: world.grid.height - 1 }
++    world.gold = { x: head.x + 1, y: head.y }
++    world.goldLeftMs = GOLD_TTL_MS
++    const lengthBefore = world.snake.length
++
++    stepOnce(world)
++
++    expect(world.score).toBe(GOLD_SCORE)
++    // 金苹果只加分不加长：尾巴照常让位
++    expect(world.snake).toHaveLength(lengthBefore)
++    expect(world.gold).toBeUndefined()
++    expect(world.goldLeftMs).toBe(0)
++  })
++
++  it('金苹果到点没吃到就消失', () => {
++    const world = started()
++    world.food = { x: 0, y: world.grid.height - 1 }
++    world.gold = { x: 0, y: 0 }
++    world.goldLeftMs = 100
++
++    tick(world, 200, noGold)
++
++    expect(world.gold).toBeUndefined()
++    expect(world.goldLeftMs).toBe(0)
++    expect(world.score).toBe(0)
++  })
++
++  it(`每吃 ${String(GOLD_EVERY)} 个普通食物掷一次金苹果，命中就出现且有倒计时`, () => {
++    const world = started()
++    // 掷骰必须命中：直接用必中的随机源驱动整段流程
++    const always = (): number => 0
++    let eaten = 0
++    let guard = 0
++    while (eaten < GOLD_EVERY && guard < 20) {
++      const head = { ...world.snake[0]! }
++      world.food = { x: head.x + 1, y: head.y }
++      stepOnce(world, always)
++      eaten = world.eaten
++      guard += 1
++    }
++
++    expect(world.eaten).toBe(GOLD_EVERY)
++    expect(world.gold).toBeDefined()
++    expect(world.goldLeftMs).toBe(GOLD_TTL_MS)
++    // 金苹果要落在空格上，不能压在蛇身或食物上
++    const gold = world.gold!
++    expect(world.snake.some((point) => point.x === gold.x && point.y === gold.y)).toBe(false)
++    expect(gold.x === world.food.x && gold.y === world.food.y).toBe(false)
++    // 未命中时不该出现金苹果
++    const unlucky = started()
++    const never = (): number => 0.99
++    for (let i = 0; i < GOLD_EVERY; i += 1) {
++      const head = { ...unlucky.snake[0]! }
++      unlucky.food = { x: head.x + 1, y: head.y }
++      stepOnce(unlucky, never)
++    }
++    expect(unlucky.eaten).toBe(GOLD_EVERY)
++    expect(unlucky.gold).toBeUndefined()
++  })
++})
++
++describe('结束条件：撞墙', () => {
++  it('标准档撞墙立即结束，原因标记为 wall', () => {
++    const world = started('standard', { width: 6, height: 6 })
++    const wall = world.grid.width - 1
++    place(world, [{ x: wall, y: 3 }, { x: wall - 1, y: 3 }, { x: wall - 2, y: 3 }], 'right', { x: 0, y: 0 })
++
++    stepOnce(world)
++
++    expect(world.phase).toBe('over')
++    expect(world.reason).toBe('wall')
++    expect(world.snake[0]).toEqual({ x: wall, y: 3 })
++  })
++
++  it('上边界与下边界同样判定为撞墙', () => {
++    const up = started('standard', { width: 6, height: 6 })
++    place(up, [{ x: 3, y: 0 }, { x: 4, y: 0 }, { x: 5, y: 0 }], 'up', { x: 0, y: 5 })
++    stepOnce(up)
++    expect(up.reason).toBe('wall')
++
++    const down = started('standard', { width: 6, height: 6 })
++    place(down, [{ x: 3, y: 5 }, { x: 4, y: 5 }, { x: 5, y: 5 }], 'down', { x: 0, y: 0 })
++    stepOnce(down)
++    expect(down.reason).toBe('wall')
++  })
++
++  it('结束后 tick 不再推进，转向也不生效', () => {
++    const world = started('standard', { width: 6, height: 6 })
++    place(world, [{ x: 5, y: 3 }, { x: 4, y: 3 }, { x: 3, y: 3 }], 'right', { x: 0, y: 0 })
++    stepOnce(world)
++
++    const frozen = world.snake.map((point) => ({ ...point }))
++    expect(tick(world, 3000, noGold)).toBe(0)
++    expect(world.snake).toEqual(frozen)
++    expect(turn(world, 'up')).toBe(false)
++  })
++
++  it('悠闲档穿墙而不是结束', () => {
++    const world = started('casual', { width: 6, height: 6 })
++    const wall = world.grid.width - 1
++    place(world, [{ x: wall, y: 3 }, { x: wall - 1, y: 3 }, { x: wall - 2, y: 3 }], 'right', { x: 0, y: 0 })
++
++    stepOnce(world)
++
++    expect(world.phase).toBe('playing')
++    expect(world.reason).toBeUndefined()
++    expect(world.snake[0]).toEqual({ x: 0, y: 3 })
++    expect(world.snake).toHaveLength(START_LENGTH)
++  })
++})
++
++describe('结束条件：撞自己', () => {
++  it('撞到自己身体立即结束，原因标记为 self', () => {
++    const world = started('standard', { width: 8, height: 8 })
++    // 一条横蛇：头在 (1,1)，正上方 (1,0) 是自己的第二节；
++    // 先向右转开，再向上就会扎进身体。
++    place(
++      world,
++      [
++        { x: 1, y: 1 }, { x: 1, y: 0 }, { x: 2, y: 0 }, { x: 3, y: 0 }, { x: 3, y: 1 },
++      ],
++      'right',
++      { x: 7, y: 7 },
++    )
++    turn(world, 'up')
++
++    stepOnce(world)
++
++    expect(world.phase).toBe('over')
++    expect(world.reason).toBe('self')
++    // 撞上时头停在原格，没有闯进身体里
++    expect(world.snake[0]).toEqual({ x: 1, y: 1 })
++  })
++
++  it('追着自己的尾巴走不会误判为撞身体（尾巴这一步会让位）', () => {
++    const world = started('standard', { width: 8, height: 8 })
++    // 2×2 的四节蛇：头往右，尾巴正好在右前方，这一步尾巴会腾出来
++    place(
++      world,
++      [
++        { x: 1, y: 1 }, { x: 1, y: 2 }, { x: 2, y: 2 }, { x: 2, y: 1 },
++      ],
++      'right',
++      { x: 7, y: 7 },
++    )
++
++    stepOnce(world)
++
++    expect(world.phase).toBe('playing')
++    expect(world.snake[0]).toEqual({ x: 2, y: 1 })
++  })
++})
++
++describe('结束条件：胜利', () => {
++  it('蛇填满整个盘面即胜利，原因标记为 win-board', () => {
++    // 4×4 盘，15 节蛇盘成回形，只剩 (1,2) 一个空格且那里放着食物；
++    // 头在 (0,2) 向右一步吃掉它 → 蛇占满 16 格，重投食物时已无空格 → 必须判胜。
++    const world = started('standard', { width: 4, height: 4 })
++    place(
++      world,
++      [
++        { x: 0, y: 2 }, { x: 0, y: 3 }, { x: 1, y: 3 }, { x: 2, y: 3 }, { x: 3, y: 3 },
++        { x: 3, y: 2 }, { x: 3, y: 1 }, { x: 3, y: 0 }, { x: 2, y: 0 }, { x: 1, y: 0 },
++        { x: 0, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }, { x: 2, y: 1 }, { x: 2, y: 2 },
++      ],
++      'down',
++      { x: 1, y: 2 },
++    )
++    // 先确认摆盘合法：15 节互不重叠，盘上只剩食物那一格是空的
++    const staged = new Set(world.snake.map((point) => `${String(point.x)},${String(point.y)}`))
++    expect(staged.size).toBe(15)
++    expect(staged.has('1,2')).toBe(false)
++    expect(world.cellCount - staged.size).toBe(1)
++
++    // 头在 (0,2)，向右一步进入唯一空格
++    turn(world, 'right')
++    stepOnce(world, (): number => 0)
++
++    expect(world.phase).toBe('won')
++    expect(world.reason).toBe('win-board')
++    expect(world.snake).toHaveLength(world.cellCount)
++    expect(world.snake[0]).toEqual({ x: 1, y: 2 })
++
++    const cells = new Set(world.snake.map((point) => `${String(point.x)},${String(point.y)}`))
++    expect(cells.size).toBe(world.cellCount)
++  })
++
++  it('达到分数目标即胜利，原因标记为 win-score', () => {
++    const world = started('casual', { width: 8, height: 8 })
++    const target = difficultyOf('casual').scoreTarget
++    const head = { ...world.snake[0]! }
++    world.score = target - FOOD_SCORE
++    world.food = { x: head.x + 1, y: head.y }
++
++    stepOnce(world)
++
++    expect(world.score).toBe(target)
++    expect(world.phase).toBe('won')
++    expect(world.reason).toBe('win-score')
++  })
++
++  it('胜利后 tick 与转向都停住', () => {
++    const world = started('casual', { width: 8, height: 8 })
++    const head = { ...world.snake[0]! }
++    world.score = difficultyOf('casual').scoreTarget
++    world.food = { x: head.x + 1, y: head.y }
++    stepOnce(world)
++
++    const frozen = world.snake.map((point) => ({ ...point }))
++    expect(tick(world, 3000, noGold)).toBe(0)
++    expect(world.snake).toEqual(frozen)
++    expect(turn(world, 'up')).toBe(false)
++  })
++
++  it('进度值随吃到的分数单调上升且不超过 1', () => {
++    const world = started('standard', { width: 8, height: 8 })
++    const start = progressOf(world)
++    const head = { ...world.snake[0]! }
++    world.score = difficultyOf('standard').scoreTarget
++    world.food = { x: head.x + 1, y: head.y }
++    stepOnce(world)
++
++    expect(progressOf(world)).toBeGreaterThan(start)
++    expect(progressOf(world)).toBeLessThanOrEqual(1)
++  })
++})
++
++describe('暂停与重开', () => {
++  it('暂停时 tick 不推进、不计时，继续后恢复', () => {
++    const world = started()
++    world.food = { x: 0, y: world.grid.height - 1 }
++    stepOnce(world)
++    const frozen = world.snake.map((point) => ({ ...point }))
++    const elapsed = world.elapsedMs
++
++    expect(togglePause(world)).toBe(true)
++    expect(world.phase).toBe('paused')
++    expect(tick(world, 5000, noGold)).toBe(0)
++    expect(world.snake).toEqual(frozen)
++    expect(world.elapsedMs).toBe(elapsed)
++
++    expect(togglePause(world)).toBe(true)
++    expect(world.phase).toBe('playing')
++    expect(stepOnce(world)).toBe(1)
++  })
++
++  it('ready / over / won 阶段 togglePause 无效果', () => {
++    const world = createWorld('standard', undefined, noGold)
++    expect(togglePause(world)).toBe(false)
++    expect(world.phase).toBe('ready')
++
++    beginRun(world, 'standard', undefined, noGold)
++    place(world, [{ x: 5, y: 3 }, { x: 4, y: 3 }, { x: 3, y: 3 }], 'right', { x: 0, y: 0 })
++    stepOnce(world)
++    world.phase = 'over'
++    expect(togglePause(world)).toBe(false)
++    expect(world.phase).toBe('over')
++  })
++
++  it('重开会清空分数、身体长度、结束原因与输入缓冲', () => {
++    const world = started()
++    const head = { ...world.snake[0]! }
++    world.food = { x: head.x + 1, y: head.y }
++    stepOnce(world)
++    turn(world, 'up')
++    expect(world.score).toBe(FOOD_SCORE)
++    expect(pendingTurns(world)).toBe(1)
++
++    beginRun(world, 'standard', undefined, noGold)
++
++    expect(world.phase).toBe('playing')
++    expect(world.score).toBe(0)
++    expect(world.eaten).toBe(0)
++    expect(world.snake).toHaveLength(START_LENGTH)
++    expect(world.steps).toBe(0)
++    expect(world.queue).toEqual([])
++    expect(world.gold).toBeUndefined()
++    expect(world.reason).toBeUndefined()
++    expect(world.dir).toBe('right')
++    expect(world.stepMs).toBe(difficultyOf('standard').startMs)
++  })
++
++  it('换难度会带着新盘面重新开一局', () => {
++    const world = started('standard', { width: 6, height: 6 })
++    const head = { ...world.snake[0]! }
++    world.food = { x: head.x + 1, y: head.y }
++    stepOnce(world)
++
++    setDifficulty(world, 'master', noGold)
++
++    expect(world.difficulty).toBe('master')
++    expect(world.grid).toEqual({ width: 19, height: 19 })
++    expect(world.cellCount).toBe(361)
++    expect(world.phase).toBe('ready')
++    expect(world.score).toBe(0)
++    expect(world.snake).toHaveLength(START_LENGTH)
++  })
++})
++
++describe('帧推进与超步保护', () => {
++  it('攒够一步才走一格：不足一步时不动', () => {
++    const world = started()
++    world.food = { x: 0, y: world.grid.height - 1 }
++    expect(tick(world, world.stepMs - 1, noGold)).toBe(0)
++    expect(world.steps).toBe(0)
++    expect(tick(world, 1, noGold)).toBe(1)
++    expect(world.steps).toBe(1)
++    // 再补一小段时间不该走第二步
++    expect(tick(world, 1, noGold)).toBe(0)
++    expect(world.steps).toBe(1)
++  })
++
++  it(`一帧最多补偿 ${String(MAX_STEPS_PER_TICK)} 步，长时间卡顿不会一帧冲出去`, () => {
++    const world = started()
++    world.food = { x: 0, y: world.grid.height - 1 }
++    const moved = tick(world, 60_000, noGold)
++
++    expect(moved).toBeLessThanOrEqual(MAX_STEPS_PER_TICK)
++    expect(world.steps).toBe(moved)
++    // 掉帧丢弃攒下的时间，不会滚雪球
++    expect(world.accMs).toBeLessThanOrEqual(world.stepMs * MAX_STEPS_PER_TICK)
++  })
++
++  it('负数时间不会倒着走', () => {
++    const world = started()
++    world.food = { x: 0, y: world.grid.height - 1 }
++    const elapsed = world.elapsedMs
++    expect(tick(world, -1000, noGold)).toBe(0)
++    expect(world.steps).toBe(0)
++    expect(world.accMs).toBe(0)
++    expect(world.elapsedMs).toBe(elapsed)
++  })
++
++  it('NaN 时间被当作 0：不会污染 accMs / elapsedMs / goldLeftMs', () => {
++    const world = started()
++    world.food = { x: 0, y: world.grid.height - 1 }
++    world.gold = { x: 0, y: 0 }
++    world.goldLeftMs = GOLD_TTL_MS
++    const elapsed = world.elapsedMs
++
++    expect(tick(world, Number.NaN, noGold)).toBe(0)
++
++    // 世界状态必须保持有限：Math.max(0, NaN) === NaN，这正是要防的坑
++    expect(Number.isFinite(world.accMs)).toBe(true)
++    expect(Number.isFinite(world.elapsedMs)).toBe(true)
++    expect(Number.isFinite(world.goldLeftMs)).toBe(true)
++    expect(world.accMs).toBe(0)
++    expect(world.elapsedMs).toBe(elapsed)
++    expect(world.goldLeftMs).toBe(GOLD_TTL_MS)
++
++    // 坏帧之后仍然能正常推进（accMs 若被污染成 NaN，这里会永远返回 0）
++    expect(stepOnce(world)).toBe(1)
++    expect(world.steps).toBe(1)
++    expect(world.snake).toHaveLength(START_LENGTH)
++  })
++
++  it('±Infinity 同样按 0 处理', () => {
++    const world = started()
++    world.food = { x: 0, y: world.grid.height - 1 }
++    expect(tick(world, Number.POSITIVE_INFINITY, noGold)).toBe(0)
++    expect(tick(world, Number.NEGATIVE_INFINITY, noGold)).toBe(0)
++    expect(Number.isFinite(world.accMs)).toBe(true)
++    expect(world.accMs).toBe(0)
++  })
++
++  it('单帧时间被截断到 1000ms 以内（不会一帧结算几秒）', () => {
++    const world = started()
++    world.food = { x: 0, y: world.grid.height - 1 }
++    world.gold = { x: 0, y: 0 }
++    world.goldLeftMs = GOLD_TTL_MS
++    const elapsed = world.elapsedMs
++
++    // 传 5000ms：只计入截断后的 MAX_FRAME_MS，而不是原值
++    tick(world, 5000, noGold)
++
++    expect(Number.isFinite(world.elapsedMs)).toBe(true)
++    expect(world.elapsedMs - elapsed).toBe(MAX_FRAME_MS)
++    // 金苹果仍活着（若按 5000ms 扣，早该被清掉）
++    expect(world.gold).toBeDefined()
++    expect(world.goldLeftMs).toBe(GOLD_TTL_MS - MAX_FRAME_MS)
++  })
++
++  it('穿墙后蛇头仍然落在盘内', () => {
++    const world = started('casual', { width: 5, height: 5 })
++    place(world, [{ x: 4, y: 2 }, { x: 3, y: 2 }, { x: 2, y: 2 }], 'right', { x: 0, y: 4 })
++    for (let i = 0; i < 6; i += 1) stepOnce(world)
++
++    const head = headOf(world)
++    expect(head.x).toBeGreaterThanOrEqual(0)
++    expect(head.x).toBeLessThan(world.grid.width)
++    expect(head.y).toBeGreaterThanOrEqual(0)
++    expect(head.y).toBeLessThan(world.grid.height)
++    expect(world.snake).toHaveLength(START_LENGTH)
++  })
++
++  it('occupancy 等于蛇长', () => {
++    const world = started()
++    expect(occupancy(world)).toBe(world.snake.length)
++  })
++})
++
++describe('最高分（本次会话内存内）', () => {
++  it('初始三档都是 0', () => {
++    expect(emptyHighScores()).toEqual({ casual: 0, standard: 0, master: 0 })
++  })
++
++  it('按难度分桶记录，且只在更高时才更新', () => {
++    let scores = emptyHighScores()
++    scores = recordHighScore(scores, 'standard', 120)
++    expect(scores.standard).toBe(120)
++    expect(scores.casual).toBe(0)
++
++    const lower = recordHighScore(scores, 'standard', 80)
++    expect(lower.standard).toBe(120)
++
++    const higher = recordHighScore(scores, 'standard', 200)
++    expect(higher.standard).toBe(200)
++    // 返回新对象，便于 React setState 触发更新
++    expect(higher).not.toBe(scores)
++  })
++})
++
++describe('棋盘重绘触发（hudSignature 必须覆盖所有会改变画面的状态）', () => {
++  it('普通移动一格就会换签名（否则 SVG 会停在原地）', () => {
++    const world = started()
++    world.food = { x: 0, y: world.grid.height - 1 }
++    const before = hudSignature(readHud(world, 0))
++
++    stepOnce(world)
++
++    const after = readHud(world, 0)
++    expect(after.steps).toBe(world.steps)
++    expect(hudSignature(after)).not.toBe(before)
++  })
++
++  it('只按方向键、还没走的那一步也会换签名（蛇头朝向立刻转过去）', () => {
++    const world = started()
++    const before = readHud(world, 0)
++    expect(before.facing).toBe('right')
++
++    expect(turn(world, 'up')).toBe(true)
++
++    const after = readHud(world, 0)
++    // 引擎要等这一步走完才改 world.dir（走之前改会在移动前就撞死），
++    // 但渲染朝向必须立刻跟上玩家按键
++    expect(world.dir).toBe('right')
++    expect(after.facing).toBe('up')
++    expect(after.steps).toBe(0)
++    expect(hudSignature(after)).not.toBe(hudSignature(before))
++  })
++
++  it('重开时即使分数与难度都一样，食物换位置也必须换签名', () => {
++    // 固定 rng 让两局的蛇一致：食物位置由 rng 决定，这里强制换个位置来模拟「重开换食」
++    const world = started()
++    const first = readHud(world, 0)
++
++    beginRun(world, 'standard', undefined, noGold)
++    world.food = { x: 0, y: 0 }
++    const afterRestart = readHud(world, 0)
++
++    // 分数、难度、蛇长都一样，只有食物位置变了
++    expect(afterRestart.score).toBe(first.score)
++    expect(afterRestart.difficulty).toBe(first.difficulty)
++    expect(afterRestart.length).toBe(first.length)
++    expect(afterRestart.foodKey).not.toBe(first.foodKey)
++    expect(hudSignature(afterRestart)).not.toBe(hudSignature(first))
++  })
++
++  it('金苹果出现与超时消失都会换签名', () => {
++    const world = started()
++    world.food = { x: 0, y: world.grid.height - 1 }
++    const noGoldYet = hudSignature(readHud(world, 0))
++
++    world.gold = { x: 0, y: 0 }
++    world.goldLeftMs = 900
++    const withGold = readHud(world, 0)
++    expect(withGold.goldKey).toBe('0,0')
++    expect(hudSignature(withGold)).not.toBe(noGoldYet)
++
++    // 到点消失（900ms < 单帧上限，一帧即过期）
++    tick(world, 900, noGold)
++    const gone = readHud(world, 0)
++    expect(world.gold).toBeUndefined()
++    expect(gone.goldKey).toBe('-')
++    expect(hudSignature(gone)).not.toBe(hudSignature(withGold))
++  })
++
++  it('金苹果存活时间超过单帧上限时，需要多帧才会过期（截断仍然生效）', () => {
++    const world = started()
++    world.food = { x: 0, y: world.grid.height - 1 }
++    world.gold = { x: 0, y: 0 }
++    // 存活时间大于单帧上限：第一次 tick 只扣掉截断后的 MAX_FRAME_MS
++    world.goldLeftMs = MAX_FRAME_MS + 500
++
++    tick(world, MAX_FRAME_MS * 3, noGold)
++    expect(world.gold).toBeDefined()
++    expect(world.goldLeftMs).toBe(500)
++
++    tick(world, 600, noGold)
++    expect(world.gold).toBeUndefined()
++  })
++
++  it('状态没变时签名稳定，避免无意义重渲染', () => {
++    const world = started()
++    const first = hudSignature(readHud(world, 0))
++    expect(hudSignature(readHud(world, 0))).toBe(first)
++  })
++})
++
++describe('类型约束', () => {
++  it('tick 返回步数、turn 返回布尔，世界对象类型稳定', () => {
++    expectTypeOf(tick).returns.toBeNumber()
++    expectTypeOf(turn).returns.toBeBoolean()
++    expectTypeOf(createWorld).returns.toEqualTypeOf<World>()
++    expectTypeOf<Dir>().toEqualTypeOf<'up' | 'down' | 'left' | 'right'>()
++  })
++})
+diff --git a/packages/dsh-games/tsconfig.client.json b/packages/dsh-games/tsconfig.client.json
+new file mode 100644
+index 0000000..3116d29
+--- /dev/null
++++ b/packages/dsh-games/tsconfig.client.json
+@@ -0,0 +1,8 @@
++{
++  "extends": "../../tsconfig.base.json",
++  "compilerOptions": {
++    "jsx": "react-jsx",
++    "types": ["node", "react"]
++  },
++  "include": ["src/client/**/*.ts", "src/client/**/*.tsx"]
++}

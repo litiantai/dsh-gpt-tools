@@ -1,0 +1,8 @@
+{
+  "blocking_roundtrip": "pass",
+  "project_independent_scope": "pass",
+  "request_id_cache": "pass",
+  "scope_escape_rejected": "pass",
+  "parallel_work_blocks_resume": "pass",
+  "real_model_calls": 0
+}
