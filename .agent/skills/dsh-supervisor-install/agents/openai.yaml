@@ -1,0 +1,4 @@
+interface:
+  display_name: "安装监工工作台"
+  short_description: "安装并配置 DeepSeek 与 GPT 监工看板、桥接服务和会话连接插件"
+  default_prompt: "使用 $dsh-supervisor-install 安装监工工作台，检查当前环境并完成服务与 Harness 插件连接。"

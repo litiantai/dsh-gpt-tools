@@ -1,0 +1,48 @@
+---
+name: dsh-supervisor-use
+description: 使用已安装的 DeepSeek ↔ GPT 监工工作台，查看真实会话和审查、启停监工、切换人工审批、提交审查结论，以及按用户要求向指定会话即时插话或停止当前轮次。用于日常管理与故障定位，不用于首次安装，也不自动托管所有会话。
+---
+
+# 使用监工工作台
+
+通过本机看板或其管理 API 完成用户要求的操作。优先使用用户明确指定的界面；没有界面要求时使用随 skill 打包的 `scripts/control.py`，避免临时拼装 Cookie 和 CSRF 逻辑。
+
+## 先读取当前状态
+
+`<skill-dir>` 是当前加载 skill 的绝对目录，不是项目路径。
+
+```sh
+python3 -B "<skill-dir>/scripts/control.py" read /overview
+python3 -B "<skill-dir>/scripts/control.py" read /sessions
+```
+
+默认管理地址 `http://127.0.0.1:13084`；自定义地址用全局选项 `--origin`。管理服务不可用时，先定位项目与原状态目录再启动，不要创建一套新目录来掩盖故障。需要安装或切换旧服务时使用项目 README；不要在日常操作中顺带升级整套环境。
+
+- `service.running=true` 且 `service.compatible=true` 才代表新桥可管理。
+- 向会话发指令需要 `connector.online` 与 `connector.home_matches` 都为 true。
+- 通过标题、工作区和 ID 确认目标；多个候选无法区分时询问用户，不能靠最近活动猜测。子代理会话只读。
+- “查看”“检查状态”只做读取。只有用户要求对应操作时才启停、修改配置或提交审批；只有明确要求向目标会话发送内容时才发送消息，检查状态不授予发消息的权限。
+
+## 执行与核对
+
+读取 [操作接口与语义](references/operations.md) 中与本次任务相关的部分。写操作使用 JSON 文件传参，并为一次操作生成一个 UUID；同一次操作网络重试沿用 UUID 和完全相同的参数。
+
+```sh
+python3 -B "<skill-dir>/scripts/control.py" act /service/start --operation-id "<UUID>"
+python3 -B "<skill-dir>/scripts/control.py" act "/sessions/<session-id>/messages" \
+  --operation-id "<UUID>" --body-file "/绝对路径/instruction.json"
+```
+
+脚本不自动重试写请求。超时或“结果待核实”后，先读取目标会话指令记录或审查记录。不要更换 UUID 盲目重复发送；明确失败且原因处理完毕后才能作为新操作重试。
+
+人工接管与审批前重新读取审查详情，提交当前 `version`。发生 409 时刷新、核对状态；已结束的审查不可改写。页面发起或重试的审查属于观察模式，不会暂停、批准或恢复 DeepSeek。
+
+发送成功不等于模型已执行：报告实际状态“提交中 / 正在送达 / Harness 已接收 / 会话已消费 / 失败 / 送达待核实”。停止会话指停止当前轮次，Harness 会保留已有排队消息，之后仍可能继续运行。
+
+完成后简要报告操作对象、结果与证据；若是查状态，列出待人工处理项即可。仅在用户要求持续监控时创建后续检查任务。
+
+## 需要 DeepSeek 阻塞交接时
+
+本 skill 是管理端操作手册。用户要求 DeepSeek 接受 GPT 分阶段监督时，应让对应 DeepSeek 任务加载项目提供的 `dsh-gpt-supervisor` skill，或使用项目桥接 CLI：`plan → checkpoint（必要时）→ acceptance`。
+
+桥接命令必须在该会话的项目根目录，作为唯一前台调用，使用 `timeoutMs=600000`、`run_in_background=false`；等待期间不得并行开发。`DSH_SESSION_ID` 使用该任务真实上下文，不能冒用。总等待上限 540 秒，`blocked` 或暂停证据失败都不能当作批准。新的复审使用新 request ID；相同 ID 返回已有缓存。

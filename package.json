@@ -1,0 +1,23 @@
+{
+  "name": "dsh-gpt-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "dashboard",
+    "connector"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w dashboard",
+    "start": "python3 -B dashboard_server.py",
+    "build": "npm run build -w dashboard && npm run build -w connector",
+    "typecheck": "npm run typecheck -w dashboard && npm run typecheck -w connector",
+    "test": "python3 -m unittest discover -s tests -v && npm run test -w connector",
+    "sync-skills": "python3 scripts/sync-skills.py",
+    "test:e2e": "npm run build && playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "prettier": "^3.9.9"
+  }
+}

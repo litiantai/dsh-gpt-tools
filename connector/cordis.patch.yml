@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-supervisor-connector
+      name: '@dsh-supervisor/connector'

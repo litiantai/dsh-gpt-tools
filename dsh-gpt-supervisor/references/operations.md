@@ -37,3 +37,15 @@ python3 -B scripts/bridge.py stop
 事件与结果位于状态目录中的 `events.jsonl`、`reviews/<request-id>/request.json`、`result.json`、`before.json`、`after.json`；模型执行痕迹位于 trace.jsonl。请求中只发送本任务的必要资料。
 
 仅监听 127.0.0.1；请求使用状态目录中的本机令牌认证。服务无轮询模型调用，审查采用 Codex workspace-write 沙箱，审查提示词要求保留实现文件、只检查和返回指令。实现文件变化被文件证据记录，skill 的暂停保证以独占前台交接且无后台开发为前提。
+
+## 管理看板（新版）
+
+本仓库的 React 看板默认在 `127.0.0.1:13084`，运行方法见根目录 README。
+新版桥接依赖同目录 `review_core.py`；安装 skill 时复制完整目录。
+看板和桥接通过相同状态目录的 SQLite 共享审批模式、审查状态和操作记录。
+已有旧服务不会自动升级或被看板停止，应先通过原 CLI 停止，再启动新版。
+
+新版总交接期限为 540 秒，包含排队、审查和人工审批；原“忙时等待 30 秒”的规则由此取代。
+相同 request_id 始终复用原结果，`blocked` 结果也不会重跑。需再次阻塞审查时使用新的 request_id。
+页面手动审查及重试属于观察模式，不会批准或恢复 DeepSeek。人工审批只用于仍在等待的阻塞交接。
+管理事件保存在 dashboard.sqlite3；旧 events.jsonl 在看板中仍可查看。
