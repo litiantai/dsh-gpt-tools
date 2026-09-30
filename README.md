@@ -55,6 +55,19 @@ python3 -B dsh-gpt-supervisor/scripts/bridge.py stop --state-dir /原状态目�
 
 插件使用 Harness Host 的 `apiProxy.sessions.prompt`（`steer`）和 `cancel`，不依赖浏览器 Cookie。接口按本机已安装的 Harness `0.1.1-rc.2` 契约实现。
 
+使用 `sessionController` 的新版 Harness（本机源码版本 `0.1.7-rc.1`）需要在 profile 的 `cordis.patch.yml` 中停用旧入口并插入新版入口：
+
+```yaml
+- id: dsh-supervisor-connector
+  name: '@dsh-supervisor/connector'
+  disabled: true
+- insert:
+    - id: dsh-supervisor-connector-modern
+      name: '@dsh-supervisor/connector/session-controller'
+```
+
+该入口把操作 ID 传入 `prompt.requestId`，通过只读 `inspect` 核对消息是否被消费，并沿用原有连接心跳和送达记录。不要在缺少 `apiProxy` 的新版宿主中使用默认入口，否则插件会等待不存在的依赖，无法连接。宿主调用抛出异常时保守标为“送达待核实”，不自动重发。
+
 1. 执行 `npm run build`。
 2. 在**目标 Harness 实例**使用的 CLI、DSH_HOME 和 profile 下安装本仓库的 `connector` 包。确保该 CLI 的 PATH 中有 pnpm。例如将下列 `你的profile` 替换为实际 profile：
 

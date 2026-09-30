@@ -5,7 +5,8 @@
   "private": true,
   "main": "dist/index.js",
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./dist/index.js",
+    "./session-controller": "./dist/session-controller.js"
   },
   "files": [
     "dist",
