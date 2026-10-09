@@ -218,6 +218,9 @@ class GenericTests(unittest.TestCase):
         self.assertNotIn(str(Path(workspace).resolve()),writable)
         self.assertIn(str(Path(workspace).resolve()),readonly)
         self.assertIn(str(Path(git_dir).resolve()),readonly)
+        # 裸仓库 config 必须可读（供 --git-dir 差异回退），且绝不进入可写集合。
+        self.assertIn(str((bare/'config').resolve()),read_allowed)
+        self.assertNotIn(str((bare/'config').resolve()),writable)
         # The controller writes the real base..commit evidence into the readable
         # execution directory instead of making the verifier read git metadata.
         root=Path(result['evidence'])
@@ -285,15 +288,22 @@ class GenericTests(unittest.TestCase):
         adapter.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
             'payload=json.load(sys.stdin)\n'
             'material=payload["verification"]\n'
+            'requirement=payload["requirement"]\n'
             'assert material["diff_file"] and material["facts_file"]\n'
             'assert "+change" in Path(material["diff_file"]).read_text()\n'
+            'assert material["baseline_acceptance"] is True\n'
+            'assert material["acceptance_checks"]==["generic-projects"]\n'
+            'assert requirement["acceptance"] and "deadbeef" in requirement["acceptance"][0]\n'
+            'assert requirement["resolution_probes"]==[{"path":"check:generic-projects",'
+            '"pointer":"/status","operator":"equals","expected":"pass"}]\n'
             'print(json.dumps({"status":"pass","checks":['
             '{"name":"install-0","status":"pass","required":True},'
             '{"name":"独立业务验证","status":"pass","required":True,"evidence":{"provider":"codex"}}]}))\n')
         adapter.chmod(0o700)
-        product=self.p|{'adapter':[str(adapter)]}
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
+            'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
         folder=self.root/'verification-evidence';folder.mkdir()
-        result=verify({'product':product,'record':{'title':'fixture'},'requirements':[]},
+        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':'deadbeef'},'requirements':[]},
                       self.repo,head,base,folder)
         self.assertEqual(result['status'],'pass',result)
         facts=json.loads((folder/'verification-facts.json').read_text())
@@ -305,7 +315,71 @@ class GenericTests(unittest.TestCase):
         self.assertEqual(check['evidence']['changed_files'],['M\tapp.py'])
         written=json.loads((folder/'verification.json').read_text())
         self.assertEqual(written['verification']['merge_base'],base)
+        self.assertTrue(written['verification']['baseline_acceptance'])
+        self.assertEqual(written['verification']['acceptance_checks'],['generic-projects'])
         self.assertNotIn('diff',written['verification'])
+
+    def test_delivery_verify_rejects_empty_acceptance_without_traceable_source(self):
+        """无业务需求、无导入摘要、无已登记检查时必须 fail-fast，不伪造通过。"""
+        from autopilot.delivery_review import verify
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        base=git(self.repo,'rev-parse','HEAD')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        head=git(self.repo,'rev-parse','HEAD')
+        marker=self.root/'verify-ran-without-acceptance'
+        adapter=self.root/'fake-verify-adapter-empty'
+        adapter.write_text('#!'+sys.executable+'\nfrom pathlib import Path\n'
+            'Path('+repr(str(marker))+').write_text("ran")\nprint("{}")\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},'acceptance_checks':{}}}
+        folder=self.root/'verification-empty';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture'},'requirements':[]},
+                      self.repo,head,base,folder)
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertFalse(marker.exists())
+        written=json.loads((folder/'verification.json').read_text())
+        self.assertEqual(written['status'],'blocked')
+
+    def test_delivery_verify_fails_fast_when_diff_evidence_missing(self):
+        """差异证据无法生成时不得在无证据情况下启动验证模型。"""
+        from autopilot.delivery_review import verify
+        marker=self.root/'verify-ran-without-diff'
+        adapter=self.root/'fake-verify-adapter-nodiff'
+        adapter.write_text('#!'+sys.executable+'\nfrom pathlib import Path\n'
+            'Path('+repr(str(marker))+').write_text("ran")\nprint("{}")\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
+            'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
+        folder=self.root/'verification-nodiff';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':'deadbeef'},'requirements':[]},
+                      self.repo/'missing','a'*40,'b'*40,folder)
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertIn('独立验证缺少自包含差异证据',result['reason'])
+        self.assertFalse(marker.exists())
+        written=json.loads((folder/'verification.json').read_text())
+        self.assertEqual(written['verification']['status'],'blocked')
+
+    def test_validate_prompt_includes_truncated_diff_summary(self):
+        """超大差异被截断时，提示词仍给出 merge_base/changed_files/diff_sha256 与落盘指引。"""
+        from autopilot import codex_executor
+        from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
+        fake=self.root/'codex-large-diff'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'assert "diff_sha256=" in prompt\n'
+            'assert "merge_base=" in prompt\n'
+            'assert "改动文件 1 个" in prompt\n'
+            'assert "verification-diff.patch" in prompt\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"large diff summary"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        with patch.object(codex_executor,'INLINE_DIFF_LIMIT',8), patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv):
+            result=model('validate',{'product':product,'record':{'workspace':str(workspace),'base_commit':base,'commit':head},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+
 
     def test_validate_generates_diff_when_adapter_spec_is_missing(self):
         """缺失 adapter_spec 的产品也必须拿到 base..commit 差异，不再静默跳过。"""

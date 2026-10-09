@@ -391,13 +391,20 @@ class StagedDeliveryTests(unittest.TestCase):
         """release 统一验证不再 mock 验证层：差异事实随请求下发并回填到检查证据。"""
         f = self.f
         b = self.review_and_merge(self.bootstrap())
+        f.product = f.product | {'project_config': {'version': 1, 'commands': {},
+            'acceptance_checks': {'generic-projects': [sys.executable, '-c', 'pass']}}}
         adapter = f.root / 'verify-adapter.py'
         adapter.write_text(
             'import json,sys\nfrom pathlib import Path\n'
             'payload=json.load(sys.stdin)\n'
             'material=payload["verification"]\n'
+            'requirement=payload["requirement"]\n'
             'assert material["diff_file"] and material["facts_file"]\n'
             'assert material["changed_files"]\n'
+            'assert material["diff_sha256"]\n'
+            'assert material["baseline_acceptance"] is True\n'
+            'assert requirement["acceptance"]\n'
+            'assert requirement["resolution_probes"][0]["path"]=="check:generic-projects"\n'
             'assert "+value" in Path(material["diff_file"]).read_text()\n'
             'print(json.dumps({"status":"pass","checks":['
             '{"name":"独立业务验证","status":"pass","required":True,"evidence":{"provider":"codex"}}]}))\n')

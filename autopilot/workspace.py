@@ -36,11 +36,16 @@ def metadata(workspace):
 
 
 def metadata_paths(workspace):
-    """只读暴露 HEAD/index/commondir/objects/refs；绝不加入可写集合。"""
+    """只读暴露 HEAD/index/commondir/objects/refs 及裸仓库 config/info/logs；绝不加入可写集合。
+
+    `git --git-dir=<bare> --work-tree=<workspace>` 必须能读取裸仓库的 config，
+    否则 checkout 元数据不可读时的差异回退会被沙箱拒绝。config 只进入只读集合，
+    绝不进入可写集合。
+    """
     git_dir, common_dir = metadata(workspace)
     paths=[git_dir, common_dir]
-    paths += [git_dir/name for name in ('HEAD','commondir','index')]
-    paths += [common_dir/name for name in ('objects','refs','packed-refs')]
+    paths += [git_dir/name for name in ('HEAD','commondir','index','config','config.worktree','info','logs')]
+    paths += [common_dir/name for name in ('objects','refs','packed-refs','config','info','logs')]
     return paths
 
 
