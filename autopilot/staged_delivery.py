@@ -414,6 +414,8 @@ def tick_product(scheduler, product, now):
         if b.get('reason') != '23:30 后不开启新代码评审，等待次日评审窗口':
             scheduler.change('deliveries', b, {'reason': '23:30 后不开启新代码评审，等待次日评审窗口'})
         return
+    if scheduler.wait_for_off_peak('deliveries',b,product,action,now=now):
+        return
     if action.startswith(('review', 'repair')):
         selected = copy.deepcopy(choice['fixer' if action.startswith('repair') else 'reviewer'])
         selection(selected)

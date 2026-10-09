@@ -65,6 +65,8 @@ test('project tabs preserve navigation and settings save human units without los
   await page.getByLabel('发布前连续空闲',{exact:true}).fill('7');
   await page.getByLabel('每日需求处理上限',{exact:true}).fill('5');
   await page.getByLabel('每日 Token 上限',{exact:true}).fill('10000000');
+  await expect(page.getByRole('switch',{name:'DeepSeek 仅空闲时段运行',exact:true})).toBeChecked();
+  await page.getByRole('switch',{name:'DeepSeek 仅空闲时段运行',exact:true}).click();
   await page.getByRole('tab',{name:'模型分工',exact:true}).click();
   await page.getByRole('tab',{name:'运行策略',exact:true}).click();
   await expect(page.getByLabel('发布前连续空闲',{exact:true})).toHaveValue('7');
@@ -77,6 +79,7 @@ test('project tabs preserve navigation and settings save human units without los
   expect(saved.policy.idle_seconds).toBe(420);
   expect(saved.policy.runs_per_day).toBe(5);
   expect(saved.policy.tokens_per_day).toBe(10000000);
+  expect(saved.policy.deepseek_off_peak_only).toBe(false);
   expect(saved.policy.inspection_seconds).toBe(21600);
   expect(saved.agents).toEqual(product.agents);
   expect(saved.status).toBe('observing');
@@ -91,6 +94,7 @@ test('project tabs preserve navigation and settings save human units without los
   await page.reload();
   await expect(page.getByLabel('发布前连续空闲',{exact:true})).toHaveValue('7');
   await page.getByLabel('发布前连续空闲',{exact:true}).fill('8');
+  await expect(page.getByRole('switch',{name:'DeepSeek 仅空闲时段运行',exact:true})).not.toBeChecked();
   // A second editor changing the actual configuration must still be protected.
   await page.evaluate(async id=>{
     const {csrf}=await (await fetch('/api/bootstrap')).json();

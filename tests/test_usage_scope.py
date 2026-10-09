@@ -27,7 +27,7 @@ class UsageScopeTests(unittest.TestCase):
         self.product = self.ledger.create('products', {
             'source': str(self.root), 'executor': ['fake'], 'adapter': ['fake'],
             'last_probe': time.time(), 'last_inspect': time.time(),
-            'policy': {'tokens_per_day': 1, 'runs_per_day': 5}}, 'active')
+            'policy': {'tokens_per_day': 1, 'runs_per_day': 5, 'deepseek_off_peak_only':False}}, 'active')
 
     def tearDown(self):
         self.tmp.cleanup()

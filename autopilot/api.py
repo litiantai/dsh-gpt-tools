@@ -65,7 +65,9 @@ class Control:
             product=self.ledger.get('products',parts[1])
             policy=DEFAULTS | product.get('policy',{})
             from .quota import snapshot
+            from .off_peak import window
             return {'evaluation_id':product.get('evaluation_id'),
+                    'deepseek_schedule': window() | {'enabled': policy['deepseek_off_peak_only']},
                     'next_inspection':product.get('last_inspect',0)+policy['inspection_seconds'],
                     'tasks_used':self.ledger.budget_used(product['id'],'development'),
                     'code_delivery_tokens_used':self.ledger.budget_used(product['id'],'code_delivery_tokens'),
@@ -298,7 +300,7 @@ class Control:
                 raise Conflict('记录已更新，请刷新后重试')
             runs=db.execute('SELECT status FROM auto_runs WHERE product_id=?',(ident,))
             changed={key for key,value in changes.items() if value!=old.get(key)}
-            live_limits={'runs_per_day','discovery_per_day','tokens_per_day'}
+            live_limits={'runs_per_day','discovery_per_day','tokens_per_day','deepseek_off_peak_only'}
             policy_changes={key for key in set(changes.get('policy',{})) | set(old.get('policy',{}))
                             if changes.get('policy',{}).get(key)!=old.get('policy',{}).get(key)} if isinstance(changes.get('policy',{}),dict) else {'invalid'}
             if 'policy' not in changes:
@@ -383,6 +385,10 @@ class Control:
             if type(limit) is not int or not 0 <= limit <= 20:
                 raise ValueError('自动修复轮数必须为 0 到 20，0 表示不限')
         for key,value in config.get('policy',{}).items():
+            if key == 'deepseek_off_peak_only':
+                if type(value) is not bool:
+                    raise ValueError('DeepSeek 仅空闲时段运行开关必须为布尔值')
+                continue
             minimum=0 if key in ('runs_per_day','discovery_per_day','tokens_per_day') else 1
             if key not in DEFAULTS or isinstance(value,bool) or not isinstance(value,int) or value<minimum:
                 raise ValueError('无效策略值')
