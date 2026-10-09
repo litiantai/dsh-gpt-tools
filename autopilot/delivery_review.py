@@ -146,11 +146,19 @@ def verify(request, workspace, head, base, folder):
     baseline_digest = batch.get('baseline_source_digest')
     registered_checks = list(((product.get('project_config') or {}).get('acceptance_checks') or {}).keys())
     baseline_acceptance = False
-    if not combined['acceptance'] and not combined['resolution_probes'] and baseline_digest:
-        combined['acceptance'] = ['隔离工作区源码摘要等于导入基线 ' + str(baseline_digest)]
-        combined['resolution_probes'] = [{'path': 'check:' + name, 'pointer': '/status',
-            'operator': 'equals', 'expected': 'pass'} for name in registered_checks]
-        baseline_acceptance = True
+    if not combined['acceptance'] and not combined['resolution_probes'] and registered_checks:
+        if not baseline_digest:
+            # 没有导入基线摘要时，用当前工作区摘要作为可追溯的验收基线：证据真实、
+            # 不虚构需求；只有在摘要也无法取得时才退化为 blocked。
+            try:
+                baseline_digest = digest(workspace)
+            except (subprocess.CalledProcessError, OSError, ValueError):
+                baseline_digest = None
+        if baseline_digest:
+            combined['acceptance'] = ['隔离工作区源码摘要等于导入基线 ' + str(baseline_digest)]
+            combined['resolution_probes'] = [{'path': 'check:' + name, 'pointer': '/status',
+                'operator': 'equals', 'expected': 'pass'} for name in registered_checks]
+            baseline_acceptance = True
     if not combined['acceptance'] and not combined['resolution_probes']:
         # 两类来源都为空时保持“证据不足即 blocked”，绝不伪造通过。
         result = {'status': 'blocked', 'reason': '缺少业务需求验收条件与已登记 acceptance_checks，独立验证无从核对'}

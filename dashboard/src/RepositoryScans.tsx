@@ -13,12 +13,12 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
   const scans=useData<Scan[]>('/scans');const [source,setSource]=useState('');const [selected,setSelected]=useState<string>();
   const [busy,setBusy]=useState(false);const {message}=App.useApp();
   const current=scans.data?.find(s=>s.id===selected);
-  // 只读能力预检：项目必须声明通用命令适配器且具备 verify 能力，否则扫描/验收
-  // 无法在隔离工作区执行；不匹配时只禁用入口并给出中文原因，不削弱任何校验门槛。
-  const capability=useQuery<{adapter_spec?:{kind?:string;capabilities?:string[]}}>({queryKey:['scan-capability',productId],queryFn:()=>api(`/products/${productId}`),enabled:!!productId,retry:false});
+  // 只读能力预检：项目必须声明通用命令适配器且具备 verify 能力，且协议版本必须为 1，
+  // 否则扫描/验收无法在隔离工作区执行；不匹配时只禁用入口并给出中文原因，不削弱任何校验门槛。
+  const capability=useQuery<{adapter_spec?:{version?:number;kind?:string;capabilities?:string[]}}>({queryKey:['scan-capability',productId],queryFn:()=>api(`/products/${productId}`),enabled:!!productId,retry:false});
   const spec=capability.data?.adapter_spec;
-  const mismatch=!!spec && (spec.kind!=='command' || !(spec.capabilities || []).includes('verify'));
-  const mismatchReason='当前项目接入能力不是通用命令适配器（adapter_spec.kind 必须为 command 且包含 verify 能力），无法用隔离工作区执行扫描与验收；请先在项目设置中修正接入能力。';
+  const mismatch=!!spec && (spec.version!==1 || spec.kind!=='command' || !(spec.capabilities || []).includes('verify'));
+  const mismatchReason='当前项目接入能力不是通用命令适配器（adapter_spec.kind 必须为 command 且包含 verify 能力），且协议版本必须为 1，无法用隔离工作区执行扫描与验收；请先在项目设置中修正接入能力。';
   const screenshot=useQuery<{data_url:string}>({queryKey:['scan-screenshot',selected],queryFn:()=>api(`/scans/${selected}/screenshot`),enabled:!!current?.result?.checks?.some(c=>c.screenshot),retry:false});
   async function act(path:string,body:Record<string,unknown>){setBusy(true);try{const result=await api<Scan>(path,body);if(!path.endsWith('/apply'))setSelected(result.id);await scans.refetch();onChanged();}catch(e){message.error(errorText(e));}finally{setBusy(false);}}
   return <Drawer title="仓库接入与启动扫描" open width={960} onClose={onClose}>

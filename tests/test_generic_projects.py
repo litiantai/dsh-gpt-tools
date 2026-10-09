@@ -133,6 +133,54 @@ class GenericTests(unittest.TestCase):
         self.assertEqual(self.ledger.get('scans',scan['id'])['reason'],'missing dependencies')
         self.assertNotIn('project_config',self.ledger.get('products',self.p['id']))
 
+    def test_scan_compatible_enforces_protocol_version_kind_and_verify(self):
+        from autopilot.project import scan_compatible, SUPPORTED_ADAPTER_VERSION
+        self.assertEqual(SUPPORTED_ADAPTER_VERSION, 1)
+        compatible={'adapter_spec':{'version':1,'kind':'command','capabilities':['probe','verify']}}
+        self.assertTrue(scan_compatible(compatible))
+        for label,spec in (
+            ('future-version',{'version':2,'kind':'command','capabilities':['verify']}),
+            ('legacy-kind',{'version':1,'kind':'legacy','capabilities':['verify']}),
+            ('missing-verify',{'version':1,'kind':'command','capabilities':['probe','inspect']}),
+            ('missing-capabilities',{'version':1,'kind':'command'}),
+            ('non-list-capabilities',{'version':1,'kind':'command','capabilities':'verify'}),
+            ('missing-version',{'kind':'command','capabilities':['verify']}),
+        ):
+            self.assertFalse(scan_compatible({'adapter_spec':spec}),label)
+        self.assertFalse(scan_compatible({}))
+        self.assertFalse(scan_compatible({'adapter_spec':None}))
+
+    def test_scan_creation_rejects_incompatible_linked_project(self):
+        """服务端扫描入口必须与前端同规则拦截版本/类型/能力错配的项目。"""
+        for label,spec in (
+            ('version-2',{'version':2,'kind':'command','capabilities':['verify']}),
+            ('legacy',{'version':1,'kind':'legacy','capabilities':[]}),
+            ('no-verify',{'version':1,'kind':'command','capabilities':['probe']}),
+        ):
+            product=self.ledger.create('products',{'name':label,'source':str(self.repo),'goal':'fixture','adapter_spec':spec},'paused')
+            with self.assertRaises(ValueError) as rejected:
+                self.control.mutate('/scans',{'source':str(self.repo),'product_id':product['id']})
+            self.assertIn('协议版本必须为 1',str(rejected.exception))
+        # 不带 product_id 的首次接入不校验既有项目能力，保持可用。
+        fresh=self.control.mutate('/scans',{'source':str(self.repo)})
+        self.assertEqual(fresh['status'],'queued')
+        # 未声明 adapter_spec 的旧记录与前端预检一致，不因本次收紧被误拦。
+        bare=self.ledger.create('products',{'name':'bare','source':str(self.repo),'goal':'fixture'},'paused')
+        linked=self.control.mutate('/scans',{'source':str(self.repo),'product_id':bare['id']})
+        self.assertEqual(linked['product_id'],bare['id'])
+
+    def test_apply_rejects_legacy_and_incompatible_projects(self):
+        scan=self.control.mutate('/scans',{'source':str(self.repo)})
+        scan=self.ledger.update('scans',scan['id'],scan['version'],{'result':{'configuration':detect(self.repo),'workspace':str(self.repo),'snapshot_commit':git(self.repo,'rev-parse','HEAD')}},'pass')
+        for label,spec in (
+            ('legacy',{'version':1,'kind':'legacy','capabilities':[]}),
+            ('version-2',{'version':2,'kind':'command','capabilities':['verify']}),
+            ('no-verify',{'version':1,'kind':'command','capabilities':['probe']}),
+        ):
+            product=self.ledger.create('products',{'name':label,'source':str(self.repo),'goal':'fixture','adapter_spec':spec},'paused')
+            with self.assertRaises(Conflict):
+                self.control.mutate('/scans/'+scan['id']+'/apply',{'version':scan['version'],'product_id':product['id'],'product_version':product['version']})
+
     def test_onboard_persists_project_link_and_rejects_cross_project_apply(self):
         scan=self.control.mutate('/scans',{'source':str(self.repo)})
         scan=self.ledger.update('scans',scan['id'],scan['version'],{'result':{'configuration':detect(self.repo),'workspace':str(self.repo),'snapshot_commit':git(self.repo,'rev-parse','HEAD')}},'pass')
@@ -379,6 +427,52 @@ class GenericTests(unittest.TestCase):
         self.assertFalse(marker.exists())
         written=json.loads((folder/'verification.json').read_text())
         self.assertEqual(written['status'],'blocked')
+
+    def test_delivery_verify_derives_workspace_baseline_when_digest_absent(self):
+        """无导入基线摘要但有已登记 acceptance_checks 时，用真实工作区摘要生成基线验收。"""
+        from autopilot.delivery_review import verify
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        base=git(self.repo,'rev-parse','HEAD')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        head=git(self.repo,'rev-parse','HEAD')
+        current=digest(self.repo)
+        adapter=self.root/'fake-verify-derived-baseline'
+        adapter.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'payload=json.load(sys.stdin)\n'
+            'material=payload["verification"]\n'
+            'requirement=payload["requirement"]\n'
+            'assert material["diff_file"] and material["facts_file"]\n'
+            'assert material["baseline_acceptance"] is True\n'
+            'assert material["baseline_source_digest"]=='+repr(current)+'\n'
+            'assert material["baseline_digest_verified"] is True\n'
+            'assert material["acceptance_checks"]==["generic-projects"]\n'
+            'assert requirement["acceptance"] and '+repr(current)+' in requirement["acceptance"][0]\n'
+            'print(json.dumps({"status":"pass","checks":['
+            '{"name":"独立业务验证","status":"pass","required":True}]}))\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
+            'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
+        folder=self.root/'verification-derived';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture'},'requirements':[]},
+                      self.repo,head,base,folder)
+        self.assertEqual(result['status'],'pass',result)
+        facts=json.loads((folder/'verification-facts.json').read_text())
+        self.assertEqual(facts['baseline_source_digest'],current)
+        self.assertEqual(facts['source_digest'],current)
+        self.assertTrue(facts['baseline_digest_verified'])
+        written=json.loads((folder/'verification.json').read_text())
+        self.assertTrue(written['verification']['baseline_acceptance'])
+        self.assertEqual(written['verification']['acceptance_checks'],['generic-projects'])
+
+    def test_validate_without_base_or_commit_is_blocked(self):
+        """缺少 base..commit 且无控制器差异时，独立验证必须明确 blocked，不空转模型。"""
+        from autopilot.codex_executor import execute as model
+        product=self.p|{'repository':str(self.repo),'agents':{'verification':{'provider':'codex','model':'fixture','bin':'codex'}},'adapter_spec':{'kind':'command'}}
+        result=model('validate',{'product':product,'record':{'id':'round','workspace':str(self.repo)},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertIn('base_commit',result['reason'])
 
     def test_delivery_verify_fails_fast_when_diff_evidence_missing(self):
         """差异证据无法生成时不得在无证据情况下启动验证模型。"""

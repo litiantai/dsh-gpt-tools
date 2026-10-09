@@ -4,12 +4,31 @@ import hashlib
 import json
 
 VERSION = 1
+# 通用扫描/应用所支持的唯一适配协议版本；接入能力预检与后端兜底共用同一常量。
+SUPPORTED_ADAPTER_VERSION = VERSION
 CAPABILITIES = {'probe', 'inspect', 'verify', 'idle', 'publish', 'observe', 'rollback',
                 'master_sync', 'final_acceptance', 'recover-runtime', 'investigate'}
 
 
 def generic(product):
     return product.get('adapter_spec', {}).get('kind') == 'command'
+
+
+def scan_compatible(product):
+    """通用扫描/验收的统一能力门槛：协议版本、类型与 verify 能力缺一不可。
+
+    前端预检与后端扫描/应用入口必须使用同一规则，避免只校验 kind/capabilities
+    而让协议版本错配的项目进入隔离工作区。legacy 项目显式返回 False。
+    """
+    spec = product.get('adapter_spec')
+    if not isinstance(spec, dict):
+        return False
+    if spec.get('version') != SUPPORTED_ADAPTER_VERSION:
+        return False
+    if spec.get('kind') != 'command':
+        return False
+    capabilities = spec.get('capabilities')
+    return isinstance(capabilities, list) and 'verify' in capabilities
 
 
 def validate(config):

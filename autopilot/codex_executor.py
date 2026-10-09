@@ -141,6 +141,10 @@ def execute(action,request):
                 verification=verification_material(workspace,record,root)
             except RuntimeError as exc:
                 return {'status':'blocked','reason':str(exc),'evidence':str(root)}
+        else:
+            # 既没有控制器下发的差异，也没有可生成差异的 base..commit：明确 blocked，
+            # 不让验证模型在无差异、无验收条件的情况下空转。
+            return {'status':'blocked','reason':'独立验证缺少 base_commit/commit，无法生成 base..commit 源码差异证据','evidence':str(root)}
     material=redact({'goal':product['goal'],'signals':request.get('signals'),'requirement':request.get('requirement'),
                      'runtime_evidence':request.get('runtime_evidence'),'daily_report':request.get('daily_report'),'checks':request.get('checks'),'plan':record.get('plan'),'summary':record.get('summary'),
                      'base_commit':record.get('base_commit'),'commit':record.get('commit'),

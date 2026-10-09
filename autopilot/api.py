@@ -102,7 +102,14 @@ class Control:
                     raise ValueError('仓库 URL 不允许内嵌凭据或查询参数')
             product_id = body.get('product_id', '')
             if product_id:
-                self.ledger.get('products', product_id)
+                product = self.ledger.get('products', product_id)
+                # 后端兜底必须与前端预检同规则：只对已声明 adapter_spec 且能力不匹配
+                # 的项目拒绝；未声明能力的首次接入保持可用，不会被误拦。
+                if product.get('adapter_spec') is not None:
+                    from .project import scan_compatible
+                    if not scan_compatible(product):
+                        raise ValueError('当前项目接入能力不是通用命令适配器（adapter_spec.kind 必须为 command 且包含 verify 能力），'
+                                         '且协议版本必须为 1，无法用隔离工作区执行扫描与验收')
             return self.ledger.create('scans', {'source': source, 'product_id': product_id, 'title': '仓库接入扫描', 'receipts': []}, 'queued')
         if parts == ['products']:
             config = body.get('config',{})
@@ -180,8 +187,8 @@ class Control:
             if old.get('product_id') and body.get('product_id') and old['product_id'] != body['product_id']:
                 raise Conflict('扫描记录已关联其他项目，不能应用到当前项目')
             product = self.ledger.get('products', old.get('product_id') or body['product_id'])
-            from .project import generic
-            if not generic(product):
+            from .project import scan_compatible
+            if not scan_compatible(product):
                 raise Conflict('旧适配器项目不可应用通用扫描；请登记独立项目')
             source = product.get('repository_source', product['source'])
             same = (Path(old['source']).resolve() == Path(source).resolve()) if Path(old['source']).is_absolute() and Path(source).is_absolute() else old['source'] == source
