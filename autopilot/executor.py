@@ -100,8 +100,9 @@ def execute(action,request):
     if not metadata.is_absolute():
         metadata=workspace/metadata
     argv=restrict(argv,allowed,root/'worker.sb',private_roots=([str(Path.home()/'Desktop'),str(Path.home()/'Library/Application Support'),str(Path.home()/'.dsh')] if generic(product) else [])+[product.get('app_support','/nonexistent'),
-                  str(Path(request['state_root']).parent)],read_allowed=[runtime,workspace,metadata.resolve(),ROOT/'scripts',ROOT/'node_modules'],deny_local=True)
+                  str(Path(request['state_root']).parent)],read_allowed=[runtime,workspace,metadata.resolve(),ROOT/'scripts',ROOT/'node_modules',ROOT/'package.json'],deny_local=True)
     env=os.environ | {'DSH_HOME':str(home),'DSH_AUTOPILOT_WORKER':record['id'],'DSH_AUTOPILOT_PHASE':action,'TMPDIR':str(root),
+                      'DSH_PROJECT_ISOLATED':'1',
                       'DSH_AUTOPILOT_RUNTIME':str(runtime),'DSH_AUTOPILOT_RESULT':str(root/'structured-result.json')}
     with (root/'trace.jsonl').open('w') as out, (root/'stderr.log').open('w') as err:
         proc=subprocess.run(argv,input=prompt,text=True,stdout=out,stderr=err,cwd=workspace,env=env)

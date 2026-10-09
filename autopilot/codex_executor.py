@@ -108,12 +108,21 @@ def execute(action,request):
             argv = [a.replace('Read,Glob,Grep,Bash','Read,Glob,Grep,Bash,Write,Edit') for a in argv]
     if generic(product):
         from .sandbox import restrict
+        # Seatbelt cannot be nested on macOS. The outer policy below is the
+        # mandatory boundary for both model tools and subprocesses.
+        if provider == 'codex':
+            argv[argv.index('--sandbox') + 1] = 'danger-full-access'
         allowed=[root, Path(__import__('tempfile').gettempdir())]
+        if provider == 'codex':
+            allowed.append(Path.home()/'.codex')
+        env = (env or os.environ.copy()) | {'DSH_PROJECT_ISOLATED':'1', 'GIT_OPTIONAL_LOCKS':'0'}
         if action in ('develop','validate'):
             allowed.append(workspace)
         private=[str(Path.home()/'Desktop'), str(Path.home()/'Library/Application Support'), str(Path.home()/'.dsh'), str(Path(request['state_root']).parent)]
         project_root=Path(__file__).resolve().parents[1]
         readable=[workspace,project_root/'scripts',project_root/'dsh-gpt-supervisor/scripts',project_root/'node_modules',product.get('worker_runtime',root/'none')]
+        if action == 'validate' and record.get('id'):
+            readable.append(Path(request['state_root'])/'candidates'/product['id']/record['id']/'checks')
         argv=restrict(argv, allowed, root/'model.sb', private_roots=private, read_allowed=readable, deny_local=True)
     with (root/'trace.jsonl').open('w') as out,(root/'stderr.log').open('w') as err:
         proc=subprocess.run(argv,input=prompt,text=True,cwd=workspace,stdout=out,stderr=err,env=env)

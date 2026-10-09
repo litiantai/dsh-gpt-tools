@@ -84,6 +84,18 @@ class GenericTests(unittest.TestCase):
         result=model('plan',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
         self.assertEqual(result['provider'],'codex');self.assertEqual(result['plan'],'implement')
 
+    def test_generic_codex_uses_outer_sandbox_for_tool_execution(self):
+        from autopilot.codex_executor import execute as model
+        fake=self.root/'codex-model'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\nassert sys.argv[sys.argv.index("--sandbox")+1]=="danger-full-access"\nPath(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","plan":"outer policy"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(self.repo),'agents':{'implementation':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        with patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv) as sandbox:
+            result=model('plan',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass')
+        self.assertTrue(sandbox.call_args.kwargs['deny_local'])
+        self.assertNotIn(str(self.repo),[str(p) for p in sandbox.call_args.args[1]])
+
     def test_python_project_scan_is_recorded_and_source_remains_unchanged(self):
         if sys.platform!='darwin' or os.environ.get('DSH_PROJECT_ISOLATED'):
             self.skipTest('隔离启动由外层验证运行')
