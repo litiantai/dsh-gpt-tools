@@ -33,6 +33,10 @@ def investigate(scheduler,only_active=False):
             if result is None:
                 return True
             item=scheduler.consume('requirements',item,result)
+        elif item.get('off_peak_wait'):
+            if product['status']=='active':
+                scheduler.start_call('requirements',item,product,'investigate',product['executor'],{'requirement':item},timeout=600)
+            return True
         receipt=(item.get('receipts') or [None])[-1]
         if not receipt:
             scheduler.change('requirements',item,{'reason':'调查调用未建立，稍后重试','next_investigation':time.time()+300},'awaiting_external')
@@ -83,6 +87,8 @@ def investigate(scheduler,only_active=False):
         if product['status']!='active' or product.get('call') and product['call'].get('action')=='discover':
             continue
         # 每个调查轮次消耗一个当日需求名额；同一需求随后转开发不重复扣名额。
+        if scheduler.wait_for_off_peak('requirements',item,product,'investigate'):
+            continue
         if item.get('investigation_day')!=day:
             with scheduler.store.transaction() as db:
                 if not ledger.budget(product['id'],'development',(DEFAULTS | product.get('policy',{}))['runs_per_day'],db):

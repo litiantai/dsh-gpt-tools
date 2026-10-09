@@ -57,7 +57,20 @@ class Scheduler:
                            auto_retry_wait_reason=None)
         return self.ledger.update(kind,item['id'],item['version'],changes or {},status)
 
+    def wait_for_off_peak(self,kind,item,product,action,selected=None,now=None):
+        """在分配进程、审查轮次和额度前保存等待，重复调度不增长版本。"""
+        from .off_peak import waiting
+        wait = waiting(product,action,selected,now)
+        if wait:
+            if item.get('off_peak_wait') != wait or item.get('reason') != wait['reason']:
+                self.change(kind,item,{'off_peak_wait':wait,'reason':wait['reason']})
+            return True
+        return False
+
     def start_call(self,kind,item,product,action,command,extra=None,timeout=600):
+        # Delivery checks before allocating its review round; other calls enter here.
+        if kind != 'deliveries' and self.wait_for_off_peak(kind,item,product,action):
+            return self.ledger.get(kind,item['id'])
         if action in ('plan','develop','verify') and not self.tokens_available(product):
             if kind=='runs' and item.get('reason')!='每日 Token 额度已用尽，等待次日或调整额度':
                 return self.change(kind,item,{'reason':'每日 Token 额度已用尽，等待次日或调整额度'})
@@ -74,6 +87,7 @@ class Scheduler:
         atomic(path,request)
         item=self.change(kind,item,{'call':{'id':call_id,'action':action,'started':time.time(),'path':str(path),
             'signal_ids':[s['id'] for s in (extra or {}).get('signals',[])]},
+            **({'off_peak_wait':None,'reason':''} if item.get('off_peak_wait') else {}),
             **({'reason':''} if item.get('reason')=='每日 Token 额度已用尽，等待次日或调整额度' else {})})
         self.children.append(subprocess.Popen([sys.executable,str(Path(__file__).with_name('call.py')),str(path)],
                          stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True))
@@ -235,7 +249,7 @@ class Scheduler:
             signals=[s for s in self.ledger.list('signals') if s['product_id']==product['id'] and s['status']=='pending']
             executing=any(r['product_id']==product['id'] and r['status'] not in TERMINAL | {'queued','blocked'} for r in self.ledger.list('runs'))
             retry_due=time.time()-product.get('last_discover',0)>=policy['inspection_seconds']
-            if signals and retry_due and not executing and self.ledger.budget(product['id'],'discovery',policy['discovery_per_day']):
+            if signals and retry_due and not executing and not self.wait_for_off_peak('products',product,product,'discover') and self.ledger.budget(product['id'],'discovery',policy['discovery_per_day']):
                 self.start_call('products',product,product,'discover',product['executor'],{'signals':signals[:20]},timeout=300)
 
     def master_step(self,product):
@@ -339,6 +353,8 @@ class Scheduler:
                 return self.block(run,'控制器处理 '+action+' 回执失败：'+str(exc))
         requirement=self.ledger.get('requirements',run['requirement_id'])
         if run['status']=='queued':
+            if self.wait_for_off_peak('runs',run,product,'plan'):
+                return
             from .delivery import configured, ready
             if not ready(product):
                 if run.get('reason') != '等待首次源码基线 PR 合入':
@@ -481,6 +497,10 @@ class Scheduler:
             try:
                 review=scoped.get(run['review_id'])
             except KeyError:
+                from reviewers import snapshot as reviewer_snapshot
+                selected = reviewer_snapshot(scoped.settings(),run['review_packet']['phase'])
+                if self.wait_for_off_peak('runs',run,product,run['status'],selected=selected):
+                    return
                 engine.submit(run['review_packet'],'handoff')
                 return
             if review['status'] in ACTIVE:
@@ -512,6 +532,10 @@ class Scheduler:
             if result.get('decision')=='revise':
                 return self.revise(run,product,result.get('instruction','审查要求修改'))
             return self.block(self.change('runs',run,{'review_id':None}),result.get('summary','审查未通过'))
+        from reviewers import snapshot as reviewer_snapshot
+        selected = reviewer_snapshot(scoped.settings(),'plan' if run['status']=='plan_review' else 'acceptance')
+        if self.wait_for_off_peak('runs',run,product,run['status'],selected=selected):
+            return
         if not self.tokens_available(product):
             if run.get('reason')!='每日 Token 额度已用尽，等待次日或调整额度':
                 self.change('runs',run,{'reason':'每日 Token 额度已用尽，等待次日或调整额度'})
@@ -545,7 +569,7 @@ class Scheduler:
                 'phase':'plan' if run['status']=='plan_review' else 'acceptance',
                 'summary':json.dumps(redact({'requirement':requirement,'plan':run.get('plan'),'checks':run.get('checks'),
                        'summary':run.get('summary'),'execution':'独立执行进程已退出；控制器冻结工作区等待审查'}),ensure_ascii=False)[:20000]}
-        self.change('runs',run,{'review_id':rid,'review_packet':packet,'reason':''})
+        self.change('runs',run,{'review_id':rid,'review_packet':packet,'reason':'','off_peak_wait':None})
         from .usage import register
         register(self.ledger,product['id'],self.store.state/'reviews'/rid/'trace.jsonl',record_id=run['id'],action=run['status'])
         engine.submit(packet,'handoff')

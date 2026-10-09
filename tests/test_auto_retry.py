@@ -23,7 +23,7 @@ class AutoRetryTests(unittest.TestCase):
         self.scheduler = Scheduler(Store(Path(self.tmp.name)))
         self.ledger = self.scheduler.ledger
         self.product = self.ledger.create('products', {'source':self.tmp.name, 'executor':['fake'],
-            'policy':{'tokens_per_day':1000, 'runs_per_day':2, 'execution_seconds':3600}}, 'active')
+            'policy':{'tokens_per_day':1000, 'runs_per_day':2, 'execution_seconds':3600, 'deepseek_off_peak_only':False}}, 'active')
 
     def tearDown(self):
         self.tmp.cleanup()

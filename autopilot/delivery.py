@@ -276,6 +276,8 @@ def tick(scheduler, now=None):
             batch = scheduler.change('deliveries', batch, {}, 'syncing')
         action = {'preparing': 'prepare', 'code_review': 'review', 'validating': 'validate', 'repairing': 'repair', 'syncing': 'sync', 'merging': 'merge'}[batch['status']]
         choice = config(product)
+        if scheduler.wait_for_off_peak('deliveries',batch,product,action,now=now):
+            continue
         if action in ('review', 'repair'):
             selected = choice['reviewer' if action == 'review' else 'fixer']
             from reviewers import selection, normalize, snapshot

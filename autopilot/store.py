@@ -14,7 +14,7 @@ from review_core import Conflict
 KINDS = ('products', 'signals', 'requirements', 'runs', 'releases', 'workers', 'inspections', 'evidence', 'evaluations', 'daily_reports', 'deliveries', 'code_reviews')
 TERMINAL = {'completed', 'accepted', 'cancelled', 'rolled_back', 'delivered', 'online'}
 DEFAULTS = dict(probe_seconds=60,inspection_seconds=21600, discovery_per_day=4, runs_per_day=2,
-                tokens_per_day=0,
+                tokens_per_day=0, deepseek_off_peak_only=True,
                 execution_seconds=3600, max_revisions=3, idle_seconds=300,
                 observation_seconds=1800)
 SECRET = re.compile(r'(?i)(bearer\s+)[\w.\-/+=]+|((?:token|password|cookie|authorization|api[_-]?key)\s*[=:]\s*)[^\s,;]+')

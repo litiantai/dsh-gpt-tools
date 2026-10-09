@@ -70,7 +70,7 @@ print(json.dumps(out))
         base=snapshot(self.source,self.root/'baseline')
         self.product=self.control.mutate('/products',{'config':{'name':'test','source':str(self.source),'goal':'fix calculation',
             'repository':base['repository'],'adapter':[sys.executable,str(self.adapter)],'executor':[sys.executable,str(self.adapter)],
-            'policy':{'idle_seconds':1,'observation_seconds':1,'probe_seconds':1}}})
+            'policy':{'idle_seconds':1,'observation_seconds':1,'probe_seconds':1,'deepseek_off_peak_only':False}}})
 
     def tearDown(self):
         self.tmp.cleanup()

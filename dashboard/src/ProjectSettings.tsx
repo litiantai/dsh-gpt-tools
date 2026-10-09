@@ -26,12 +26,12 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
   const loadedVersion=useRef(project?.version);
   const baseConfig=useRef<Record<string,unknown>>({});
   const {message}=App.useApp();
-  const automation=useData<{tokens_used:number;code_delivery_tokens_used?:number;tasks_used:number;tokens_limit:number;tasks_limit:number;queued:number;next_inspection:number}>(project?`/products/${project.id}/automation`:'/autopilot/workbench-empty');
+  const automation=useData<{tokens_used:number;code_delivery_tokens_used?:number;tasks_used:number;tokens_limit:number;tasks_limit:number;queued:number;next_inspection:number;deepseek_schedule?:{enabled:boolean;peak:boolean;next_allowed_at:number|null;holiday_calendar_known:boolean;holiday_calendar_year:number}}>(project?`/products/${project.id}/automation`:'/autopilot/workbench-empty');
   const runs=useData<{id:string;status:string}[]>('/runs');
   useEffect(()=>{
     if(project && !dirty) {
       const roles=project.agents as Record<string,unknown> | undefined;
-      form.setFieldsValue({runtime_recovery:project.runtime_recovery || {enabled:false},goal:project.goal,agents:project.agents,policy:{tokens_per_day:0,...project.policy as object},
+      form.setFieldsValue({runtime_recovery:project.runtime_recovery || {enabled:false},goal:project.goal,agents:project.agents,policy:{tokens_per_day:0,deepseek_off_peak_only:true,...project.policy as object},
         git:project.git || {url:'',base_branch:'master',enabled:false},
         code_review:{reviewer:roles?.acceptance,fixer:roles?.implementation,max_revisions:0,...project.code_review as object}});
       loadedVersion.current=project.version;
@@ -73,7 +73,7 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
     {project.nightly_attribution===true && <Alert type="info" message="每晚统一归因" description="白天按巡检间隔采集证据；每天北京时间 19:00 全部归因并生成当日需求。需求发现调用次数限制不适用于晚间归因，开发仍遵守每日需求和 Token 上限。"/>}
     {automation.data && <p className="muted">今日需求 {automation.data.tasks_used} / {automation.data.tasks_limit || '不限'} · 今日 Token {automation.data.tokens_used.toLocaleString()} / {automation.data.tokens_limit || '不限'} · 排队 {automation.data.queued} 项 · 下次巡检 {automation.data.next_inspection<Date.now()/1000?'等待调度':time(automation.data.next_inspection)}</p>}
     {automation.data && <p className="muted">今日代码交付评审、修复及复验：{(automation.data.code_delivery_tokens_used || 0).toLocaleString()} Token，单独记账，不占开发每日额度。</p>}
-    {hasRunningTasks && <Alert type="info" showIcon message="任务执行中，可调整额度及代码评审模型" description="代码评审和修复模型仅影响后续轮次；开发模型及其他执行策略在任务结束后修改。"/>}
+    {hasRunningTasks && <Alert type="info" showIcon message="任务执行中，可调整额度、DeepSeek 时段开关及代码评审模型" description="配置仅影响后续调用；开发模型及其他执行策略在任务结束后修改。"/>}
     {saveError && <Alert type="error" showIcon message="保存失败，当前修改已保留" description={<ErrorNotice value={saveError}/>}/>}
     <Form form={form} layout="vertical" disabled={busy} onValuesChange={()=>setDirty(true)}>
       <Tabs activeKey={tab} onChange={onTabChange} items={[
@@ -101,6 +101,9 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
           ].map(([key,label,provider])=><Form.Item key={key} name={['agents',key]} label={label} rules={[{validator:(_,value)=>value?.provider===provider && value?.model?.trim()?Promise.resolve():Promise.reject(new Error('请选择执行器和模型'))}]}><ReviewerSelect allowedProviders={[provider]} connection={()=>({})}/></Form.Item>)}</div></ConfigProvider>
         </>},
         {key:'policy',label:'运行策略',forceRender:true,children:<>
+          <Form.Item name={['policy','deepseek_off_peak_only']} label="DeepSeek 仅空闲时段运行" valuePropName="checked" extra="北京时间周一至周五（不含中国法定节假日）09:00–12:00、14:00–18:00 为高峰。开启后，本项目 DeepSeek 官方调用在高峰期排队，空闲时段自动继续；周末及节假日全天放行。已启动的执行任务允许完成，等待不计执行超时或返修次数。"><Switch/></Form.Item>
+          {automation.data?.deepseek_schedule?.enabled && <Alert type="info" showIcon message={automation.data.deepseek_schedule.peak?'DeepSeek 当前为高峰时段':'DeepSeek 当前为空闲时段'} description={automation.data.deepseek_schedule.next_allowed_at?`新 DeepSeek 任务等待至北京时间 ${new Date(automation.data.deepseek_schedule.next_allowed_at*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})} 后自动继续；关闭开关可解除时段等待。`:'DeepSeek 任务可按队列及额度正常执行。'}/>}
+          {automation.data?.deepseek_schedule && !automation.data.deepseek_schedule.holiday_calendar_known && <Alert type="warning" showIcon message={`${automation.data.deepseek_schedule.holiday_calendar_year} 年节假日表尚未更新`} description="暂按周一至周五的高峰时间排队，周末仍全天放行；更新日历后才能识别该年的节假日。"/>}
           <Form.Item name={['runtime_recovery','enabled']} label="应用自动恢复" valuePropName="checked" extra="开启后，正常退出应用也会自动重新启动；暂停项目后停止恢复。连续失败会延迟重试。"><Switch/></Form.Item>
           <Button disabled={busy || dirty || !(project.runtime_recovery as {enabled?:boolean} | undefined)?.enabled || project.status==='paused'} onClick={()=>void mode('recover-runtime')}>立即尝试恢复</Button>
           <Form.Item name="goal" label="项目目标与范围" rules={[{required:true}]}><Input.TextArea rows={3} disabled={busy || hasRunningTasks}/></Form.Item>
