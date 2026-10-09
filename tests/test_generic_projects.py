@@ -25,6 +25,24 @@ updater=importlib.util.module_from_spec(spec);spec.loader.exec_module(updater)
 
 
 class GenericTests(unittest.TestCase):
+    def test_worker_and_review_profiles_disable_nested_sandbox(self):
+        home=self.root/'model-source'
+        profile=home/'profiles/fixture';profile.mkdir(parents=True)
+        (profile/'cordis.patch.yml').write_text('- id: agent-default-model\n  config:\n    provider: fixture\n    model: test\n')
+        dest=self.root/'model-home'
+        subprocess.run(['node',str(ROOT/'scripts/autopilot-profile.mjs'),str(home),'fixture',str(dest),str(self.root/'runtime'),str(ROOT/'scripts/autopilot-guard.mjs')],check=True,capture_output=True)
+        for name in ('autopilot-worker','autopilot-review'):
+            contents=(dest/'profiles'/name/'cordis.patch.yml').read_text()
+            self.assertIn('mode: danger-full-access',contents)
+            self.assertIn('policy: never',contents)
+        self.assertNotIn('autopilot-guard',(dest/'profiles/autopilot-review/cordis.patch.yml').read_text())
+
+    def test_model_environment_excludes_inherited_service_credentials(self):
+        from autopilot.sandbox import model_environment
+        with patch.dict(os.environ, {'PRODUCTION_DATABASE_PASSWORD':'synthetic-fixture'}):
+            self.assertNotIn('PRODUCTION_DATABASE_PASSWORD', model_environment())
+            self.assertEqual(model_environment({'DSH_HOME':'isolated'})['DSH_HOME'], 'isolated')
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name).resolve()
         self.repo=self.root/'repo';self.repo.mkdir()
@@ -150,6 +168,45 @@ class GenericTests(unittest.TestCase):
         self.assertEqual(result['status'],'pass')
         self.assertTrue(sandbox.call_args.kwargs['deny_local'])
         self.assertNotIn(str(self.repo),[str(p) for p in sandbox.call_args.args[1]])
+
+    def test_codex_state_is_private_and_login_reference_is_readonly(self):
+        from autopilot.codex_executor import execute as model
+        login=self.root/'fixture-codex';login.mkdir()
+        (login/'auth.json').write_text('synthetic fixture; not a credential')
+        fake=self.root/'codex-state-probe'
+        fake.write_text('#!'+sys.executable+'\nimport os,sys,json\nfrom pathlib import Path\np=Path(os.environ["CODEX_HOME"])\nassert p.name=="codex-state"\nassert (p/"auth.json").is_symlink()\n(p/"private-state").write_text("isolated")\nPath(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","plan":"private state"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(self.repo),'agents':{'implementation':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        with patch.dict(os.environ, {'CODEX_HOME':str(login)}), patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv) as sandbox:
+            result=model('plan',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass')
+        self.assertIn(login/'auth.json', sandbox.call_args.kwargs['readonly_roots'])
+        self.assertFalse((login/'private-state').exists())
+
+    def test_readonly_model_cannot_write_workspace_inside_allowed_temp(self):
+        if sys.platform!='darwin' or os.environ.get('DSH_PROJECT_ISOLATED'):
+            self.skipTest('实际只读权限由外层主机验证，macOS 不允许嵌套 Seatbelt')
+        from autopilot.codex_executor import execute as model
+        fake=self.root/'codex-readonly-probe'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\ntry:\n Path("unexpected-write").write_text("must be denied")\n raise RuntimeError("readonly workspace escaped through its temporary ancestor")\nexcept PermissionError: pass\nPath(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","plan":"write denied"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(self.repo),'agents':{'implementation':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        result=model('plan',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        self.assertFalse((self.repo/'unexpected-write').exists())
+
+    def test_generic_model_cannot_read_other_home_directories(self):
+        if sys.platform!='darwin' or os.environ.get('DSH_PROJECT_ISOLATED'):
+            self.skipTest('实际用户目录权限由外层主机验证')
+        from autopilot.codex_executor import execute as model
+        with tempfile.TemporaryDirectory(prefix='.dsh-boundary-test-',dir=Path.home()) as private:
+            protected=Path(private)/'fixture.txt';protected.write_text('test fixture; no real credentials')
+            fake=self.root/'codex-private-probe'
+            fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\ntry:\n Path('+repr(str(protected))+').read_text()\n raise RuntimeError("another home directory was readable")\nexcept PermissionError: pass\nPath(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","plan":"private read denied"}))\n')
+            fake.chmod(0o700)
+            product=self.p|{'repository':str(self.repo),'agents':{'implementation':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+            result=model('plan',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
+            self.assertEqual(result['status'],'pass',result)
 
     def test_python_project_scan_is_recorded_and_source_remains_unchanged(self):
         if sys.platform!='darwin' or os.environ.get('DSH_PROJECT_ISOLATED'):

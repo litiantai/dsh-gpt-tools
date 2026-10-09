@@ -43,12 +43,12 @@ out.contents.items.push(out.createNode({id:'session-persistence-jsonl',config:{r
 const reviewDir=join(workerHome,'profiles','autopilot-review');
 await mkdir(reviewDir,{recursive:true,mode:0o700});
 await writeFile(join(reviewDir,'package.json'),JSON.stringify({name:'autopilot-review',private:true,dsh:{profile:{bundles:['@deepseek-ai/dsh-base','@deepseek-ai/dsh-headless'],patchReload:'none'}}}),{mode:0o600});
-await writeFile(join(reviewDir,'cordis.patch.yml'),String(out),{mode:0o600});
 // The worker process and every child already run under the controller's tested
 // Seatbelt profile. macOS cannot apply a second Seatbelt profile inside it.
 // Avoid nested sandbox startup failure; the outer workspace boundary remains enforced.
 out.contents.items.push(out.createNode({id:'sandbox-policy',config:{mode:'danger-full-access'}}));
 out.contents.items.push(out.createNode({id:'approval',config:{policy:'never'}}));
+await writeFile(join(reviewDir,'cordis.patch.yml'),String(out),{mode:0o600});
 out.contents.items.push(out.createNode({insert:[{id:'autopilot-guard',name:guard}]}));
 await writeFile(join(dir,'package.json'),JSON.stringify({name:'autopilot-worker',private:true,dsh:{profile:{bundles:['@deepseek-ai/dsh-base','@deepseek-ai/dsh-headless'],patchReload:'none'}}}),{mode:0o600});
 await writeFile(join(dir,'cordis.patch.yml'),String(out),{mode:0o600});

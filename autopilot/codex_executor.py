@@ -107,23 +107,39 @@ def execute(action,request):
         if provider == 'claude' and action=='develop':
             argv = [a.replace('Read,Glob,Grep,Bash','Read,Glob,Grep,Bash,Write,Edit') for a in argv]
     if generic(product):
-        from .sandbox import restrict
+        from .sandbox import restrict, model_environment
         # Seatbelt cannot be nested on macOS. The outer policy below is the
         # mandatory boundary for both model tools and subprocesses.
         if provider == 'codex':
             argv[argv.index('--sandbox') + 1] = 'danger-full-access'
         allowed=[root, Path(__import__('tempfile').gettempdir())]
+        selected_env = {key:value for key,value in (env or {}).items() if os.environ.get(key) != value}
+        env = model_environment(selected_env) | {'DSH_PROJECT_ISOLATED':'1', 'GIT_OPTIONAL_LOCKS':'0',
+                'npm_config_cache':str(root/'cache/npm'),'PIP_CACHE_DIR':str(root/'cache/pip')}
         if provider == 'codex':
-            allowed.append(Path.home()/'.codex')
-        env = (env or os.environ.copy()) | {'DSH_PROJECT_ISOLATED':'1', 'GIT_OPTIONAL_LOCKS':'0'}
-        if action in ('develop','validate'):
+            # Configure only the child CLI's supported state directory. Reuse its
+            # normal login via a read-only reference; never copy/read credentials
+            # or expose shared sessions, settings, plugins or databases.
+            codex_state = root/'codex-state'; codex_state.mkdir(mode=0o700)
+            credential = Path(os.environ.get('CODEX_HOME', str(Path.home()/'.codex')))/'auth.json'
+            if credential.is_file():
+                (codex_state/'auth.json').symlink_to(credential.resolve())
+            env['CODEX_HOME'] = str(codex_state)
+        if action == 'develop':
             allowed.append(workspace)
-        private=[str(Path.home()/'Desktop'), str(Path.home()/'Library/Application Support'), str(Path.home()/'.dsh'), str(Path(request['state_root']).parent)]
+        private=[str(Path.home()), '/Users', str(Path(request['state_root']).parent)]
         project_root=Path(__file__).resolve().parents[1]
         readable=[workspace,project_root/'scripts',project_root/'dsh-gpt-supervisor/scripts',project_root/'node_modules',product.get('worker_runtime',root/'none')]
+        readable += [Path.home()/'.nvm/versions']
+        if provider == 'codex':
+            # The CLI may read its authentication/cache; model tools cannot read
+            # other home directories or write shared Codex state.
+            readable += [credential]
         if action == 'validate' and record.get('id'):
             readable.append(Path(request['state_root'])/'candidates'/product['id']/record['id']/'checks')
-        argv=restrict(argv, allowed, root/'model.sb', private_roots=private, read_allowed=readable, deny_local=True)
+        readonly = ([] if action=='develop' else [workspace]) + ([credential] if provider=='codex' else [])
+        argv=restrict(argv, allowed, root/'model.sb', private_roots=private, read_allowed=readable,
+                      deny_local=True, readonly_roots=readonly)
     with (root/'trace.jsonl').open('w') as out,(root/'stderr.log').open('w') as err:
         proc=subprocess.run(argv,input=prompt,text=True,cwd=workspace,stdout=out,stderr=err,env=env)
     if proc.returncode == 0 and provider != 'codex':
