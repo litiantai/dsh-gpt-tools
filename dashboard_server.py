@@ -671,23 +671,26 @@ def handler_for(app, port, dist):
                 if not isinstance(data, bytes)
                 else data
             )
-            self.send_response(code)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(raw)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header("X-Frame-Options", "DENY")
-            if cookie:
-                self.send_header(
-                    "Set-Cookie",
-                    f"dsh_dashboard={app.browser_key}; HttpOnly; SameSite=Strict; Path=/",
-                )
-            self.end_headers()
+            # Header flush and body write can both race a client disconnect; a
+            # closed socket must not propagate to handle_api's 500 fallback and
+            # trigger a second, also-failing send.
             try:
+                self.send_response(code)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(raw)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("X-Frame-Options", "DENY")
+                if cookie:
+                    self.send_header(
+                        "Set-Cookie",
+                        f"dsh_dashboard={app.browser_key}; HttpOnly; SameSite=Strict; Path=/",
+                    )
+                self.end_headers()
                 self.wfile.write(raw)
             except (BrokenPipeError, ConnectionResetError):
-                pass
+                self.close_connection = True
 
         def handle_api(self):
             try:

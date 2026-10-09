@@ -168,6 +168,28 @@ class GenericTests(unittest.TestCase):
         self.assertEqual(result['status'],'pass')
         self.assertTrue(sandbox.call_args.kwargs['deny_local'])
         self.assertNotIn(str(self.repo),[str(p) for p in sandbox.call_args.args[1]])
+        # The worktree metadata (HEAD/index/commondir/objects) must be readable
+        # for the verifier to diff base..head, while staying outside the write set.
+        read_allowed=[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['read_allowed']]
+        self.assertIn(str((self.repo/'.git').resolve()),read_allowed)
+        self.assertIn(str(self.repo),[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['readonly_roots']])
+
+    def test_validate_sandbox_reads_worktree_git_metadata_without_write(self):
+        from autopilot.codex_executor import execute as model
+        fake=self.root/'codex-validate'
+        fake.write_text('#!'+sys.executable+'\nimport os,sys,json\nfrom pathlib import Path\nassert os.environ.get("GIT_CONFIG_GLOBAL")=="/dev/null"\nassert os.environ.get("GIT_CONFIG_NOSYSTEM")=="1"\nPath(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"validated"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(self.repo),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        with patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv) as sandbox:
+            result=model('validate',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        writable=[str(Path(p).resolve()) for p in sandbox.call_args.args[1]]
+        read_allowed=[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['read_allowed']]
+        readonly=[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['readonly_roots']]
+        self.assertIn(str((self.repo/'.git').resolve()),read_allowed)
+        self.assertNotIn(str(self.repo),writable)
+        self.assertIn(str(self.repo),readonly)
+        self.assertIn(str((self.repo/'.git').resolve()),readonly)
 
     def test_codex_state_is_private_and_login_reference_is_readonly(self):
         from autopilot.codex_executor import execute as model

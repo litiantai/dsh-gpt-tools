@@ -491,5 +491,39 @@ time.sleep(60)
             proc.communicate(timeout=8)
 
 
+class SendDisconnectTests(unittest.TestCase):
+    """A closed client socket must not surface as a second failing 500 send."""
+
+    def handler(self):
+        instance = object.__new__(dashboard.handler_for(None, 0, ROOT / "dashboard/dist"))
+        instance.path = "/api/status"
+        instance.close_connection = False
+        instance.send_response = lambda code: None
+        instance.send_header = lambda key, value: None
+        return instance
+
+    def test_broken_pipe_while_flushing_headers_is_absorbed(self):
+        instance = self.handler()
+
+        def fail():
+            raise BrokenPipeError(32, "Broken pipe")
+
+        instance.end_headers = fail
+        instance.wfile = type("Wfile", (), {"write": lambda self, raw: None})()
+        instance.send(200, b"{}")
+        self.assertTrue(instance.close_connection)
+
+    def test_connection_reset_while_writing_body_is_absorbed(self):
+        instance = self.handler()
+        instance.end_headers = lambda: None
+
+        def fail(raw):
+            raise ConnectionResetError(54, "Connection reset by peer")
+
+        instance.wfile = type("Wfile", (), {"write": lambda self, raw: fail(raw)})()
+        instance.send(200, b"{}")
+        self.assertTrue(instance.close_connection)
+
+
 if __name__ == "__main__":
     unittest.main()

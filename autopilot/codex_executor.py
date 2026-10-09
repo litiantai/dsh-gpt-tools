@@ -115,6 +115,11 @@ def execute(action,request):
         allowed=[root, Path(__import__('tempfile').gettempdir())]
         selected_env = {key:value for key,value in (env or {}).items() if os.environ.get(key) != value}
         env = model_environment(selected_env) | {'DSH_PROJECT_ISOLATED':'1', 'GIT_OPTIONAL_LOCKS':'0',
+                # $HOME is a denied private root, so git would fatal on an
+                # unreadable ~/.gitconfig before it can diff base..commit.
+                # Point global/system config at an empty file instead of
+                # exposing user config (which may carry credentials).
+                'GIT_CONFIG_GLOBAL':'/dev/null','GIT_CONFIG_NOSYSTEM':'1',
                 'npm_config_cache':str(root/'cache/npm'),'PIP_CACHE_DIR':str(root/'cache/pip')}
         if provider == 'codex':
             # Configure only the child CLI's supported state directory. Reuse its
@@ -131,13 +136,28 @@ def execute(action,request):
         project_root=Path(__file__).resolve().parents[1]
         readable=[workspace,project_root/'scripts',project_root/'dsh-gpt-supervisor/scripts',project_root/'node_modules',product.get('worker_runtime',root/'none')]
         readable += [Path.home()/'.nvm/versions']
+        # A git worktree keeps HEAD/index/commondir/objects outside the checkout,
+        # under the private state root. Read-only validation must still diff the
+        # requested base..commit, so expose exactly those metadata directories as
+        # readable (never writable); mirror autopilot/executor.py:98-104.
+        from .workspace import git as git_metadata
+        metadata=[]
+        try:
+            git_dir=Path(git_metadata(workspace,'rev-parse','--absolute-git-dir'))
+            common_dir=Path(git_metadata(workspace,'rev-parse','--git-common-dir'))
+            if not common_dir.is_absolute():
+                common_dir=(Path(workspace)/common_dir).resolve()
+            metadata=[git_dir.resolve(), common_dir]
+        except (subprocess.CalledProcessError, OSError, ValueError):
+            metadata=[]
+        readable += metadata
         if provider == 'codex':
             # The CLI may read its authentication/cache; model tools cannot read
             # other home directories or write shared Codex state.
             readable += [credential]
         if action == 'validate' and record.get('id'):
             readable.append(Path(request['state_root'])/'candidates'/product['id']/record['id']/'checks')
-        readonly = ([] if action=='develop' else [workspace]) + ([credential] if provider=='codex' else [])
+        readonly = ([] if action=='develop' else [workspace]+metadata) + ([credential] if provider=='codex' else [])
         argv=restrict(argv, allowed, root/'model.sb', private_roots=private, read_allowed=readable,
                       deny_local=True, readonly_roots=readonly)
     with (root/'trace.jsonl').open('w') as out,(root/'stderr.log').open('w') as err:
