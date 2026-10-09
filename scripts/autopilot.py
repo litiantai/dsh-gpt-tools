@@ -42,18 +42,8 @@ def main():
         dest.write_bytes(plistlib.dumps(value));subprocess.run(['launchctl','bootstrap',f'gui/{os.getuid()}',str(dest)],check=True)
         print(json.dumps({'service':str(dest)}));return
     if args.action=='install-runtime':
-        import re
-        if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?',args.runtime_version):
-            raise ValueError('运行时需要固定的发布版本')
-        runtime=state/'autopilot/runtime'
-        runtime.mkdir(parents=True,exist_ok=True)
-        manifest=runtime/'package.json'
-        expected={'name':'autopilot-independent-runtime','private':True,'dependencies':{name:args.runtime_version for name in ('@deepseek-ai/dsh','@deepseek-ai/dsh-base','@deepseek-ai/dsh-headless')}}
-        if manifest.exists() and json.loads(manifest.read_text())!=expected:
-            raise ValueError('独立运行时已使用其他版本，禁止原位覆盖')
-        manifest.write_text(json.dumps(expected,indent=2))
-        subprocess.run(['npm','install','--ignore-scripts','--no-audit','--no-fund'],cwd=runtime,check=True,stdout=sys.stderr)
-        print(json.dumps({'status':'pass','runtime':str(runtime),'version':args.runtime_version}));return
+        from autopilot.runtime import install
+        print(json.dumps(install(state,args.runtime_version)));return
     from autopilot.onboarding import tick,onboard
     from autopilot.scheduler import Scheduler
     from review_core import Conflict

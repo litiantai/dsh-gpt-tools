@@ -177,7 +177,7 @@ def execute(action, request):
         if changed and action in ('review', 'validate'):
             return {'status': 'stale', 'stale': True, 'reason': 'PR 提交已变化，需要同步后评审', 'pr_url': record['pr_url']}
         if action == 'repair' and pr['head']['sha'] != record.get('head_sha'):
-            return {'status': 'blocked', 'reason': '修复前 PR 提交已变化，保留隔离工作区等待重新同步', 'pr_url': record['pr_url']}
+            return {'status': 'stale', 'stale': True, 'reason': '修复前 PR 提交已变化，保留隔离工作区并重新同步评审', 'pr_url': record['pr_url']}
     if action == 'repair':
         material = json.dumps({'pull_request': pr_context, 'requirements': request.get('requirements'), 'feedback': record.get('feedback'),
             'conflicts': git(workspace, 'diff', '--name-only', '--diff-filter=U').splitlines()}, ensure_ascii=False)

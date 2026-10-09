@@ -36,11 +36,8 @@ def environment(root, port=0, runtime=None):
 
 def _runtime_installed(path):
     """运行目录须为 install-runtime 写入的固定 Harness 运行时。"""
-    manifest=Path(path)/'package.json'
-    try:
-        return manifest.is_file() and json.loads(manifest.read_text()).get('name')=='autopilot-independent-runtime'
-    except (OSError, ValueError):
-        return False
+    from .runtime import ready
+    return ready(path)
 
 
 def independent_runtime(autopilot_root=None):

@@ -68,8 +68,8 @@ class GenericTests(unittest.TestCase):
     def test_independent_runtime_follows_state_root(self):
         state=self.root/'custom-state'
         runtime=state/'autopilot/runtime'
-        runtime.mkdir(parents=True)
-        (runtime/'package.json').write_text(json.dumps({'name':'autopilot-independent-runtime'}))
+        from test_runtime_install import fixture
+        fixture(runtime)
         self.assertEqual(independent_runtime(state/'autopilot'), runtime)
         env=environment(state/'execution',runtime=runtime)
         self.assertEqual(env['DSH_RUNTIME_NODE_MODULES'],str(runtime/'node_modules'))
