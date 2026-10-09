@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import subprocess
@@ -297,17 +298,58 @@ def execute(action,request):
         readonly = ([] if action=='develop' else [workspace]+metadata) + ([credential] if provider=='codex' else [])
         argv=restrict(argv, allowed, root/'model.sb', private_roots=private, read_allowed=readable,
                       deny_local=True, readonly_roots=readonly)
-    with (root/'trace.jsonl').open('w') as out,(root/'stderr.log').open('w') as err:
-        proc=subprocess.run(argv,input=prompt,text=True,cwd=workspace,stdout=out,stderr=err,env=env)
-    if proc.returncode == 0 and provider != 'codex':
-        result=read_result(selected, root)
-        (root/'result.json').write_text(json.dumps(result))
-    if proc.returncode or not (root/'result.json').exists():
-        return {'status':'blocked','reason':f'Codex {action} 未成功返回（{proc.returncode}）','evidence':str(root)}
-    result=json.loads((root/'result.json').read_text())
+    # 控制器证据（非空可读的差异与 facts）是否完整：完整时验证者不得以 git
+    # 元数据不可读为由 blocked，允许控制器用同一份证据做一次纠正性重试。
+    controller_evidence=False
+    if action=='validate' and isinstance(verification,dict):
+        diff_path=Path(verification.get('diff_file') or '')
+        facts_path=Path(verification.get('facts_file') or '')
+        try:
+            diff_readable=diff_path.is_file() and diff_path.stat().st_size>0
+        except OSError:
+            diff_readable=False
+        controller_evidence=bool(diff_readable and facts_path.is_file())
+
+    def run_model(attempt, attempt_prompt):
+        trace=root/('trace.jsonl' if attempt==1 else 'trace-retry.jsonl')
+        stderr=root/('stderr.log' if attempt==1 else 'stderr-retry.log')
+        with trace.open('w') as out,stderr.open('w') as err:
+            proc=subprocess.run(argv,input=attempt_prompt,text=True,cwd=workspace,stdout=out,stderr=err,env=env)
+        if proc.returncode == 0 and provider != 'codex':
+            result=read_result(selected, root)
+            (root/'result.json').write_text(json.dumps(result))
+        if proc.returncode or not (root/'result.json').exists():
+            return None, proc
+        return json.loads((root/'result.json').read_text()), proc
+
+    def required_checks_pass(checks):
+        return all(check.get('status')=='pass' for check in (checks or []) if check.get('required', True))
+
+    git_metadata_blocked=re.compile(r'git 元数据|metadata|Operation not permitted|EPERM|permission denied',re.IGNORECASE)
+    retry_prompt=prompt + (' 重要更正：控制器已提供非空且可读的 verification-diff.patch 与 '
+        'verification-facts.json，git 元数据不可读（EPERM/permission denied）不得作为 blocked 理由；'
+        '必须基于这份自包含差异与源码摘要完成独立判断。若仍返回 blocked，必须明确指出缺失的非 git 前提。')
+    attempt=1
+    current_prompt=prompt
+    while True:
+        result,proc=run_model(attempt,current_prompt)
+        if result is None:
+            return {'status':'blocked','reason':f'Codex {action} 未成功返回（{proc.returncode}）','evidence':str(root)}
+        retryable=(attempt==1 and action=='validate' and controller_evidence
+            and result.get('status')=='blocked' and required_checks_pass(request.get('checks'))
+            and bool(git_metadata_blocked.search(result.get('reason',''))))
+        if not retryable:
+            break
+        attempt=2
+        current_prompt=retry_prompt
     result.update(evidence=str(root),provider=provider,model=role['model'])
     if verification:
         result.setdefault('verification_source',verification.get('source'))
+    notes=[]
     if metadata_error:
-        result['verification_note']='git 元数据不可读，独立验证以控制器落盘差异与源码摘要为权威证据：'+metadata_error
+        notes.append('git 元数据不可读，独立验证以控制器落盘差异与源码摘要为权威证据：'+metadata_error)
+    if attempt>1 and result.get('status')=='blocked':
+        notes.append('控制器差异证据完整且必需检查均通过，已用同一份证据纠正性重试 '+str(attempt)+' 次仍返回 blocked：'+str(result.get('reason') or ''))
+    if notes:
+        result['verification_note']=' '.join(notes)
     return result

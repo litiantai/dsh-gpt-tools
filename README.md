@@ -319,6 +319,8 @@ python3 tests/live_reviewers.py --run --home /实际/Harness/home --state-dir /�
 
 交付、评审和修复记录见 **代码交付与安装**。代码交付评审、修复和复验的模型用量计入 `code_delivery_tokens` 独立账本，不占项目开发每日 Token 上限，开发额度用尽也不会暂停这些交付轮次；项目设置显示独立用量。权限不足、模型不可用、漏审或检查失败会显示原因；处理阻塞原因后可“继续处理”。修复额度用尽只显示排队原因和恢复时间，次日自动恢复；旧版因累计修复上限形成的阻塞会自动按每日额度重新调度。GitHub 分支保护及必需评审仍生效。异步调用与回执、PR 编号、被评审提交和合并 SHA 均持久化，重启后核对原操作结果，不盲目重复创建 PR 或合并。
 
+独立验证以控制器在未沙箱化侧落盘的 `base..commit` 自包含差异（`verification-diff.patch` / `verification-facts.json`）与源码摘要为权威事实证据，并把 `diff_file`、`facts_file`、`diff_sha256`、`changed_files`、`merge_base` 写入「独立业务验证」检查回执以便离线核对。Git 元数据不可读（EPERM/permission denied）不构成 blocked 理由；控制器证据完整且必需检查通过时，若验证者仍以 Git 元数据为由 blocked，控制器会明确「git 不可读不得作为理由」并用同一份证据纠正性重试一次，两次仍 blocked 才保留 blocked 并记录重试说明，绝不把 blocked 改写成 pass。
+
 代码评审节点按需求展示其 `feat → release` PR，默认筛选未合并且未关闭，支持查看全部需求 PR。`release → master` PR 独立展示在「待合并」，不会混入需求代码评审。历史多个需求共用的真实 PR 会标注共用关系，不伪造独立 PR。状态为「未评审」「已评审 · 评审通过」「已评审 · 问题修复」「已合并」；节点数字仅统计 GitHub 仍开放且「未评审」的 PR；已关闭、已合并以及远端状态未知的 PR 不计入。已关闭但未合并的 PR 留存在列表并单独标注 GitHub 关闭状态。GitHub 状态每分钟同步并保留最近快照，失败时明确提示；评审通过必须对应当前 head/base，提交变化或修复成功后需重新评审。问题修复节点逐条展示未完成问题，同一 PR 可有多条；重复问题按 PR、文件和内容去重，修复成功后移出，复审再次发现的问题重新进入。原始轮次回执继续保存在证据台账。`GET /products/<id>/delivery-board` 返回 PR 与未完成问题视图。
 
 接口沿用现有鉴权、操作 UUID 和版本控制：`POST /products/<id>/configure` 支持 `git`、`code_review`；`POST /products/<id>/migrate-git` 建立基线批次；`GET /deliveries`、`GET /code_reviews` 查询交付与轮次；`POST /deliveries/<id>/retry` 恢复已阻塞批次。已启用的 Git 配置变更要求没有运行中的任务和未结束交付；尚未启用时可先登记仓库地址。代码评审／修复模型可在运行中调整，仅下一轮使用新配置。

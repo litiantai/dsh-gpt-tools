@@ -1,4 +1,5 @@
 """通用命令项目适配器：隔离验证、版本产物及独立更新器交接。"""
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -235,7 +236,19 @@ def execute(action, request):
             except RuntimeError as exc:
                 return {'status': 'blocked', 'reason': str(exc), 'checks': result['checks']}
         judged = evaluate('validate', payload | {'checks': result['checks']})
-        checks = result['checks'] + [{'name': '独立业务验证', 'status': judged['status'], 'required': True, 'evidence': judged}]
+        # 失败/阻塞回执必须可离线核对：把控制器落盘的自包含差异事实并入
+        # 「独立业务验证」的 evidence，与 delivery_review.verify 的字段保持一致。
+        # 保留 judged 的 status/reason/summary/provider/model，字段缺失用空值占位。
+        material = payload.get('verification') if isinstance(payload.get('verification'), dict) else {}
+        diff_path = Path(material.get('diff_file') or '')
+        diff_hash = hashlib.sha256(diff_path.read_bytes()).hexdigest() if diff_path.is_file() else ''
+        enrichment = {'diff_file': material.get('diff_file', ''), 'facts_file': material.get('facts_file', ''),
+                      'diff_sha256': diff_hash, 'changed_files': material.get('changed_files') or [],
+                      'merge_base': material.get('merge_base'), 'source': material.get('source'),
+                      'source_digest': material.get('source_digest'),
+                      'baseline_source_digest': material.get('baseline_source_digest')}
+        checks = result['checks'] + [{'name': '独立业务验证', 'status': judged['status'], 'required': True,
+                                      'evidence': judged | enrichment}]
         if judged['status'] != 'pass':
             return {'status': judged['status'], 'reason': judged.get('reason', '独立验证未通过'), 'checks': checks}
         return result | {'checks': checks, 'manifest': package(request, checks, root)}
