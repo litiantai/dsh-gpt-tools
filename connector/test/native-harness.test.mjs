@@ -10,7 +10,7 @@ const base =
   process.env.DSH_RUNTIME_NODE_MODULES ||
   join(
     homedir(),
-    "Library/Application Support/com.thsoctop.desktop/dependencies/dsh/node_modules",
+    ".dsh/supervisor/autopilot/runtime/node_modules",
   );
 let available = true;
 try {

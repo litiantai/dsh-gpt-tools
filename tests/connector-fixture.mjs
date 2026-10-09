@@ -18,5 +18,5 @@ const api={sessions:{
   },
   history:async request=>({rpcId:request.rpcId,result:{ok:true,value:{events,hasMore:false}}})
 }}
-apply({apiProxy:api,effect:fn=>{dispose=fn()}},{home:meta.home,stateDir:meta.state,origin:'http://127.0.0.1:13085'})
+apply({apiProxy:api,effect:fn=>{dispose=fn()}},{home:meta.home,stateDir:meta.state,origin:meta.origin})
 process.on('SIGTERM',()=>{dispose();process.exit(0)})

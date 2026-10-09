@@ -147,6 +147,22 @@ class StagedDeliveryTests(unittest.TestCase):
         complete(f.scheduler, b, result, 'prepare')
         return f.ledger.get('deliveries', b['id'])
 
+    def test_changed_pr_before_repair_resyncs_without_model_or_source_edits(self):
+        f=self.f
+        batch=self.bootstrap()
+        old_proof={'head_sha':batch['feature_head_sha'],'base_sha':batch['feature_base_sha']}
+        batch=f.ledger.update('deliveries',batch['id'],batch['version'],{'feature_review_pass':old_proof},'repairing_feature')
+        self.assertEqual(batch['feature_review_pass'],old_proof)
+        self.prs[batch['feature_pr_number']]['head']['sha']='f'*40
+        with patch('autopilot.delivery_review.model') as model:
+            result=execute('repair_feature',f.request(batch))
+            self.assertTrue(result['stale'])
+            model.assert_not_called()
+        complete(f.scheduler,batch,result,'repair_feature')
+        latest=f.ledger.get('deliveries',batch['id'])
+        self.assertEqual(latest['status'],'syncing_feature')
+        self.assertIsNone(latest.get('feature_review_pass'))
+
     def review_and_merge(self, b):
         f = self.f
         result = {'status': 'pass', 'head_sha': b['feature_head_sha'], 'base_sha': b['feature_base_sha']}

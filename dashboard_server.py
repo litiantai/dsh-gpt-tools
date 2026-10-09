@@ -212,6 +212,9 @@ class Dashboard:
         return sorted(current + result, key=lambda r: r["created"], reverse=True)[:500]
 
     def get(self, path):
+        if path == "/runtime-identity":
+            marker = ROOT / "autopilot-release.json"
+            return json.loads(marker.read_text()) if marker.exists() else {"product_id": None, "commit": None, "release_id": None}
         if path.startswith('/reviews/') and path.endswith('/context'):
             from autopilot.record_context import record_context
             ident = path.split('/')[2]
@@ -546,6 +549,8 @@ class Dashboard:
         raise KeyError("接口不存在")
 
     def operation(self, path, body):
+        if (self.store.state/'autopilot/update-drain.json').exists() and path not in ('/service/stop',) and not path.endswith(('/cancel','/pause','/stop')):
+            raise Conflict('平台正在更新，暂缓新写入与任务派发')
         oid = body.get("operation_id", "")
         uuid.UUID(oid)
         fingerprint = json.dumps([path, body], sort_keys=True, ensure_ascii=False)
@@ -710,6 +715,9 @@ def handler_for(app, port, dist):
                     "http://localhost:5173",
                 ):
                     self.send(403, {"error": "Origin rejected"})
+                    return
+                if path == "/api/runtime-identity" and self.command == "GET":
+                    self.send(200, app.get("/runtime-identity"))
                     return
                 if path == "/api/bootstrap" and self.command == "GET":
                     # Cross-site fetches cannot mint a local browser session.

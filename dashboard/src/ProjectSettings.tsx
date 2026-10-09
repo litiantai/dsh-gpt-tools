@@ -95,10 +95,10 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
           <Button disabled={dirty || busy || hasRunningTasks || !(project.git as {enabled?:boolean} | undefined)?.enabled || (project.git_migration as {status?:string} | undefined)?.status==='completed'} onClick={()=>void mode('migrate-git')}>建立首次基线 PR</Button>
         </>},
         {key:'roles',label:'模型分工',forceRender:true,children:<>
-          <Alert type="info" showIcon message="Codex 发现与评估，Harness 实现" description="验证先执行项目的必需检查，再由 Codex 独立核验；验收通过且满足发布条件后才进入更新。"/>
+          <Alert type="info" showIcon message="按角色选择执行器与模型" description="验证先执行项目的必需检查，再由独立模型核验；配置只影响后续调用，不自动替换不可用的模型。"/>
           <ConfigProvider componentDisabled={busy || hasRunningTasks}><div className="project-settings-grid">{[
             ['discovery','需求发现','codex'],['implementation','方案与实现','harness'],['verification','独立验证','codex'],['acceptance','方案审查与业务验收','codex'],
-          ].map(([key,label,provider])=><Form.Item key={key} name={['agents',key]} label={label} rules={[{validator:(_,value)=>value?.provider===provider && value?.model?.trim()?Promise.resolve():Promise.reject(new Error('请选择执行器和模型'))}]}><ReviewerSelect allowedProviders={[provider]} connection={()=>({})}/></Form.Item>)}</div></ConfigProvider>
+          ].map(([key,label])=><Form.Item key={key} name={['agents',key]} label={label} rules={[{validator:(_,value)=>value?.provider && value?.model?.trim()?Promise.resolve():Promise.reject(new Error('请选择执行器和模型'))}]}><ReviewerSelect connection={()=>({})}/></Form.Item>)}</div></ConfigProvider>
         </>},
         {key:'policy',label:'运行策略',forceRender:true,children:<>
           <Form.Item name={['runtime_recovery','enabled']} label="应用自动恢复" valuePropName="checked" extra="开启后，正常退出应用也会自动重新启动；暂停项目后停止恢复。连续失败会延迟重试。"><Switch/></Form.Item>

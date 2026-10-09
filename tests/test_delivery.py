@@ -2,6 +2,7 @@
 import copy
 import datetime as dt
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -362,7 +363,7 @@ class DeliveryTests(unittest.TestCase):
         folder = paths(self.request(batch))[1] / 'rounds' / batch['round_id']
         self.assertEqual(json.loads((folder / 'result.json').read_text()), result)
 
-    @unittest.skipUnless(sys.platform == 'darwin', 'requires macOS sandbox')
+    @unittest.skipUnless(sys.platform == 'darwin' and not os.environ.get('DSH_PROJECT_ISOLATED'), '由外层验证运行 macOS 沙箱执行器测试，系统不允许嵌套 Seatbelt')
     def test_harness_review_uses_private_profile_and_retains_failure_diagnostics(self):
         from autopilot.delivery_review import model
         from reviewers import command as real_command

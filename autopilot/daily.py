@@ -73,10 +73,10 @@ def snapshot(ledger, product, now):
 def tick(scheduler):
     ledger = scheduler.ledger
     for product in ledger.list('products'):
-        if product.get('daily_report_enabled'):
+        if not product.get('automation_disabled') and product.get('daily_report_enabled'):
             snapshot(ledger, product, time.time())
     # 每次仅推进一份报告；每项调用与回执持久化，重启不会重复验收已完成项。
-    report = next((r for r in reversed(ledger.list('daily_reports')) if r['status'] == 'running'), None)
+    report = next((r for r in reversed(ledger.list('daily_reports')) if r['status'] == 'running' and not ledger.get('products',r['product_id']).get('automation_disabled')), None)
     if not report:
         return
     product = ledger.get('products', report['product_id'])
@@ -184,6 +184,9 @@ def execute(action, request):
     manifest = json.loads(Path(run['manifest']).read_text())
     if before != run.get('source_digest') or manifest.get('commit') != run.get('commit'):
         return {'status': 'blocked', 'reason': '候选源码与验收清单不一致，需核对后复验'}
+    if manifest.get('kind') == 'command':
+        from .generic_adapter import validate_manifest
+        validate_manifest(run['manifest'])
     if manifest.get('runtime_hash') or manifest.get('app_hash'):
         from .thsoctop import manifest_hash
         candidate = Path(manifest['root'])
