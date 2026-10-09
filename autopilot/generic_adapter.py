@@ -105,21 +105,22 @@ def acceptance(request):
                 def fetch(path):
                     if not path.startswith('check:'):
                         return http(product, path)
-                    from .isolated import run
+                    from .isolated import run, independent_runtime
                     from .workspace import snapshot
                     import uuid
                     root = Path(request['state_root'])/'final-checks'/str(uuid.uuid4())
                     workspace = root/'workspace'
                     repo = product['delivery_repository']
+                    runtime = independent_runtime(request.get('state_root'))
                     root.mkdir(parents=True)
                     git(repo, 'worktree', 'add', '--detach', str(workspace), expected)
                     config=product['project_config']
                     try:
                         for index, argv in enumerate(config['commands'].get('install', [])):
-                            installed=run(argv, workspace, root/'execution', 'install-'+str(index), install=True)
+                            installed=run(argv, workspace, root/'execution', 'install-'+str(index), install=True, runtime=runtime)
                             if installed['status']!='pass':
                                 return installed
-                        return run(config['acceptance_checks'][path[6:]], workspace, root/'execution', 'assertion', ports=config.get('test_ports', []))
+                        return run(config['acceptance_checks'][path[6:]], workspace, root/'execution', 'assertion', ports=config.get('test_ports', []), runtime=runtime)
                     finally:
                         git(repo, 'worktree', 'remove', '--force', str(workspace))
                 ok = check([item], fetch, product)
@@ -197,10 +198,12 @@ def execute(action, request):
     if action in ('probe', 'investigate'):
         return probe(product)
     if action == 'verify':
+        from .isolated import independent_runtime
         root = Path(request['state_root'])/'candidates'/product['id']/record['id']
         root.mkdir(parents=True, exist_ok=True)
         before = digest(record['workspace'])
-        result = verify(record['workspace'], root/'checks', product['project_config'])
+        result = verify(record['workspace'], root/'checks', product['project_config'],
+                        runtime=independent_runtime(request.get('state_root')))
         if result['status'] != 'pass':
             return result
         if digest(record['workspace']) != before:

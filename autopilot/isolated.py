@@ -11,7 +11,7 @@ import time
 from .store import redact
 
 
-def environment(root, port=0):
+def environment(root, port=0, runtime=None):
     root = Path(root).resolve()
     for name in ('home', 'tmp', 'cache', 'state'):
         (root/name).mkdir(parents=True, exist_ok=True)
@@ -28,21 +28,45 @@ def environment(root, port=0):
             'DSH_HOME': str(root/'home/dsh'), 'DSH_SUPERVISOR_STATE': str(root/'state'),
             'PLAYWRIGHT_BROWSERS_PATH': str(Path.home()/'Library/Caches/ms-playwright'),
             'GIT_TERMINAL_PROMPT': '0', 'LANG': 'en_US.UTF-8'}
-    runtime=independent_runtime()
+    runtime=_resolve_runtime(runtime)
     if runtime:
         env['DSH_RUNTIME_NODE_MODULES']=str(runtime/'node_modules')
     return env
 
 
-def independent_runtime():
-    path=Path.home()/'.dsh/supervisor/autopilot/runtime'
-    manifest=path/'package.json'
-    if manifest.exists() and json.loads(manifest.read_text()).get('name')=='autopilot-independent-runtime':
-        return path
+def _runtime_installed(path):
+    """运行目录须为 install-runtime 写入的固定 Harness 运行时。"""
+    manifest=Path(path)/'package.json'
+    try:
+        return manifest.is_file() and json.loads(manifest.read_text()).get('name')=='autopilot-independent-runtime'
+    except (OSError, ValueError):
+        return False
+
+
+def independent_runtime(autopilot_root=None):
+    """按 state/root、环境变量、默认 home 的顺序解析固定运行时，缺省时保持旧部署兼容。"""
+    candidates=[]
+    if autopilot_root:
+        candidates.append(Path(autopilot_root).expanduser()/'runtime')
+    state=os.environ.get('DSH_SUPERVISOR_STATE')
+    if state:
+        candidates.append(Path(state).expanduser()/'autopilot/runtime')
+    candidates.append(Path.home()/'.dsh/supervisor/autopilot/runtime')
+    for path in candidates:
+        if _runtime_installed(path):
+            return path
     return None
 
 
-def command(argv, root, workspace, *, install=False, ports=()):
+def _resolve_runtime(runtime=None):
+    """显式传入时校验并采用；缺省时按 state/root 派生，避免非默认 --state-dir 丢失运行时。"""
+    if runtime is None:
+        return independent_runtime()
+    path=Path(runtime)
+    return path if _runtime_installed(path) else None
+
+
+def command(argv, root, workspace, *, install=False, ports=(), runtime=None):
     if sys.platform != 'darwin':
         raise ValueError('当前隔离执行仅支持 macOS；未配置隔离后端，禁止无沙箱启动')
     root, workspace = Path(root).resolve(), Path(workspace).resolve()
@@ -51,7 +75,7 @@ def command(argv, root, workspace, *, install=False, ports=()):
             Path('/Library'), Path('/opt'), Path('/private/var/db'), Path('/dev'),
             Path.home()/'.nvm/versions', Path.home()/'Library/Caches/ms-playwright']
     read += [Path('/private/etc')]
-    runtime=independent_runtime()
+    runtime=_resolve_runtime(runtime)
     if runtime:
         read.append(runtime)
     exceptions = ' '.join('(require-not (subpath '+json.dumps(str(p))+'))' for p in read)
@@ -91,7 +115,7 @@ def stop(proc):
         raise ValueError('隔离进程尚未停止')
 
 
-def run(argv, workspace, root, name, *, install=False, ports=(), timeout=600):
+def run(argv, workspace, root, name, *, install=False, ports=(), timeout=600, runtime=None):
     root = Path(root); root.mkdir(parents=True, exist_ok=True)
     started = time.time()
     log = root/(name+'.log')
@@ -100,9 +124,9 @@ def run(argv, workspace, root, name, *, install=False, ports=(), timeout=600):
     status = 'blocked'
     reason = ''
     try:
-        wrapped = command(argv, root, workspace, install=install, ports=ports)
+        wrapped = command(argv, root, workspace, install=install, ports=ports, runtime=runtime)
         with log.open('w') as stream:
-            proc = subprocess.Popen(wrapped, cwd=workspace, env=environment(root), stdout=stream,
+            proc = subprocess.Popen(wrapped, cwd=workspace, env=environment(root, runtime=runtime), stdout=stream,
                                     stderr=subprocess.STDOUT, start_new_session=True)
             code = proc.wait(timeout=timeout)
             status = 'pass' if code == 0 else 'fail'

@@ -15,9 +15,9 @@ from review_core import Store, Conflict
 from autopilot.api import Control
 from autopilot.scheduler import Scheduler
 from autopilot.project import migrate, manifest_hash
-from autopilot.onboarding import detect, execute, startup, onboard
+from autopilot.onboarding import detect, execute, startup, verify, onboard
 from autopilot.workspace import git, snapshot
-from autopilot.isolated import environment, run
+from autopilot.isolated import command, environment, independent_runtime, run
 from autopilot.probes import validate
 
 spec=importlib.util.spec_from_file_location('updater', ROOT/'scripts/platform-updater.py')
@@ -43,7 +43,62 @@ class GenericTests(unittest.TestCase):
         config=detect(self.repo)
         self.assertEqual(config['commands']['install'][0][1], 'ci')
         self.assertEqual(config['commands']['test'], [['npm','run','test']])
+        self.assertEqual(config['install_evidence']['package_lock_sha256'], __import__('hashlib').sha256(b'{}').hexdigest())
+        self.assertNotIn('unpinned', config['install_evidence'])
         self.assertTrue(config['blockers'])
+
+    def test_independent_runtime_follows_state_root(self):
+        state=self.root/'custom-state'
+        runtime=state/'autopilot/runtime'
+        runtime.mkdir(parents=True)
+        (runtime/'package.json').write_text(json.dumps({'name':'autopilot-independent-runtime'}))
+        self.assertEqual(independent_runtime(state/'autopilot'), runtime)
+        env=environment(state/'execution',runtime=runtime)
+        self.assertEqual(env['DSH_RUNTIME_NODE_MODULES'],str(runtime/'node_modules'))
+        if sys.platform=='darwin':
+            root=state/'execution';root.mkdir(parents=True,exist_ok=True)
+            command([sys.executable,'-c','pass'],root,self.repo,runtime=runtime)
+            self.assertIn(str(runtime),(root/'execute.sb').read_text())
+        # 显式传入无效运行时不静默回退，避免注入非固定运行时
+        invalid=environment(state/'execution2',runtime=state/'missing-runtime')
+        self.assertNotIn('DSH_RUNTIME_NODE_MODULES',invalid)
+
+    def test_unlocked_npm_is_blocked_unless_explicitly_configured(self):
+        (self.repo/'package.json').write_text(json.dumps({'scripts':{'start':'node server.js'}}))
+        config=detect(self.repo)
+        self.assertNotIn('install',config['commands'])
+        self.assertIsNone(config['install_evidence']['package_lock_sha256'])
+        blocker=next((b for b in config['blockers'] if 'package-lock.json' in b),None)
+        self.assertIsNotNone(blocker)
+        blocked=verify(self.repo,self.root/'execution',config)
+        self.assertEqual(blocked['status'],'blocked')
+        self.assertIn('package-lock.json',blocked['reason'])
+        self.assertEqual(blocked['checks'],[])
+        # 运行守卫同样拒绝未固化且未显式声明的 npm install
+        guard={'version':1,'commands':{'install':[['npm','install','--ignore-scripts','--no-audit','--no-fund']]},'blockers':[]}
+        guarded=verify(self.repo,self.root/'execution',guard)
+        self.assertEqual(guarded['status'],'blocked')
+        self.assertIn('install_policy',guarded['reason'])
+        self.assertEqual(guarded['checks'],[])
+        # 显式声明可复现安装策略后解除默认阻断并保留命令
+        (self.repo/'.autopilot.json').write_text(json.dumps({'version':1,'install_policy':'explicit-unpinned',
+            'commands':{'install':[['npm','install','--ignore-scripts','--no-audit','--no-fund']],
+                        'start':[['npm','run','start']]}}))
+        explicit=detect(self.repo)
+        self.assertNotIn(blocker,explicit['blockers'])
+        self.assertEqual(explicit['install_policy'],'explicit-unpinned')
+        self.assertTrue(explicit['install_evidence']['unpinned'])
+        self.assertEqual(explicit['commands']['install'][0][:2],['npm','install'])
+
+    def test_unlocked_npm_explicit_install_command_lifts_blocker(self):
+        (self.repo/'package.json').write_text(json.dumps({'scripts':{'start':'node server.js'}}))
+        (self.repo/'.autopilot.json').write_text(json.dumps({'version':1,
+            'commands':{'install':[['npm','install','--ignore-scripts','--no-audit','--no-fund']],
+                        'start':[['npm','run','start']]}}))
+        config=detect(self.repo)
+        self.assertFalse([b for b in config['blockers'] if 'package-lock.json' in b])
+        self.assertEqual(config['install_policy'],'explicit-unpinned')
+        self.assertEqual(config['commands']['install'][0][:2],['npm','install'])
 
     def test_python_and_jvm_are_detected_without_guessing(self):
         for name,stack in [('pyproject.toml','python'),('pom.xml','java')]:
