@@ -10,6 +10,19 @@ import reviewers
 LOG_NAME = re.compile(r"session(?:\.v(?P<version>\d+))?\.jsonl(?:\.zstd)?$")
 
 
+@contextmanager
+def dispatch_lock(state):
+    """Serialize process admission with the standalone updater's drain barrier."""
+    root = Path(state) / "autopilot"
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / "dispatch.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 def alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -585,12 +598,14 @@ class Engine:
             raise ValueError("审查范围必须为非空相对路径列表")
         validate_scope(packet["cwd"], scopes)
         now = time.time()
-        with self.store.transaction() as db:
+        with dispatch_lock(self.store.state), self.store.transaction() as db:
             old = db.execute("SELECT * FROM reviews WHERE id=?", (rid,)).fetchone()
             if old:
                 if json.loads(old["packet"]) != packet or old["mode"] != mode:
                     raise Conflict("request_id 已用于不同请求")
                 return rid
+            if (self.store.state / "autopilot/update-drain.json").exists():
+                raise Conflict("平台正在更新，暂缓新审查；已有审查可继续读取结果")
             cached = self.store.state / "reviews" / rid / "result.json"
             if cached.exists():
                 old_packet = json.loads((cached.parent / "request.json").read_text())

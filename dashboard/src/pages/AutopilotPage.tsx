@@ -13,6 +13,7 @@ import ProjectEvidence from '../ProjectEvidence';
 import DeliveryBoard, {type DeliveryBoardData} from '../DeliveryBoard';
 import DeliveryTasks from '../DeliveryTasks';
 import ProjectSettings from '../ProjectSettings';
+import RepositoryScans from '../RepositoryScans';
 import TodayQuota from '../TodayQuota';
 import { projectSections as sections, useProjectNavigation, type ProjectSection } from '../projectNavigation';
 
@@ -66,6 +67,7 @@ export default function AutopilotPage() {
   const selected=selection?.record;
   const setSelected=(record:RecordItem|undefined,kind='')=>setSelection(record?{record,kind:kind==='online_requirements'?'requirements':kind}:undefined);
   const [feedback,setFeedback]=useState(false);
+  const [scanning,setScanning]=useState(false);
   const [filters,setFilters]=useState<Record<string,{query?:string;status?:string}>>({});
   const [busy,setBusy]=useState(false);
   const [form]=Form.useForm();
@@ -159,9 +161,10 @@ export default function AutopilotPage() {
   const selectedKind=node==='signals'?'signals':node==='requirements'?'requirements':node==='online'?'online_requirements':node==='merge'?'deliveries':'runs';
   const selectedData=node==='product'?projectRuns:node==='design'?designRuns:node==='signals'?scoped(signals.data).filter(s=>s.status==='pending'):node==='requirements'?projectRequirements.filter(r=>['pending','investigating','awaiting_external'].includes(r.status)):node==='online'?onlineRequirements:node==='merge'?stageDeliveries(node):projectRuns.filter(r=>nodeStatuses[node ?? 'product']?.includes(r.status));
   return <>
+    {scanning && <RepositoryScans onClose={()=>setScanning(false)} productId={project?.id} onChanged={reload}/>}
     <div className="project-page-heading">
       <div><div className="project-eyebrow">持续研发 / {sections[section].label}</div><div className="project-title-row"><h1>{project?.name || '持续研发控制中心'}</h1><Tag>{project?(project.status==='observing'?'仅监测':labels[project.status] || project.status):'尚未接入项目'}</Tag></div><p>{project?.goal || '从巡检发现到上线观察，每一次推进都有据可查。'}</p></div>
-      <Space><Select aria-label="选择项目" value={project?.id} placeholder="选择项目" style={{width:160}} options={products.data?.map(p=>({label:p.name,value:p.id}))} onChange={id=>{setParams(p=>{p.set('project',id);return p;});setNode(undefined);setSelected(undefined);}}/><Button icon={<PlusOutlined/>} onClick={()=>{form.setFieldValue('product',project?.id);setFeedback(true);}}>记录需求</Button><Button aria-label="刷新项目" icon={<ReloadOutlined/>} onClick={()=>void reload()}/></Space>
+      <Space><Button onClick={()=>setScanning(true)}>接入仓库</Button><Select aria-label="选择项目" value={project?.id} placeholder="选择项目" style={{width:160}} options={products.data?.map(p=>({label:p.name,value:p.id}))} onChange={id=>{setParams(p=>{p.set('project',id);return p;});setNode(undefined);setSelected(undefined);}}/><Button icon={<PlusOutlined/>} onClick={()=>{form.setFieldValue('product',project?.id);setFeedback(true);}}>记录需求</Button><Button aria-label="刷新项目" icon={<ReloadOutlined/>} onClick={()=>void reload()}/></Space>
     </div>
     {project?.runtime_recovery_state && <Alert type="info" showIcon message={String((project.runtime_recovery_state as Record<string,unknown>).message || '应用恢复状态已更新')} description={<>尝试次数：{Number((project.runtime_recovery_state as Record<string,unknown>).attempts || 0)} · 下次检查：{time(Number((project.runtime_recovery_state as Record<string,unknown>).next_check_at || 0))}</>}/>}
     {error && <Alert type="error" showIcon message={<ErrorNotice value={error}/>}/>}

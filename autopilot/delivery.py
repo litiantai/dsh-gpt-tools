@@ -223,7 +223,7 @@ def tick(scheduler, now=None):
     now = time.time() if now is None else now
     ledger = scheduler.ledger
     for product in ledger.list('products'):
-        if not enabled(product):
+        if product.get('automation_disabled') or not enabled(product):
             continue
         if product.get('delivery_flow', 'review_before_release') == 'review_before_release':
             from .staged_delivery import tick_product

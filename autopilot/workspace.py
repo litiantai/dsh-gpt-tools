@@ -21,6 +21,10 @@ def git(root, *args):
 def source_files(root):
     """尊重 Git ignore，并排除运行数据、秘密文件和越界符号链接。"""
     root = Path(root).resolve()
+    config = root/'.autopilot.json'
+    if config.is_symlink():
+        raise ValueError('项目配置不能是符号链接')
+    excluded_paths = json.loads(config.read_text()).get('exclude', []) if config.is_file() else []
     result = subprocess.check_output(['git','-C',str(root),'ls-files','-z','--cached','--others','--exclude-standard'])
     names=result.decode().split('\0')
     # Offline vendor bundles are source dependencies even when a global dist/ ignore matches them.
@@ -32,6 +36,8 @@ def source_files(root):
         rel = Path(name)
         excluded=EXCLUDED-{'dist','lib'} if rel.parts and rel.parts[0]=='vendor' else EXCLUDED
         if not name or rel.is_absolute() or '..' in rel.parts or any(p in excluded for p in rel.parts) or SENSITIVE.search(name):
+            continue
+        if any(str(rel) == p or str(rel).startswith(p.rstrip('/')+'/') for p in excluded_paths):
             continue
         path = root / rel
         if not path.exists():
@@ -50,12 +56,14 @@ def digest(root):
                                       for p in sorted(source_files(root))]).encode()).hexdigest()
 
 
-def snapshot(source, destination):
+def snapshot(source, destination, tracked_only=False, exclude=()):
     """在新仓库记录当前工作树；不修改来源索引、分支及未提交文件。"""
     source, destination = Path(source).resolve(), Path(destination).resolve()
     if destination.exists():
         raise ValueError('基线目录已存在，禁止覆盖')
-    files = list(source_files(source))
+    tracked = set(git(source, "ls-files").splitlines()) if tracked_only else None
+    files = [p for p in source_files(source) if (tracked is None or str(p) in tracked)
+             and not any(str(p) == x or str(p).startswith(x.rstrip("/")+"/") for x in exclude)]
     destination.mkdir(parents=True, mode=0o700)
     try:
         for rel in files:

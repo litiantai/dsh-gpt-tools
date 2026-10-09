@@ -23,6 +23,19 @@ class Control:
 
     def get(self,path):
         parts = path.strip('/').split('/')
+        if len(parts)==3 and parts[0]=='scans' and parts[2]=='screenshot':
+            scan=self.ledger.get('scans',parts[1])
+            check=next((c for c in scan.get('result',{}).get('checks',[]) if c.get('screenshot')),None)
+            if not check:
+                raise KeyError('扫描尚无截图')
+            path=Path(check['screenshot']).resolve()
+            root=(self.ledger.store.state/'autopilot/scans'/scan['id']).resolve()
+            if not path.is_relative_to(root) or path.suffix!='.png' or path.stat().st_size>12*1024*1024:
+                raise ValueError('截图路径或大小无效')
+            content=path.read_bytes()
+            if hashlib.sha256(content).hexdigest()!=check.get('screenshot_sha256'):
+                raise ValueError('扫描截图发生变化')
+            return {'data_url':'data:image/png;base64,'+base64.b64encode(content).decode()}
         if len(parts)==3 and parts[2]=='context':
             from .record_context import record_context
             return record_context(self.ledger, parts[0], parts[1])
@@ -76,6 +89,19 @@ class Control:
     def mutate(self,path,body):
         parts = path.strip('/').split('/')
         kind = parts[0]
+        if parts == ['scans']:
+            source = body.get('source', '')
+            if not isinstance(source, str) or not (Path(source).is_absolute() or source.startswith('https://')):
+                raise ValueError('请提供本地仓库绝对路径或 HTTPS Git URL')
+            if source.startswith('https://'):
+                from urllib.parse import urlsplit
+                address = urlsplit(source)
+                if not address.hostname or address.username or address.password or address.query or address.fragment:
+                    raise ValueError('仓库 URL 不允许内嵌凭据或查询参数')
+            product_id = body.get('product_id', '')
+            if product_id:
+                self.ledger.get('products', product_id)
+            return self.ledger.create('scans', {'source': source, 'product_id': product_id, 'title': '仓库接入扫描', 'receipts': []}, 'queued')
         if parts == ['products']:
             config = body.get('config',{})
             self.validate_product(config)
@@ -137,6 +163,31 @@ class Control:
         old=self.ledger.get(kind,ident)
         if body.get('version') != old['version']:
             raise Conflict('记录已更新，请刷新后重试')
+        if kind == 'scans' and action == 'retry':
+            if old.get('call') or old['status'] == 'running':
+                raise Conflict('扫描仍在执行，请等待进程退出')
+            return self.ledger.create('scans', {k: old[k] for k in ('source', 'product_id', 'title')} | {'previous_scan_id': ident, 'receipts': []}, 'queued')
+        if kind == 'scans' and action == 'onboard':
+            if old['status'] != 'pass' or old.get('product_id'):
+                raise Conflict('仅可登记尚未关联项目的通过扫描')
+            from .onboarding import onboard
+            return onboard(self.ledger, old, body)
+        if kind == 'scans' and action == 'apply':
+            if old['status'] != 'pass' or not (old.get('product_id') or body.get('product_id')):
+                raise Conflict('仅可将通过的扫描应用于已关联项目')
+            if old.get('product_id') and body.get('product_id') and old['product_id'] != body['product_id']:
+                raise Conflict('扫描记录已关联其他项目，不能应用到当前项目')
+            product = self.ledger.get('products', old.get('product_id') or body['product_id'])
+            from .project import generic
+            if not generic(product):
+                raise Conflict('旧适配器项目不可应用通用扫描；请登记独立项目')
+            source = product.get('repository_source', product['source'])
+            same = (Path(old['source']).resolve() == Path(source).resolve()) if Path(old['source']).is_absolute() and Path(source).is_absolute() else old['source'] == source
+            if not same:
+                raise Conflict('扫描仓库与当前项目源码不一致')
+            result = self.configure_product(product['id'], {'version': body.get('product_version'), 'config': {
+                'project_config': old['result']['configuration'], 'config_scan_id': ident}})
+            return result
         if kind == 'products' and action == 'migrate-git':
             from .delivery import start_migration
             return start_migration(self.ledger, old)
@@ -161,6 +212,14 @@ class Control:
                     return self.ledger.update(kind,ident,latest['version'],{'runtime_recovery_state':{'phase':'requested','attempts':0,'next_check_at':0,'message':'已安排恢复应用'}},db=db)
             if action in ('enable','pause','observe'):
                 if action=='enable':
+                    if old.get('automation_disabled'):
+                        raise Conflict('项目已停用；需先显式解除停用状态')
+                    from .project import generic
+                    if generic(old):
+                        if not old.get('agents') or not old.get('config_scan_id'):
+                            raise Conflict('请先完成接入扫描并配置模型分工')
+                        if any(r.get('provider')=='harness' for r in old['agents'].values()) and not (Path(old.get('worker_runtime','/nonexistent'))/'node_modules/@deepseek-ai/dsh/package.json').is_file():
+                            raise Conflict('独立 Harness 运行时尚未安装')
                     for key in ('repository','adapter','executor'):
                         if not old.get(key):
                             raise ValueError(f'尚未配置 {key}')
@@ -189,6 +248,10 @@ class Control:
                     'execution_seconds':0,'timing_repair_reason':'旧墙钟计时超过调用超时上限且执行成功；历史实际运行时长无法还原，保留旧记录并恢复一次单调计时窗口',
                     'reason':'旧计时异常已隔离，使用单调计时继续开发'},old.get('resume_status','developing'))
             if action=='release' and old['status']=='accepted':
+                product=self.ledger.get('products', old['product_id'])
+                from .project import generic
+                if generic(product) and not {'idle','publish','observe'} <= set(product.get('adapter_spec',{}).get('capabilities',[])):
+                    raise Conflict('项目尚未配置部署能力，已验收成果继续保留')
                 from .delivery import configured
                 if configured(self.ledger.get('products', old['product_id'])):
                     raise Conflict('已启用 Git 交付；验收成果将自动进入每日 release，客户端安装独立管理')
@@ -276,6 +339,8 @@ class Control:
 
     @staticmethod
     def validate_product(config):
+        from .project import validate
+        validate(config)
         if 'runtime_recovery' in config:
             value=config['runtime_recovery']
             if not isinstance(value,dict) or set(value)!={'enabled'} or type(value.get('enabled')) is not bool:
@@ -331,5 +396,5 @@ class Control:
                 raise ValueError('请配置需求发现、实现、验证、验收四个角色')
             for name,provider in required.items():
                 selected=selection(config['agents'][name])
-                if selected['provider']!=provider:
-                    raise ValueError(f'{name} 当前应使用 {provider}')
+                if selected['provider'] not in ('codex', 'harness', 'claude'):
+                    raise ValueError(f'{name} 执行器不受支持')
