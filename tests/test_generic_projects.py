@@ -246,6 +246,67 @@ class GenericTests(unittest.TestCase):
         self.assertTrue((root/'verification-diff.patch').is_file())
         self.assertTrue((root/'verification-facts.json').is_file())
 
+    def test_validate_falls_back_to_bare_repository_when_worktree_metadata_unreadable(self):
+        """checkout 的 Git 元数据不可读时，显式下发的 bare 仓库仍能生成 base..commit 差异。"""
+        from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
+        # 移走 worktree 指针，使 `git -C workspace` 无法解析；只有 bare 仓库可用。
+        (workspace/'.git').rename(self.root/'displaced-worktree-git')
+        fake=self.root/'codex-bare-fallback'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'assert "+change" in prompt\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"bare repository diff"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        record={'id':'round','workspace':str(workspace),'base_commit':base,'commit':head,
+                'repository':str(bare),'git_dir':str(bare)}
+        with patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv):
+            result=model('validate',{'product':product,'record':record,'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        root=Path(result['evidence'])
+        facts=json.loads((root/'verification-facts.json').read_text())
+        self.assertEqual(facts['source'],'repository')
+        self.assertEqual((facts['base_commit'],facts['commit'],facts['merge_base']),(base,head,base))
+        self.assertEqual([line.split('\t')[-1] for line in facts['changed']],['app.py'])
+        self.assertIn('+change',(root/'verification-diff.patch').read_text())
+
+    def test_delivery_verify_embeds_self_contained_diff_evidence(self):
+        """交付复验把差异事实落盘到证据目录，并写入独立验证检查与 verification.json。"""
+        import hashlib as _hashlib
+        from autopilot.delivery_review import verify
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        base=git(self.repo,'rev-parse','HEAD')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        head=git(self.repo,'rev-parse','HEAD')
+        adapter=self.root/'fake-verify-adapter'
+        adapter.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'payload=json.load(sys.stdin)\n'
+            'material=payload["verification"]\n'
+            'assert material["diff_file"] and material["facts_file"]\n'
+            'assert "+change" in Path(material["diff_file"]).read_text()\n'
+            'print(json.dumps({"status":"pass","checks":['
+            '{"name":"install-0","status":"pass","required":True},'
+            '{"name":"独立业务验证","status":"pass","required":True,"evidence":{"provider":"codex"}}]}))\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)]}
+        folder=self.root/'verification-evidence';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture'},'requirements':[]},
+                      self.repo,head,base,folder)
+        self.assertEqual(result['status'],'pass',result)
+        facts=json.loads((folder/'verification-facts.json').read_text())
+        self.assertEqual(facts['merge_base'],base)
+        check=next(c for c in result['checks'] if c['name']=='独立业务验证')
+        self.assertEqual(check['evidence']['merge_base'],base)
+        self.assertEqual(check['evidence']['diff_sha256'],
+                         _hashlib.sha256((folder/'verification-diff.patch').read_bytes()).hexdigest())
+        self.assertEqual(check['evidence']['changed_files'],['M\tapp.py'])
+        written=json.loads((folder/'verification.json').read_text())
+        self.assertEqual(written['verification']['merge_base'],base)
+        self.assertNotIn('diff',written['verification'])
+
     def test_codex_state_is_private_and_login_reference_is_readonly(self):
         from autopilot.codex_executor import execute as model
         login=self.root/'fixture-codex';login.mkdir()

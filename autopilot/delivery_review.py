@@ -143,16 +143,46 @@ def verify(request, workspace, head, base, folder):
                 'resolution_probes': [p for r in requirements for p in r.get('resolution_probes', [])]}
     record = batch | {'id': str(uuid.uuid4()), 'workspace': str(workspace), 'commit': head, 'base_commit': base,
         'summary': '交付整合后完整验证；核对全部关联业务验收条件'}
+    if not (record.get('repository') and record.get('git_dir')):
+        # 交付流程显式传入 bare 仓库；缺失时按工作区元数据补一个可用 git 来源。
+        try:
+            from .workspace import metadata
+            _, common = metadata(workspace)
+            record.setdefault('repository', str(common)); record.setdefault('git_dir', str(common))
+        except (subprocess.CalledProcessError, OSError, ValueError):
+            pass
     argv = product.get('adapter')
     if not argv:
         return {'status': 'blocked', 'reason': '项目缺少必需验证适配器'}
-    proc = subprocess.run(argv + ['verify'], input=json.dumps(request | {'record': record, 'requirement': combined}),
+    from .codex_executor import verification_material
+    verification = None
+    verification_error = None
+    try:
+        # 在未沙箱化的控制器侧落盘 base..commit 差异，作为独立验证的自包含事实证据。
+        verification = verification_material(workspace, record, folder)
+    except RuntimeError as exc:
+        verification_error = str(exc)
+    payload = request | {'record': record, 'requirement': combined}
+    if verification:
+        payload['verification'] = verification
+    proc = subprocess.run(argv + ['verify'], input=json.dumps(payload),
         text=True, capture_output=True, timeout=7200)
     (folder / 'verification.stderr.log').write_text(proc.stderr)
     try:
         result = json.loads(proc.stdout)
     except ValueError:
         return {'status': 'blocked', 'reason': '验证适配器未返回结构化结果'}
+    if verification:
+        diff_path = Path(verification['diff_file'])
+        diff_hash = hashlib.sha256(diff_path.read_bytes()).hexdigest() if diff_path.is_file() else ''
+        for check in result.get('checks', []):
+            if check.get('name') == '独立业务验证' and isinstance(check.get('evidence'), dict):
+                check['evidence'] |= {'diff_file': verification['diff_file'], 'facts_file': verification['facts_file'],
+                    'diff_sha256': diff_hash, 'changed_files': verification['changed_files'],
+                    'merge_base': verification['merge_base'], 'source': verification['source']}
+        result['verification'] = {key: value for key, value in verification.items() if key != 'diff'}
+    elif verification_error:
+        result['verification'] = {'status': 'blocked', 'reason': verification_error}
     atomic(folder / 'verification.json', result)
     if proc.returncode or not result.get('checks') or any(c.get('status') != 'pass' for c in result['checks'] if c.get('required', True)):
         return {'status': 'fail', 'reason': '交付必需检查未通过', 'checks': result.get('checks', [])}
@@ -219,7 +249,8 @@ def execute(action, request):
         if proof.get('head_sha') != head or proof.get('base_sha') != base:
             return {'status': 'stale', 'stale': True, 'reason': '运行验证缺少当前版本的代码评审通过证据'}
         gh.status(head, 'pending', '代码评审已通过，正在执行合并前运行验证')
-        checked = verify(request, workspace, head, base, folder)
+        checked = verify(request | {'record': record | {'repository': str(repo), 'git_dir': str(repo)}},
+                         workspace, head, base, folder)
         if checked.get('status') != 'pass':
             gh.status(head, 'failure', '交付验证：' + checked.get('reason', '必需检查未通过'))
             return checked
