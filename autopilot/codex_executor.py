@@ -72,15 +72,16 @@ def verification_material(workspace,record,root):
                 patch=''
         patch=SECRET.sub(lambda m:(m[1] or m[2])+'[redacted]',patch)
         changed=[line for line in names.splitlines() if line.strip()]
+        digest_fields={key:record.get(key) for key in ('source_digest','baseline_source_digest') if record.get(key)}
         facts=redact({'base_commit':base,'commit':commit,'merge_base':merge_base,'head_subject':subject,
-                      'changed':changed,'source':source})
+                      'changed':changed,'source':source} | digest_fields)
         diff_file=root/'verification-diff.patch'; facts_file=root/'verification-facts.json'
         diff_file.write_text(patch,encoding='utf-8')
         facts_file.write_text(json.dumps(facts,ensure_ascii=False),encoding='utf-8')
         return {'base_commit':base,'commit':commit,'merge_base':merge_base,'source':source,
                 'diff_file':str(diff_file),'facts_file':str(facts_file),'changed_files':changed,
                 'diff_sha256':hashlib.sha256(patch.encode('utf-8')).hexdigest(),
-                'diff':patch[:INLINE_DIFF_LIMIT],'diff_truncated':len(patch)>INLINE_DIFF_LIMIT,'diff_chars':len(patch)}
+                'diff':patch[:INLINE_DIFF_LIMIT],'diff_truncated':len(patch)>INLINE_DIFF_LIMIT,'diff_chars':len(patch)} | digest_fields
     raise RuntimeError(f'控制器无法生成 {base}..{commit} 的源码差异：'+('；'.join(failures) or '没有可用的 git 来源'))
 
 
@@ -127,6 +128,7 @@ def execute(action,request):
     ledger=Ledger(Store(Path(request['state_root']).parent))
     from .project import generic
     verification=None
+    metadata_error=None
     if action=='validate':
         supplied=request.get('verification')
         if isinstance(supplied,dict) and supplied.get('diff_file'):
@@ -183,8 +185,15 @@ def execute(action,request):
                         'diff_sha256='+str(verification.get('diff_sha256') or '')+'）。'
                         '完整差异落盘于 verification.diff_file 与 verification.facts_file，可只读查阅；'
                         + ('内联的 verification.diff 因超过上限已截断，须以落盘文件为准；' if verification.get('diff_truncated') else '')
-                        + '验证者不需要也不得依赖读取 checkout 外的 Git 元数据。'
+                        + '控制器落盘的 diff/facts 与 source_digest 是本次验收的权威事实证据：'
+                        '验证者不需要也不得依赖读取 checkout 外的 Git 元数据，git 只读复核是可选项；'
+                        '当沙箱拒绝读取 git 元数据（EPERM）时，这不是 blocked 理由，必须以控制器证据完成判断；'
+                        '只有控制器未提供差异证据或没有可核对的验收条件时才返回 blocked。'
                         '这不是开发结论，仍须在工作区对改动执行必要的定向测试或复核。')
+        if verification.get('source_digest') or verification.get('baseline_source_digest'):
+            instruction += (' 控制器自算工作区源码摘要 source_digest='+str(verification.get('source_digest') or '')
+                            +'，导入基线摘要 baseline_source_digest='+str(verification.get('baseline_source_digest') or '')
+                            +'，二者一致已由控制器核对（baseline_digest_verified='+str(bool(verification.get('baseline_digest_verified')))+'）。')
         if verification.get('baseline_acceptance'):
             instruction += (' 本次是基线/首次源码交付：验收条件来自导入基线摘要与已登记 acceptance_checks，'
                             '须据此核对真实产物，不得用健康检查或空条件代替。')
@@ -225,6 +234,19 @@ def execute(action,request):
                 # exposing user config (which may carry credentials).
                 'GIT_CONFIG_GLOBAL':'/dev/null','GIT_CONFIG_NOSYSTEM':'1',
                 'npm_config_cache':str(root/'cache/npm'),'PIP_CACHE_DIR':str(root/'cache/pip')}
+        if action == 'validate':
+            # 显式下发 git 来源，验证子进程无需在 $HOME 被拒绝后自行发现 gitdir；
+            # git 只读复核失败不影响结论，权威证据始终是控制器落盘的差异与摘要。
+            git_dir_value = record.get('git_dir') or record.get('repository')
+            if not git_dir_value:
+                try:
+                    from .workspace import metadata
+                    git_dir_value = str(metadata(workspace)[0])
+                except (subprocess.CalledProcessError, OSError, ValueError):
+                    git_dir_value = None
+            if git_dir_value:
+                env['GIT_DIR'] = str(Path(git_dir_value).resolve())
+                env['GIT_WORK_TREE'] = str(Path(workspace).resolve())
         if provider == 'codex':
             # Configure only the child CLI's supported state directory. Reuse its
             # normal login via a read-only reference; never copy/read credentials
@@ -247,8 +269,10 @@ def execute(action,request):
         metadata=[]
         try:
             metadata=[Path(path).resolve() for path in metadata_paths(workspace)]
-        except (subprocess.CalledProcessError, OSError, ValueError):
+        except (subprocess.CalledProcessError, OSError, ValueError) as exc:
+            # 元数据不可读不再静默为空：降级为“以内联/落盘证据为准”，并把原因记入结果。
             metadata=[]
+            metadata_error=_git_failure(exc)
         readable += metadata
         # 控制器预生成的差异证据可能落在本执行目录之外（例如通用适配器的
         # candidates/<id>/<round>）；显式只读加入其所在目录与本执行目录，
@@ -258,7 +282,8 @@ def execute(action,request):
             for key in ('diff_file','facts_file'):
                 value=verification.get(key)
                 if value:
-                    readable.append(Path(value).resolve().parent)
+                    target=Path(value).resolve()
+                    readable += [target.parent, target]
         if provider == 'codex':
             # The CLI may read its authentication/cache; model tools cannot read
             # other home directories or write shared Codex state.
@@ -277,4 +302,8 @@ def execute(action,request):
         return {'status':'blocked','reason':f'Codex {action} 未成功返回（{proc.returncode}）','evidence':str(root)}
     result=json.loads((root/'result.json').read_text())
     result.update(evidence=str(root),provider=provider,model=role['model'])
+    if verification:
+        result.setdefault('verification_source',verification.get('source'))
+    if metadata_error:
+        result['verification_note']='git 元数据不可读，独立验证以控制器落盘差异与源码摘要为权威证据：'+metadata_error
     return result

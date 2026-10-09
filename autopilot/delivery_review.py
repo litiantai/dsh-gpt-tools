@@ -156,8 +156,30 @@ def verify(request, workspace, head, base, folder):
         result = {'status': 'blocked', 'reason': '缺少业务需求验收条件与已登记 acceptance_checks，独立验证无从核对'}
         atomic(folder / 'verification.json', result)
         return result
+    actual_digest = None
+    if baseline_acceptance:
+        # 控制器在未沙箱化侧自算工作区摘要并与导入基线比对：不一致立即 blocked，
+        # 不启动验证适配器，避免验证者因无法读取 git 元数据而误判。
+        try:
+            actual_digest = digest(workspace)
+        except (subprocess.CalledProcessError, OSError, ValueError) as exc:
+            detail = '无法计算工作区源码摘要：' + str(exc)
+            result = {'status': 'blocked', 'reason': detail, 'baseline_source_digest': baseline_digest,
+                'verification': {'status': 'blocked', 'reason': detail, 'baseline_source_digest': baseline_digest}}
+            atomic(folder / 'verification.json', result)
+            return result
+        if actual_digest != baseline_digest:
+            result = {'status': 'blocked', 'reason': '工作区源码摘要与导入基线不一致，不能以基线验收条件启动独立验证',
+                'source_digest': actual_digest, 'baseline_source_digest': baseline_digest,
+                'verification': {'status': 'blocked', 'reason': '工作区源码摘要与导入基线不一致',
+                    'source_digest': actual_digest, 'baseline_source_digest': baseline_digest}}
+            atomic(folder / 'verification.json', result)
+            return result
     record = batch | {'id': str(uuid.uuid4()), 'workspace': str(workspace), 'commit': head, 'base_commit': base,
         'summary': '交付整合后完整验证；核对全部关联业务验收条件'}
+    if baseline_acceptance:
+        record['source_digest'] = actual_digest
+        record['baseline_source_digest'] = baseline_digest
     if not (record.get('repository') and record.get('git_dir')):
         # 交付流程显式传入 bare 仓库；缺失时按工作区元数据补一个可用 git 来源。
         try:
@@ -182,6 +204,17 @@ def verify(request, workspace, head, base, folder):
     if baseline_acceptance:
         verification['baseline_acceptance'] = True
         verification['acceptance_checks'] = registered_checks
+        verification['source_digest'] = actual_digest
+        verification['baseline_source_digest'] = baseline_digest
+        verification['baseline_digest_verified'] = True
+        facts_path = Path(verification.get('facts_file') or '')
+        if facts_path.is_file():
+            # 证据自包含：facts 文件与 verification 保持一致，离线即可复核摘要核对结论。
+            facts = json.loads(facts_path.read_text(encoding='utf-8'))
+            facts.update({'baseline_acceptance': True, 'acceptance_checks': registered_checks,
+                'source_digest': actual_digest, 'baseline_source_digest': baseline_digest,
+                'baseline_digest_verified': True})
+            facts_path.write_text(json.dumps(facts, ensure_ascii=False), encoding='utf-8')
     payload = request | {'record': record, 'requirement': combined, 'verification': verification}
     proc = subprocess.run(argv + ['verify'], input=json.dumps(payload),
         text=True, capture_output=True, timeout=7200)

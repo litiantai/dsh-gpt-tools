@@ -16,7 +16,7 @@ from autopilot.api import Control
 from autopilot.scheduler import Scheduler
 from autopilot.project import migrate, manifest_hash
 from autopilot.onboarding import detect, execute, startup, verify, onboard
-from autopilot.workspace import git, snapshot
+from autopilot.workspace import git, snapshot, digest
 from autopilot.isolated import command, environment, independent_runtime, run
 from autopilot.probes import validate
 
@@ -274,6 +274,34 @@ class GenericTests(unittest.TestCase):
         self.assertEqual([line.split('\t')[-1] for line in facts['changed']],['app.py'])
         self.assertIn('+change',(root/'verification-diff.patch').read_text())
 
+    def test_validate_passes_with_controller_evidence_when_git_metadata_unreadable(self):
+        """git 元数据解析失败不得阻断：以内联/落盘差异证据为准仍能 pass。"""
+        from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
+        fake=self.root/'codex-metadata-failure'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'assert "verification-diff.patch" in prompt\n'
+            'assert "+change" in prompt\n'
+            'assert "权威" in prompt and "EPERM" in prompt\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"controller evidence only"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        record={'id':'round','workspace':str(workspace),'base_commit':base,'commit':head,
+                'repository':str(bare),'git_dir':str(bare)}
+        with patch('autopilot.workspace.metadata_paths',side_effect=OSError('metadata denied')), \
+             patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv) as sandbox:
+            result=model('validate',{'product':product,'record':record,'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        root=Path(result['evidence'])
+        read_allowed=[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['read_allowed']]
+        self.assertIn(str((root/'verification-diff.patch').resolve()),read_allowed)
+        self.assertIn(str((root/'verification-facts.json').resolve()),read_allowed)
+        self.assertTrue((root/'verification-diff.patch').is_file())
+        self.assertTrue((root/'verification-facts.json').is_file())
+        self.assertIn('verification_note',result)
+        self.assertEqual(result['verification_source'],'repository')
+
     def test_delivery_verify_embeds_self_contained_diff_evidence(self):
         """交付复验把差异事实落盘到证据目录，并写入独立验证检查与 verification.json。"""
         import hashlib as _hashlib
@@ -284,6 +312,7 @@ class GenericTests(unittest.TestCase):
         (self.repo/'app.py').write_text('base\nchange\n')
         git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
         head=git(self.repo,'rev-parse','HEAD')
+        baseline=digest(self.repo)
         adapter=self.root/'fake-verify-adapter'
         adapter.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
             'payload=json.load(sys.stdin)\n'
@@ -293,7 +322,10 @@ class GenericTests(unittest.TestCase):
             'assert "+change" in Path(material["diff_file"]).read_text()\n'
             'assert material["baseline_acceptance"] is True\n'
             'assert material["acceptance_checks"]==["generic-projects"]\n'
-            'assert requirement["acceptance"] and "deadbeef" in requirement["acceptance"][0]\n'
+            'assert material["source_digest"]=='+repr(baseline)+'\n'
+            'assert material["baseline_source_digest"]=='+repr(baseline)+'\n'
+            'assert material["baseline_digest_verified"] is True\n'
+            'assert requirement["acceptance"] and '+repr(baseline)+' in requirement["acceptance"][0]\n'
             'assert requirement["resolution_probes"]==[{"path":"check:generic-projects",'
             '"pointer":"/status","operator":"equals","expected":"pass"}]\n'
             'print(json.dumps({"status":"pass","checks":['
@@ -303,11 +335,14 @@ class GenericTests(unittest.TestCase):
         product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
             'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
         folder=self.root/'verification-evidence';folder.mkdir()
-        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':'deadbeef'},'requirements':[]},
+        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':baseline},'requirements':[]},
                       self.repo,head,base,folder)
         self.assertEqual(result['status'],'pass',result)
         facts=json.loads((folder/'verification-facts.json').read_text())
         self.assertEqual(facts['merge_base'],base)
+        self.assertEqual(facts['source_digest'],baseline)
+        self.assertEqual(facts['baseline_source_digest'],baseline)
+        self.assertTrue(facts['baseline_digest_verified'])
         check=next(c for c in result['checks'] if c['name']=='独立业务验证')
         self.assertEqual(check['evidence']['merge_base'],base)
         self.assertEqual(check['evidence']['diff_sha256'],
@@ -317,6 +352,9 @@ class GenericTests(unittest.TestCase):
         self.assertEqual(written['verification']['merge_base'],base)
         self.assertTrue(written['verification']['baseline_acceptance'])
         self.assertEqual(written['verification']['acceptance_checks'],['generic-projects'])
+        self.assertEqual(written['verification']['source_digest'],baseline)
+        self.assertEqual(written['verification']['baseline_source_digest'],baseline)
+        self.assertTrue(written['verification']['baseline_digest_verified'])
         self.assertNotIn('diff',written['verification'])
 
     def test_delivery_verify_rejects_empty_acceptance_without_traceable_source(self):
@@ -345,6 +383,11 @@ class GenericTests(unittest.TestCase):
     def test_delivery_verify_fails_fast_when_diff_evidence_missing(self):
         """差异证据无法生成时不得在无证据情况下启动验证模型。"""
         from autopilot.delivery_review import verify
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        baseline=digest(self.repo)
         marker=self.root/'verify-ran-without-diff'
         adapter=self.root/'fake-verify-adapter-nodiff'
         adapter.write_text('#!'+sys.executable+'\nfrom pathlib import Path\n'
@@ -353,13 +396,41 @@ class GenericTests(unittest.TestCase):
         product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
             'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
         folder=self.root/'verification-nodiff';folder.mkdir()
-        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':'deadbeef'},'requirements':[]},
-                      self.repo/'missing','a'*40,'b'*40,folder)
+        # 摘要一致，但 base..commit 无法解析，差异证据生成失败：必须 fail-fast。
+        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':baseline},'requirements':[]},
+                      self.repo,'a'*40,'b'*40,folder)
         self.assertEqual(result['status'],'blocked',result)
         self.assertIn('独立验证缺少自包含差异证据',result['reason'])
         self.assertFalse(marker.exists())
         written=json.loads((folder/'verification.json').read_text())
         self.assertEqual(written['verification']['status'],'blocked')
+
+    def test_delivery_verify_blocks_baseline_digest_mismatch_without_adapter(self):
+        """工作区源码摘要与导入基线不一致时 fail-fast：不启动验证适配器。"""
+        from autopilot.delivery_review import verify
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        base=git(self.repo,'rev-parse','HEAD')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        head=git(self.repo,'rev-parse','HEAD')
+        marker=self.root/'verify-ran-with-baseline-mismatch'
+        adapter=self.root/'fake-verify-adapter-mismatch'
+        adapter.write_text('#!'+sys.executable+'\nfrom pathlib import Path\n'
+            'Path('+repr(str(marker))+').write_text("ran")\nprint("{}")\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
+            'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
+        folder=self.root/'verification-mismatch';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':'0'*64},'requirements':[]},
+                      self.repo,head,base,folder)
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertIn('摘要',result['reason'])
+        self.assertFalse(marker.exists())
+        written=json.loads((folder/'verification.json').read_text())
+        self.assertEqual(written['status'],'blocked')
+        self.assertEqual(written['baseline_source_digest'],'0'*64)
+        self.assertEqual(written['source_digest'],digest(self.repo))
 
     def test_validate_prompt_includes_truncated_diff_summary(self):
         """超大差异被截断时，提示词仍给出 merge_base/changed_files/diff_sha256 与落盘指引。"""

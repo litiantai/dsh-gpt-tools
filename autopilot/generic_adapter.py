@@ -202,6 +202,13 @@ def execute(action, request):
         root = Path(request['state_root'])/'candidates'/product['id']/record['id']
         root.mkdir(parents=True, exist_ok=True)
         before = digest(record['workspace'])
+        # 与 delivery_review 对齐：存在导入基线摘要时，控制器先自算工作区摘要并核对；
+        # 不一致立即 blocked，绝不启动验证模型，也不用字符串匹配伪造通过。
+        baseline_digest = record.get('baseline_source_digest')
+        if baseline_digest and before != baseline_digest:
+            return {'status': 'blocked',
+                'reason': '工作区源码摘要与导入基线不一致，不能以基线验收条件启动独立验证',
+                'source_digest': before, 'baseline_source_digest': baseline_digest, 'checks': []}
         result = verify(record['workspace'], root/'checks', product['project_config'],
                         runtime=independent_runtime(request.get('state_root')))
         if result['status'] != 'pass':
@@ -216,7 +223,15 @@ def execute(action, request):
             # 不再依赖下游按 adapter_spec.kind 决定是否生成；缺差异时直接阻断，
             # 绝不让验证模型在无差异证据的情况下空转。
             try:
-                payload = request | {'verification': verification_material(record['workspace'], record, root)}
+                facts_record = record
+                if baseline_digest:
+                    facts_record = record | {'source_digest': before, 'baseline_source_digest': baseline_digest}
+                material = verification_material(record['workspace'], facts_record, root)
+                if baseline_digest:
+                    material['source_digest'] = before
+                    material['baseline_source_digest'] = baseline_digest
+                    material['baseline_digest_verified'] = True
+                payload = request | {'verification': material}
             except RuntimeError as exc:
                 return {'status': 'blocked', 'reason': str(exc), 'checks': result['checks']}
         judged = evaluate('validate', payload | {'checks': result['checks']})

@@ -403,7 +403,11 @@ class StagedDeliveryTests(unittest.TestCase):
             'assert material["changed_files"]\n'
             'assert material["diff_sha256"]\n'
             'assert material["baseline_acceptance"] is True\n'
+            'assert material["source_digest"]\n'
+            'assert material["source_digest"]==material["baseline_source_digest"]\n'
+            'assert material["baseline_digest_verified"] is True\n'
             'assert requirement["acceptance"]\n'
+            'assert material["source_digest"] in requirement["acceptance"][0]\n'
             'assert requirement["resolution_probes"][0]["path"]=="check:generic-projects"\n'
             'assert "+value" in Path(material["diff_file"]).read_text()\n'
             'print(json.dumps({"status":"pass","checks":['
@@ -431,8 +435,13 @@ class StagedDeliveryTests(unittest.TestCase):
         evidence = delivery_paths(f.request(b))[1] / 'validations' / b['validation_id']
         facts = json.loads((evidence / 'verification-facts.json').read_text())
         self.assertEqual(facts['merge_base'], b['base_sha'])
+        self.assertEqual(facts['source_digest'], facts['baseline_source_digest'])
+        self.assertTrue(facts['baseline_digest_verified'])
         written = json.loads((evidence / 'verification.json').read_text())
         self.assertEqual(written['verification']['merge_base'], b['base_sha'])
+        self.assertEqual(written['verification']['source_digest'], facts['source_digest'])
+        self.assertEqual(written['verification']['baseline_source_digest'], facts['baseline_source_digest'])
+        self.assertTrue(written['verification']['baseline_digest_verified'])
 
     def test_failed_review_never_calls_github_merge(self):
         f = self.f
