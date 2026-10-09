@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
-sys.path[:0]=[str(ROOT), str(ROOT/'dsh-gpt-supervisor/scripts')]
+sys.path[:0]=[str(ROOT), str(ROOT/'dsh-gpt-supervisor/scripts'), str(ROOT/'tests')]
 from review_core import Store, Conflict
 from autopilot.api import Control
 from autopilot.scheduler import Scheduler
@@ -157,39 +157,94 @@ class GenericTests(unittest.TestCase):
         result=model('plan',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
         self.assertEqual(result['provider'],'codex');self.assertEqual(result['plan'],'implement')
 
+    def worktree_fixture(self):
+        """真实 bare repo + `git worktree add`：checkout 与 git 元数据分离。"""
+        private=self.root/'private';private.mkdir()
+        bare=private/'repository.git'
+        git(private,'init','--bare',str(bare))
+        seed=self.root/'seed';seed.mkdir()
+        git(seed,'init');git(seed,'config','user.name','Test');git(seed,'config','user.email','test@localhost')
+        (seed/'app.py').write_text('base\n')
+        git(seed,'add','.');git(seed,'commit','-m','fixture')
+        base=git(seed,'rev-parse','HEAD')
+        git(seed,'remote','add','origin',str(bare));git(seed,'push','origin','HEAD:refs/heads/main')
+        workspace=private/'linked'
+        git(bare,'worktree','add','-b','release',str(workspace),base)
+        git(workspace,'config','user.name','Test');git(workspace,'config','user.email','test@localhost')
+        (workspace/'app.py').write_text('base\nchange\n')
+        git(workspace,'add','.');git(workspace,'commit','-m','change the app')
+        return workspace,bare,base,git(workspace,'rev-parse','HEAD')
+
     def test_generic_codex_uses_outer_sandbox_for_tool_execution(self):
         from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
         fake=self.root/'codex-model'
         fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\nassert sys.argv[sys.argv.index("--sandbox")+1]=="danger-full-access"\nPath(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","plan":"outer policy"}))\n')
         fake.chmod(0o700)
-        product=self.p|{'repository':str(self.repo),'agents':{'implementation':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        product=self.p|{'repository':str(workspace),'agents':{'implementation':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
         with patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv) as sandbox:
-            result=model('plan',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
+            result=model('plan',{'product':product,'record':{'workspace':str(workspace)},'state_root':str(self.store.state/'autopilot')})
         self.assertEqual(result['status'],'pass')
         self.assertTrue(sandbox.call_args.kwargs['deny_local'])
-        self.assertNotIn(str(self.repo),[str(p) for p in sandbox.call_args.args[1]])
-        # The worktree metadata (HEAD/index/commondir/objects) must be readable
-        # for the verifier to diff base..head, while staying outside the write set.
+        self.assertNotIn(str(Path(workspace).resolve()),[str(Path(p).resolve()) for p in sandbox.call_args.args[1]])
+        # The worktree metadata (HEAD/index/commondir/objects) must be readable for
+        # base..head diffing, while staying outside the write set.
         read_allowed=[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['read_allowed']]
-        self.assertIn(str((self.repo/'.git').resolve()),read_allowed)
-        self.assertIn(str(self.repo),[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['readonly_roots']])
+        self.assertIn(str((bare/'worktrees'/'linked').resolve()),read_allowed)
+        self.assertIn(str(bare.resolve()),read_allowed)
+        self.assertIn(str(Path(workspace).resolve()),[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['readonly_roots']])
 
     def test_validate_sandbox_reads_worktree_git_metadata_without_write(self):
         from autopilot.codex_executor import execute as model
+        from autopilot.workspace import metadata
+        workspace,bare,base,head=self.worktree_fixture()
+        git_dir,common=metadata(workspace)
+        # A relative `--git-common-dir` must resolve to the private bare root, while
+        # HEAD/index/commondir stay in the linked worktree git dir.
+        self.assertEqual(Path(git_dir),(bare/'worktrees'/'linked').resolve())
+        self.assertEqual(Path(common),bare.resolve())
         fake=self.root/'codex-validate'
         fake.write_text('#!'+sys.executable+'\nimport os,sys,json\nfrom pathlib import Path\nassert os.environ.get("GIT_CONFIG_GLOBAL")=="/dev/null"\nassert os.environ.get("GIT_CONFIG_NOSYSTEM")=="1"\nPath(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"validated"}))\n')
         fake.chmod(0o700)
-        product=self.p|{'repository':str(self.repo),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
         with patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv) as sandbox:
-            result=model('validate',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
+            result=model('validate',{'product':product,'record':{'id':'round','workspace':str(workspace),'base_commit':base,'commit':head},'state_root':str(self.store.state/'autopilot')})
         self.assertEqual(result['status'],'pass',result)
         writable=[str(Path(p).resolve()) for p in sandbox.call_args.args[1]]
         read_allowed=[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['read_allowed']]
         readonly=[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['readonly_roots']]
-        self.assertIn(str((self.repo/'.git').resolve()),read_allowed)
-        self.assertNotIn(str(self.repo),writable)
-        self.assertIn(str(self.repo),readonly)
-        self.assertIn(str((self.repo/'.git').resolve()),readonly)
+        self.assertIn(str(Path(git_dir).resolve()),read_allowed)
+        self.assertIn(str(Path(common).resolve()),read_allowed)
+        self.assertNotIn(str(Path(workspace).resolve()),writable)
+        self.assertIn(str(Path(workspace).resolve()),readonly)
+        self.assertIn(str(Path(git_dir).resolve()),readonly)
+        # The controller writes the real base..commit evidence into the readable
+        # execution directory instead of making the verifier read git metadata.
+        root=Path(result['evidence'])
+        text=(root/'verification-diff.patch').read_text()
+        facts=json.loads((root/'verification-facts.json').read_text())
+        self.assertIn('+change',text)
+        self.assertEqual((facts['base_commit'],facts['commit'],facts['merge_base']),(base,head,base))
+        self.assertEqual([line.split('\t')[-1] for line in facts['changed']],['app.py'])
+
+    def test_validate_inlines_controller_diff_without_git_metadata_access(self):
+        """验证者只读控制器内联的差异即可判断，不再依赖 checkout 外的 git 元数据。"""
+        from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
+        fake=self.root/'codex-evidence-only'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'assert "verification-diff.patch" in prompt\n'
+            'assert "+change" in prompt\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"used controller diff only"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        with patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv):
+            result=model('validate',{'product':product,'record':{'workspace':str(workspace),'base_commit':base,'commit':head},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        root=Path(result['evidence'])
+        self.assertTrue((root/'verification-diff.patch').is_file())
+        self.assertTrue((root/'verification-facts.json').is_file())
 
     def test_codex_state_is_private_and_login_reference_is_readonly(self):
         from autopilot.codex_executor import execute as model

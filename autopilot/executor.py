@@ -95,13 +95,15 @@ def execute(action,request):
     if action=='develop':
         allowed += [workspace]
     # The fixed worker runtime may be read but not modified by the model.
-    from .workspace import git
-    metadata=Path(git(workspace,'rev-parse','--git-common-dir'))
-    if not metadata.is_absolute():
-        metadata=workspace/metadata
+    from .workspace import metadata_paths
+    metadata=[]
+    try:
+        metadata=[Path(path).resolve() for path in metadata_paths(workspace)]
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        metadata=[]
     argv=restrict(argv,allowed,root/'worker.sb',private_roots=([str(Path.home()),'/Users'] if generic(product) else [])+[product.get('app_support','/nonexistent'),
-                  str(Path(request['state_root']).parent)],read_allowed=[runtime,workspace,metadata.resolve(),ROOT/'scripts',ROOT/'node_modules',ROOT/'package.json',Path.home()/'.nvm/versions'],deny_local=True,
-                  readonly_roots=[] if action=='develop' else [workspace])
+                  str(Path(request['state_root']).parent)],read_allowed=[runtime,workspace,*metadata,ROOT/'scripts',ROOT/'node_modules',ROOT/'package.json',Path.home()/'.nvm/versions'],deny_local=True,
+                  readonly_roots=[] if action=='develop' else [workspace,*metadata])
     env=(model_environment() if generic(product) else dict(os.environ)) | {'DSH_HOME':str(home),'DSH_AUTOPILOT_WORKER':record['id'],'DSH_AUTOPILOT_PHASE':action,'TMPDIR':str(root),
                       'DSH_PROJECT_ISOLATED':'1',
                       'npm_config_cache':str(root/'cache/npm'),'PIP_CACHE_DIR':str(root/'cache/pip'),

@@ -18,6 +18,32 @@ def git(root, *args):
     return subprocess.check_output(['git','-C',str(root),*args], text=True, stderr=subprocess.PIPE).strip()
 
 
+def metadata(workspace):
+    """返回 (git_dir, common_dir) 的绝对只读元数据路径。
+
+    链接式 worktree 把 HEAD/index/commondir 放在 git_dir，把 objects/refs
+    放在 common_dir；两者都可能位于 checkout 之外。`--git-common-dir` 在部分
+    git 版本里可能是相对路径，因此同时按 workspace 与 git_dir 解析并取存在者。
+    """
+    git_dir=Path(git(workspace,'rev-parse','--absolute-git-dir'))
+    common=Path(git(workspace,'rev-parse','--git-common-dir'))
+    if not common.is_absolute():
+        candidates=[(Path(workspace)/common).resolve(),(git_dir/common).resolve()]
+        common=next((path for path in candidates if path.exists()), candidates[0])
+    else:
+        common=common.resolve()
+    return git_dir.resolve(), common
+
+
+def metadata_paths(workspace):
+    """只读暴露 HEAD/index/commondir/objects/refs；绝不加入可写集合。"""
+    git_dir, common_dir = metadata(workspace)
+    paths=[git_dir, common_dir]
+    paths += [git_dir/name for name in ('HEAD','commondir','index')]
+    paths += [common_dir/name for name in ('objects','refs','packed-refs')]
+    return paths
+
+
 def source_files(root):
     """尊重 Git ignore，并排除运行数据、秘密文件和越界符号链接。"""
     root = Path(root).resolve()
