@@ -1,5 +1,6 @@
 """真实 Git 验证：Code Review 门禁、每日汇集、23:30 封板和统一验证。"""
 import datetime as dt
+import json
 import sys
 from pathlib import Path
 import time
@@ -385,6 +386,46 @@ class StagedDeliveryTests(unittest.TestCase):
         self.prs[2]['base']['sha'] = 'a' * 40
         result = execute('merge_release', f.request(f.ledger.get('deliveries', b['id'])))
         self.assertTrue(result['stale'])
+
+    def test_validate_release_hands_self_contained_diff_to_independent_verification(self):
+        """release 统一验证不再 mock 验证层：差异事实随请求下发并回填到检查证据。"""
+        f = self.f
+        b = self.review_and_merge(self.bootstrap())
+        adapter = f.root / 'verify-adapter.py'
+        adapter.write_text(
+            'import json,sys\nfrom pathlib import Path\n'
+            'payload=json.load(sys.stdin)\n'
+            'material=payload["verification"]\n'
+            'assert material["diff_file"] and material["facts_file"]\n'
+            'assert material["changed_files"]\n'
+            'assert "+value" in Path(material["diff_file"]).read_text()\n'
+            'print(json.dumps({"status":"pass","checks":['
+            '{"name":"独立业务验证","status":"pass","required":True,"evidence":{"provider":"codex"}}]}))\n')
+        adapter.chmod(0o700)
+        f.product['adapter'] = [sys.executable, str(adapter)]
+        with patch.object(f.scheduler, 'start_call') as start:
+            tick(f.scheduler, b['cutoff'])
+            self.assertEqual(start.call_args.args[3], 'sync_release')
+        b = f.ledger.get('deliveries', b['id'])
+        complete(f.scheduler, b, {'status': 'pass', 'head_sha': b['head_sha'], 'base_sha': b['base_sha']}, 'sync_release')
+        with patch.object(f.scheduler, 'start_call') as start:
+            tick(f.scheduler, b['cutoff'] + 1)
+            self.assertEqual(start.call_args.args[3], 'validate_release')
+        b = f.ledger.get('deliveries', b['id'])
+        with patch('autopilot.staged_delivery.time.time', return_value=b['cutoff'] + 2):
+            result = execute('validate_release', f.request(b))
+        self.assertEqual(result['status'], 'pass', result)
+        check = next(c for c in result['checks'] if c['name'] == '独立业务验证')
+        self.assertEqual(check['evidence']['merge_base'], b['base_sha'])
+        self.assertEqual(check['evidence']['source'], 'repository')
+        self.assertTrue(check['evidence']['diff_sha256'])
+        self.assertTrue(check['evidence']['changed_files'])
+        from autopilot.delivery_worker import paths as delivery_paths
+        evidence = delivery_paths(f.request(b))[1] / 'validations' / b['validation_id']
+        facts = json.loads((evidence / 'verification-facts.json').read_text())
+        self.assertEqual(facts['merge_base'], b['base_sha'])
+        written = json.loads((evidence / 'verification.json').read_text())
+        self.assertEqual(written['verification']['merge_base'], b['base_sha'])
 
     def test_failed_review_never_calls_github_merge(self):
         f = self.f

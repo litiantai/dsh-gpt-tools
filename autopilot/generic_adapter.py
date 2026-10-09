@@ -208,8 +208,18 @@ def execute(action, request):
             return result
         if digest(record['workspace']) != before:
             return {'status': 'fail', 'reason': '验证期间源码发生变化', 'checks': result['checks']}
-        from .codex_executor import execute as evaluate
-        judged = evaluate('validate', request | {'checks': result['checks']})
+        from .codex_executor import execute as evaluate, verification_material
+        payload = request
+        supplied = request.get('verification')
+        if not (isinstance(supplied, dict) and supplied.get('diff_file')):
+            # 独立验证必须以控制器侧预生成的 base..commit 差异为自包含事实证据。
+            # 不再依赖下游按 adapter_spec.kind 决定是否生成；缺差异时直接阻断，
+            # 绝不让验证模型在无差异证据的情况下空转。
+            try:
+                payload = request | {'verification': verification_material(record['workspace'], record, root)}
+            except RuntimeError as exc:
+                return {'status': 'blocked', 'reason': str(exc), 'checks': result['checks']}
+        judged = evaluate('validate', payload | {'checks': result['checks']})
         checks = result['checks'] + [{'name': '独立业务验证', 'status': judged['status'], 'required': True, 'evidence': judged}]
         if judged['status'] != 'pass':
             return {'status': judged['status'], 'reason': judged.get('reason', '独立验证未通过'), 'checks': checks}

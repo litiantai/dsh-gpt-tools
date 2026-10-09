@@ -307,6 +307,70 @@ class GenericTests(unittest.TestCase):
         self.assertEqual(written['verification']['merge_base'],base)
         self.assertNotIn('diff',written['verification'])
 
+    def test_validate_generates_diff_when_adapter_spec_is_missing(self):
+        """缺失 adapter_spec 的产品也必须拿到 base..commit 差异，不再静默跳过。"""
+        from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
+        fake=self.root/'codex-missing-spec'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'assert "verification-diff.patch" in prompt\n'
+            'assert "+change" in prompt\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"generated without adapter kind"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}}}
+        self.assertFalse(product.get('adapter_spec'))
+        result=model('validate',{'product':product,'record':{'id':'round','workspace':str(workspace),'base_commit':base,'commit':head},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        root=Path(result['evidence'])
+        facts=json.loads((root/'verification-facts.json').read_text())
+        self.assertEqual((facts['base_commit'],facts['commit'],facts['merge_base']),(base,head,base))
+        self.assertEqual([line.split('\t')[-1] for line in facts['changed']],['app.py'])
+        self.assertIn('+change',(root/'verification-diff.patch').read_text())
+
+    def test_validate_generates_diff_for_legacy_adapter_spec(self):
+        """显式 legacy kind 同样生成差异证据，验证者只读内联差异即可判断。"""
+        from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
+        fake=self.root/'codex-legacy-spec'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'assert "verification-diff.patch" in prompt and "+change" in prompt\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"legacy adapter diff"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},
+                        'adapter_spec':{'version':1,'kind':'legacy','capabilities':['verify']}}
+        result=model('validate',{'product':product,'record':{'id':'round','workspace':str(workspace),'base_commit':base,'commit':head},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        self.assertIn('+change',(Path(result['evidence'])/'verification-diff.patch').read_text())
+
+    def test_generic_verify_prepares_diff_before_starting_verifier(self):
+        """command 适配器 verify 先落盘差异并透传，独立验证不再依赖 git 元数据可读。"""
+        from autopilot.generic_adapter import execute as generic_execute
+        workspace,bare,base,head=self.worktree_fixture()
+        fake=self.root/'codex-adapter-verify'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'assert "verification-diff.patch" in prompt\n'
+            'assert "+change" in prompt\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","reason":"","summary":"verified via controller diff"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},
+                        'adapter_spec':{'version':1,'kind':'legacy','capabilities':['verify']},
+                        'project_config':{'version':1,'commands':{},'web':False}}
+        record={'id':'verify-round','workspace':str(workspace),'base_commit':base,'commit':head}
+        onboarding={'status':'pass','checks':[{'name':'build-0','status':'pass','required':True}]}
+        with patch('autopilot.generic_adapter.verify', return_value=onboarding) as simulate:
+            result=generic_execute('verify',{'product':product,'record':record,'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        simulate.assert_called_once()
+        check=next(c for c in result['checks'] if c['name']=='独立业务验证')
+        self.assertEqual(check['status'],'pass')
+        root=self.store.state/'autopilot/candidates'/product['id']/record['id']
+        facts=json.loads((root/'verification-facts.json').read_text())
+        self.assertEqual((facts['base_commit'],facts['commit'],facts['merge_base']),(base,head,base))
+        self.assertIn('+change',(root/'verification-diff.patch').read_text())
+
     def test_codex_state_is_private_and_login_reference_is_readonly(self):
         from autopilot.codex_executor import execute as model
         login=self.root/'fixture-codex';login.mkdir()

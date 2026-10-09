@@ -123,12 +123,14 @@ def execute(action,request):
     ledger=Ledger(Store(Path(request['state_root']).parent))
     from .project import generic
     verification=None
-    if action=='validate' and generic(product):
+    if action=='validate':
         supplied=request.get('verification')
         if isinstance(supplied,dict) and supplied.get('diff_file'):
             # 控制器已把 base..commit 差异算好并随请求下发，直接复用同一份事实证据。
             verification=supplied
-        else:
+        elif record.get('base_commit') and record.get('commit'):
+            # 差异证据只取决于记录里的 base..commit，不再以 adapter_spec.kind 为开关：
+            # legacy 或缺失 adapter_spec 的产品也必须拿到差异，避免无证据地启动验证模型。
             try:
                 verification=verification_material(workspace,record,root)
             except RuntimeError as exc:
