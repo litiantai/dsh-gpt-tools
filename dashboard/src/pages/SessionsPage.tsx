@@ -1,3 +1,6 @@
+import { ErrorNotice, errorText, serializeError } from '../errors';
+import { EventRecords } from '../RecordDetails';
+import { NativeGate } from "../NativeGate";
 import {
   MessageOutlined,
   ReloadOutlined,
@@ -134,6 +137,20 @@ export default function SessionsPage() {
                 ),
               },
               {
+                title: "插件监管",
+                render: (_, s) =>
+                  s.subagent ? (
+                    <Tag>由主会话审查</Tag>
+                  ) : s.supervision ? (
+                    <>
+                      <Status value={s.supervision.state} />
+                      <small><ErrorNotice value={s.supervision.reason}/></small>
+                    </>
+                  ) : (
+                    <Tag>尚未接管</Tag>
+                  ),
+              },
+              {
                 title: "审批方式",
                 render: (_, s) => (
                   <Switch
@@ -263,6 +280,7 @@ function SessionDrawer({
         {s && (
           <>
             <h2>{s.title}</h2>
+            <NativeGate id={s.supervision?.gate_id} />
             <Descriptions
               column={1}
               items={[
@@ -283,7 +301,7 @@ function SessionDrawer({
                 },
               ]}
             />
-            {s.error && <Alert message={s.error} type="error" />}
+            {s.error && <Alert message={<ErrorNotice value={s.error}/>} type="error" />}
             <Tabs
               items={[
                 {
@@ -312,9 +330,7 @@ function SessionDrawer({
                   key: "events",
                   label: "最近会话事件",
                   children: (
-                    <pre className="log">
-                      {JSON.stringify(s.events, null, 2)}
-                    </pre>
+                    <EventRecords value={s.events}/>
                   ),
                 },
               ]}

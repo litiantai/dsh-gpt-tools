@@ -15,6 +15,12 @@ export interface Session {
   subagent: boolean;
   approval_mode: "auto" | "manual";
   review_status?: ReviewStatus;
+  supervision?: {
+    state: string;
+    reason: string;
+    gate_id?: string;
+    updated: number;
+  };
   error?: string;
   events?: unknown[];
   commands?: Command[];
@@ -41,9 +47,16 @@ export interface Result {
   };
 }
 export interface Review {
+  reviewer?: ReviewerSelection;
   id: string;
   session_id: string;
-  packet: { phase: string; summary: string; cwd: string; scope?: string[] };
+  packet: {
+    phase: string;
+    summary: string;
+    cwd: string;
+    scope?: string[];
+    native_gate_id?: string;
+  };
   mode: string;
   status: ReviewStatus;
   manual: number;
@@ -59,6 +72,7 @@ export interface Review {
   delivered?: boolean;
 }
 export interface Connector {
+  native_supervision?: boolean;
   online: boolean;
   home: string | null;
   home_matches: boolean;
@@ -78,6 +92,12 @@ export interface Overview {
   errors: { id: string; session_id: string; result: string; updated: number }[];
 }
 export interface Settings {
+  reviewer_mode: "unified" | "stages";
+  reviewer_unified: ReviewerSelection;
+  reviewer_stages: Record<string, ReviewerSelection>;
+  claude_bin: string;
+  harness_bin: string;
+  harness_profile: string;
   model: string;
   home: string;
   history_dir: string;
@@ -95,4 +115,24 @@ export interface Event {
   session_id?: string;
   review_id?: string;
   detail: Record<string, unknown>;
+}
+
+export interface ReviewerSelection {
+  provider: string;
+  model: string;
+  model_provider?: string;
+  reasoning_effort?: string;
+}
+export interface ModelCatalog {
+  provider: string;
+  models: {
+    id: string;
+    name: string;
+    model_provider?: string;
+    provider_name?: string;
+  }[];
+  fetched_at: number | null;
+  source: string;
+  stale: boolean;
+  error: string | null;
 }

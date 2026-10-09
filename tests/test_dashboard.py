@@ -20,7 +20,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import dashboard_server as dashboard
-from review_core import Engine, Store, Conflict, inventory, validate_result
+from review_core import Engine, Store, Conflict, inventory, validate_result, process_table
 
 
 def wait_for(condition, timeout=8):
@@ -81,6 +81,38 @@ Path(sys.argv[sys.argv.index('-o')+1]).write_text(json.dumps(result))
     def tearDown(self):
         self.engine.stop()
         self.tmp.cleanup()
+
+    def test_timeout_stops_commands_in_separate_process_groups(self):
+        child_file = self.root / "review-child.pid"
+        child = "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+        self.fake.write_text(f'''#!{sys.executable}
+import subprocess,sys,time
+from pathlib import Path
+child = subprocess.Popen([sys.executable, '-c', {child!r}], start_new_session=True)
+Path({str(child_file)!r}).write_text(str(child.pid))
+time.sleep(60)
+''')
+        unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+        try:
+            cfg = self.store.settings() | {"review_timeout": 2}
+            with self.store.connect() as db:
+                db.execute("UPDATE settings SET value=?", (json.dumps(cfg),))
+            rid = self.engine.submit(self.packet(), "observation")
+            wait_for(child_file.exists)
+            pid = int(child_file.read_text())
+            wait_for(lambda: self.store.get(rid)["execution_done"])
+            row = process_table().get(pid)
+            self.assertTrue(row is None or "Z" in row[2])
+            self.assertEqual(self.store.get(rid)["result"]["decision"], "blocked")
+            self.assertIsNone(unrelated.poll())
+        finally:
+            unrelated.terminate()
+            unrelated.wait(timeout=5)
+            if child_file.exists():
+                try:
+                    os.kill(int(child_file.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def packet(self):
         return dict(

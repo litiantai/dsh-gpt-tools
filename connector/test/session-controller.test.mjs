@@ -73,3 +73,40 @@ test("controller exception remains unknown and is never retried", async () => {
   assert.equal((await dispatch(api, command)).status, "unknown");
   assert.equal(calls, 1);
 });
+
+test("native V4 receipts correlate the top-level user message source", async () => {
+  let rpcId = "other-operation";
+  const api = adaptController({
+    async inspect() {
+      return {
+        events: [
+          {
+            type: "user/message",
+            data: {
+              role: "user",
+              source: { kind: "user", rpcId },
+              content: [{ type: "text", text: command.text }],
+            },
+          },
+        ],
+      };
+    },
+  });
+  assert.equal(await consumed(api, command), false);
+  rpcId = command.id;
+  assert.equal(await consumed(api, command), true);
+});
+
+test("reviewer processes never install connector or native supervision", async () => {
+  const { apply } = await import("../dist/session-controller.js");
+  const { apply: legacy } = await import("../dist/index.js");
+  const previous = process.env.DSH_SUPERVISOR_REVIEW;
+  process.env.DSH_SUPERVISOR_REVIEW = "run";
+  try {
+    apply({});
+    legacy({});
+  } finally {
+    if (previous === undefined) delete process.env.DSH_SUPERVISOR_REVIEW;
+    else process.env.DSH_SUPERVISOR_REVIEW = previous;
+  }
+});

@@ -1,4 +1,8 @@
-import { PlusOutlined, SearchOutlined } from "@ant-design/icons";
+import { ErrorNotice } from '../errors';
+import { RecordValue, recordSummary } from '../RecordDetails';
+import { reviewerNames } from "../ReviewerSelect";
+import { NativeGate } from "../NativeGate";
+import { PlusOutlined, RightOutlined, SearchOutlined } from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
 import {
   Alert,
@@ -40,12 +44,51 @@ export default function ReviewsPage() {
   const action = useAction();
   const filter = params.get("status") || "all";
   const sid = params.get("session");
+  const [expanded, setExpanded] = React.useState<React.Key[]>([]);
+  const groups = React.useMemo(() => {
+    const bySession = new Map<string, Review[]>();
+    for (const review of query.data || []) {
+      if (sid && review.session_id !== sid) continue;
+      const rows = bySession.get(review.session_id) || [];
+      rows.push(review);
+      bySession.set(review.session_id, rows);
+    }
+    const term = search.trim().toLowerCase();
+    return Array.from(bySession, ([id, rows]) => {
+      rows.sort((a, b) => b.created - a.created || b.id.localeCompare(a.id));
+      const session = sessions.data?.find((item) => item.id === id);
+      const title = session?.title || id;
+      return {
+        id,
+        title,
+        latest: rows[0],
+        total: rows.length,
+        reviews: rows.filter(
+          (r) =>
+            (filter === "all" || r.status === filter) &&
+            [title, id, r.id, r.packet.summary || ""]
+              .join(" ")
+              .toLowerCase()
+              .includes(term),
+        ),
+      };
+    })
+      .filter((group) => group.reviews.length > 0)
+      .sort(
+        (a, b) =>
+          b.latest.created - a.latest.created || a.id.localeCompare(b.id),
+      );
+  }, [query.data, sessions.data, sid, filter, search]);
+  const toggleSession = (id: string) =>
+    setExpanded((keys) =>
+      keys.includes(id) ? keys.filter((key) => key !== id) : [...keys, id],
+    );
   return (
     <>
       <Heading
         eyebrow="REVIEW CENTER"
         title="审查中心"
-        description="从方案到验收，保留每一次判断的依据。"
+        description="按会话查看最新审查状态，展开查看各阶段和复验记录。"
         actions={
           <Button
             type="primary"
@@ -106,58 +149,140 @@ export default function ReviewsPage() {
         <QueryState query={query}>
           <Table
             rowKey="id"
-            pagination={{ pageSize: 10, showSizeChanger: false }}
-            scroll={{ x: 850 }}
-            dataSource={query.data?.filter(
-              (r) =>
-                (filter === "all" || r.status === filter) &&
-                (!sid || r.session_id === sid) &&
-                (r.id + r.session_id + r.packet.summary)
-                  .toLowerCase()
-                  .includes(search.toLowerCase()),
-            )}
+            dataSource={groups}
+            pagination={{
+              pageSize: 10,
+              showSizeChanger: false,
+              showTotal: (total) => `共 ${total} 个会话`,
+            }}
+            scroll={{ x: 950 }}
+            expandable={{
+              showExpandColumn: false,
+              expandedRowKeys: expanded,
+              onExpandedRowsChange: (keys) => setExpanded([...keys]),
+              expandedRowRender: (group) => (
+                <Table<Review>
+                  rowKey="id"
+                  pagination={{ pageSize: 10, showSizeChanger: false }}
+                  scroll={{ x: 850 }}
+                  dataSource={group.reviews}
+                  columns={[
+                    {
+                      title: "审查阶段",
+                      render: (_, r) => (
+                        <button
+                          className="text-link"
+                          onClick={() => {
+                            const next = new URLSearchParams(params);
+                            next.set("id", r.id);
+                            setParams(next);
+                          }}
+                        >
+                          {labels[r.packet.phase]}
+                          <small>
+                            {recordSummary(r.packet.summary).slice(0, 80) || "未提供摘要"}
+                          </small>
+                        </button>
+                      ),
+                    },
+                    {
+                      title: "审查器 / 模型",
+                      render: (_, r) =>
+                        r.reviewer ? (
+                          <span>
+                            {reviewerNames[r.reviewer.provider]}
+                            <small style={{ display: "block" }}>
+                              {r.reviewer.model_provider
+                                ? `${r.reviewer.model_provider} / `
+                                : ""}
+                              {r.reviewer.model}
+                            </small>
+                          </span>
+                        ) : (
+                          "历史审查 · 模型未记录"
+                        ),
+                    },
+                    {
+                      title: "模式",
+                      render: (_, r) => (
+                        <Tag bordered={false}>
+                          {r.mode === "native_handoff"
+                            ? "插件强制监管"
+                            : r.mode === "handoff"
+                              ? "阻塞交接"
+                              : r.mode === "historical"
+                                ? "历史记录"
+                                : "观察审查"}
+                        </Tag>
+                      ),
+                    },
+                    {
+                      title: "状态",
+                      render: (_, r) => <Status value={r.status} />,
+                    },
+                    {
+                      title: "结论",
+                      render: (_, r) => <Status value={r.result?.decision} />,
+                    },
+                    {
+                      title: "创建时间",
+                      render: (_, r) => (
+                        <span className="muted nowrap">{time(r.created)}</span>
+                      ),
+                    },
+                  ]}
+                />
+              ),
+            }}
             columns={[
               {
-                title: "审查任务",
-                render: (_, r) => (
+                title: "会话",
+                render: (_, group) => (
                   <button
-                    className="text-link"
-                    onClick={() => {
-                      const next = new URLSearchParams(params);
-                      next.set("id", r.id);
-                      setParams(next);
-                    }}
+                    className="text-link review-session-toggle"
+                    aria-expanded={expanded.includes(group.id)}
+                    aria-label={`${expanded.includes(group.id) ? "收起" : "展开"}会话 ${group.title}（${group.id}）`}
+                    onClick={() => toggleSession(group.id)}
                   >
-                    {labels[r.packet.phase]} ·{" "}
-                    {sessions.data?.find((s) => s.id === r.session_id)?.title ||
-                      r.session_id}
-                    <small>
-                      {r.packet.summary?.slice(0, 80) || "未提供摘要"}
-                    </small>
+                    <RightOutlined
+                      rotate={expanded.includes(group.id) ? 90 : 0}
+                    />
+                    <span>
+                      {group.title}
+                      <small>{group.id}</small>
+                    </span>
                   </button>
                 ),
               },
               {
-                title: "模式",
-                render: (_, r) => (
-                  <Tag bordered={false}>
-                    {r.mode === "handoff"
-                      ? "阻塞交接"
-                      : r.mode === "historical"
-                        ? "历史记录"
-                        : "观察审查"}
-                  </Tag>
+                title: "审查记录",
+                render: (_, group) =>
+                  group.reviews.length === group.total
+                    ? `${group.total} 条`
+                    : `${group.reviews.length} / ${group.total} 条匹配`,
+              },
+              {
+                title: "最新阶段",
+                render: (_, group) =>
+                  labels[group.latest.packet.phase] ||
+                  group.latest.packet.phase,
+              },
+              {
+                title: "最新状态",
+                render: (_, group) => <Status value={group.latest.status} />,
+              },
+              {
+                title: "最新结论",
+                render: (_, group) => (
+                  <Status value={group.latest.result?.decision} />
                 ),
               },
-              { title: "状态", render: (_, r) => <Status value={r.status} /> },
               {
-                title: "结论",
-                render: (_, r) => <Status value={r.result?.decision} />,
-              },
-              {
-                title: "创建时间",
-                render: (_, r) => (
-                  <span className="muted nowrap">{time(r.created)}</span>
+                title: "最近审查",
+                render: (_, group) => (
+                  <span className="muted nowrap">
+                    {time(group.latest.created)}
+                  </span>
                 ),
               },
             ]}
@@ -277,6 +402,13 @@ function ReviewDrawer({ id, close }: { id: string | null; close: () => void }) {
               items={[
                 { key: "sid", label: "会话", children: r.session_id },
                 {
+                  key: "reviewer",
+                  label: "审查器 / 模型",
+                  children: r.reviewer
+                    ? `${reviewerNames[r.reviewer.provider]} / ${r.reviewer.model_provider ? r.reviewer.model_provider + " / " : ""}${r.reviewer.model}`
+                    : "历史审查 · 模型未记录",
+                },
+                {
                   key: "scope",
                   label: "范围",
                   children: (r.packet.scope || ["."]).join("、"),
@@ -290,29 +422,34 @@ function ReviewDrawer({ id, close }: { id: string | null; close: () => void }) {
                   key: "mode",
                   label: "模式",
                   children:
-                    r.mode === "handoff"
-                      ? "阻塞交接"
-                      : r.mode === "historical"
-                        ? "历史记录"
-                        : "观察审查 · 未验证会话暂停",
+                    r.mode === "native_handoff"
+                      ? "插件强制监管"
+                      : r.mode === "handoff"
+                        ? "阻塞交接"
+                        : r.mode === "historical"
+                          ? "历史记录"
+                          : "观察审查 · 未验证会话暂停",
                 },
               ]}
             />
+            <NativeGate id={r.packet.native_gate_id} />
             <div className="drawer-actions">
               <Space wrap>
-                {active && r.mode === "handoff" && !r.manual && (
-                  <Button
-                    loading={action.isPending}
-                    onClick={() =>
-                      action.mutate({
-                        path: `/reviews/${r.id}/takeover`,
-                        body: { version: r.version },
-                      })
-                    }
-                  >
-                    人工接管
-                  </Button>
-                )}
+                {active &&
+                  ["handoff", "native_handoff"].includes(r.mode) &&
+                  !r.manual && (
+                    <Button
+                      loading={action.isPending}
+                      onClick={() =>
+                        action.mutate({
+                          path: `/reviews/${r.id}/takeover`,
+                          body: { version: r.version },
+                        })
+                      }
+                    >
+                      人工接管
+                    </Button>
+                  )}
                 {active && (
                   <Button
                     danger
@@ -324,16 +461,17 @@ function ReviewDrawer({ id, close }: { id: string | null; close: () => void }) {
                     取消审查
                   </Button>
                 )}
-                {!active && r.mode !== "historical" && (
-                  <Button
-                    loading={action.isPending}
-                    onClick={() =>
-                      action.mutate({ path: `/reviews/${r.id}/retry` })
-                    }
-                  >
-                    重新观察审查
-                  </Button>
-                )}
+                {!active &&
+                  !["historical", "native_handoff"].includes(r.mode) && (
+                    <Button
+                      loading={action.isPending}
+                      onClick={() =>
+                        action.mutate({ path: `/reviews/${r.id}/retry` })
+                      }
+                    >
+                      重新观察审查
+                    </Button>
+                  )}
                 {r.manual > 0 && active && (
                   <Tag color="gold">人工审批已启用</Tag>
                 )}
@@ -347,7 +485,7 @@ function ReviewDrawer({ id, close }: { id: string | null; close: () => void }) {
                   children: (
                     <>
                       <h3>任务摘要</h3>
-                      <p className="preserve">{r.packet.summary}</p>
+                      <RecordValue value={r.packet.summary}/>
                       {!result ? (
                         <Empty
                           description={
@@ -357,10 +495,10 @@ function ReviewDrawer({ id, close }: { id: string | null; close: () => void }) {
                       ) : (
                         <>
                           <div className="result-heading">
-                            <h3>{r.result ? "最终结论" : "GPT 建议"}</h3>
+                            <h3>{r.result ? "最终结论" : "审查员建议"}</h3>
                             <Status value={result.decision} />
                           </div>
-                          <p className="preserve">{result.summary}</p>
+                          <div className="preserve">{result.decision==='blocked'?<ErrorNotice value={result}/>:result.summary}</div>
                           <h3>下一步指令</h3>
                           <div className="instruction preserve">
                             {result.instruction}
@@ -402,10 +540,8 @@ function ReviewDrawer({ id, close }: { id: string | null; close: () => void }) {
                           />
                           {result.pause_proof && (
                             <details className="spaced">
-                              <summary>查看原始暂停证据</summary>
-                              <pre className="log">
-                                {JSON.stringify(result.pause_proof, null, 2)}
-                              </pre>
+                              <summary>查看暂停核对详情</summary>
+                              <RecordValue value={result.pause_proof}/>
                             </details>
                           )}
                         </>

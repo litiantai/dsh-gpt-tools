@@ -31,7 +31,10 @@ export interface Api {
         events: {
           event: {
             type: string;
-            data?: { message?: { source?: { rpcId?: string } } };
+            data?: {
+              source?: { rpcId?: string };
+              message?: { source?: { rpcId?: string } };
+            };
           };
         }[];
       }>
@@ -93,7 +96,8 @@ export async function consumed(api: Api, command: Command): Promise<boolean> {
     response.result.value.events.some(
       ({ event }) =>
         event.type === "user/message" &&
-        event.data?.message?.source?.rpcId === command.id,
+        (event.data?.source?.rpcId ?? event.data?.message?.source?.rpcId) ===
+          command.id,
     )
   );
 }
@@ -139,8 +143,14 @@ export async function dispatch(
 
 export function apply(
   ctx: Context,
-  config: { stateDir?: string; home?: string; origin?: string } = {},
+  config: {
+    stateDir?: string;
+    home?: string;
+    origin?: string;
+    nativeSupervision?: boolean;
+  } = {},
 ): void {
+  if (process.env.DSH_SUPERVISOR_REVIEW) return;
   const home = resolve(
     config.home || process.env.DSH_HOME || join(homedir(), ".dsh"),
   );
@@ -204,7 +214,11 @@ export function apply(
           "Content-Type": "application/json",
           Authorization: `Bearer ${key}`,
         },
-        body: JSON.stringify({ home, reports }),
+        body: JSON.stringify({
+          home,
+          reports,
+          native_supervision: config.nativeSupervision === true,
+        }),
         signal: AbortSignal.timeout(5000),
       });
       if (!response.ok) throw new Error(`Dashboard HTTP ${response.status}`);

@@ -1,4 +1,6 @@
-# DeepSeek Harness 监工命令行
+# DeepSeek Harness 旧版监工命令行
+
+> 本页描述旧版 `dsh_supervisor.py`，不是当前看板启动的服务。新版插件按方案、异常和验收自动强制监管，见 [README](README.md#插件自动强制监管)。不要与新版共用状态目录并行运行。
 
 监听本机 DeepSeek Harness 的所有现有工作区以及之后新建的会话。程序直接读取 `~/.dsh/sessions` 的持久化事件日志；启动时把已有事件设为基线，不会为旧任务调用 Codex。
 

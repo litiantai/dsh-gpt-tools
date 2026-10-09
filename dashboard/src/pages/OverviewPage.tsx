@@ -1,3 +1,5 @@
+import { ErrorNotice } from '../errors';
+import { unpack } from '../RecordDetails';
 import {
   ApartmentOutlined,
   ArrowRightOutlined,
@@ -127,7 +129,7 @@ export default function OverviewPage() {
                 </div>
                 <div className="flow-node gpt">
                   <CheckCircleOutlined />
-                  <span>GPT</span>
+                  <span>审查员</span>
                 </div>
               </div>
             </section>
@@ -265,7 +267,7 @@ export default function OverviewPage() {
                       Math.round((data.quota.used / data.quota.limit) * 100),
                     )}
                     showInfo={false}
-                    strokeColor="#4769ef"
+                    strokeColor="var(--primary)"
                   />
                   <p>
                     只有启动模型审查才会消耗额度。
@@ -289,7 +291,7 @@ export default function OverviewPage() {
                     <div key={item.id}>
                       <span className="exception-mark">!</span>
                       <div>
-                        <strong>{JSON.parse(item.result).summary}</strong>
+                        <ErrorNotice value={unpack(item.result)}/>
                         <small>{time(item.updated)}</small>
                       </div>
                       <Button

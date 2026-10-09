@@ -1,3 +1,4 @@
+import { ApiError } from "./errors";
 let csrf = "";
 let bootstrap: Promise<void> | undefined;
 export function initialize(): Promise<void> {
@@ -8,7 +9,7 @@ export function initialize(): Promise<void> {
     })
     .catch((error) => {
       bootstrap = undefined;
-      throw error;
+      throw error instanceof ApiError ? error : new ApiError(error);
     });
   return bootstrap;
 }
@@ -17,6 +18,7 @@ export async function api<T>(
   body?: Record<string, unknown>,
   method = "POST",
 ): Promise<T> {
+  try {
   await initialize();
   const response = await fetch(
     `/api${path}`,
@@ -37,6 +39,7 @@ export async function api<T>(
     csrf = "";
   }
   if (!response.ok)
-    throw new Error(data.error || `请求失败 (${response.status})`);
+    throw new ApiError(data.error ? data : {error:`HTTP ${response.status}`});
   return data;
+  } catch(error) { throw error instanceof ApiError ? error : new ApiError(error); }
 }

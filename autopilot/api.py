@@ -1,0 +1,335 @@
+"""控制中心 API；沿用外层 Cookie、CSRF、操作 UUID。"""
+from __future__ import annotations
+
+from pathlib import Path
+import base64
+import hashlib
+import time
+import uuid
+
+from review_core import Conflict
+from .store import DEFAULTS, KINDS, TERMINAL, Ledger, redact
+
+
+class Control:
+    def __init__(self, store):
+        self.ledger = Ledger(store)
+        from .delivery_board import DeliveryBoard
+        self.delivery_board = DeliveryBoard(self.ledger)
+
+    @staticmethod
+    def handles(path):
+        return path.strip('/').split('/')[0] in (*KINDS,'autopilot')
+
+    def get(self,path):
+        parts = path.strip('/').split('/')
+        if len(parts)==3 and parts[2]=='context':
+            from .record_context import record_context
+            return record_context(self.ledger, parts[0], parts[1])
+        if len(parts)==3 and parts[0]=='deliveries' and parts[2]=='tasks':
+            from .delivery_tasks import delivery_tasks
+            return delivery_tasks(self.ledger, self.ledger.get('deliveries', parts[1]))
+        if len(parts)==3 and parts[0]=='runs' and parts[2]=='usage':
+            from .delivery_tasks import task_usage
+            return task_usage(self.ledger, self.ledger.get('runs', parts[1]))
+        if len(parts)==3 and parts[0]=='products' and parts[2]=='delivery-board':
+            return self.delivery_board.get(self.ledger.get('products', parts[1]))
+        if parts == ['autopilot','metrics']:
+            return self.ledger.metrics()
+        if len(parts)==1:
+            return self.ledger.list(parts[0])
+        if len(parts)==2:
+            return self.ledger.get(*parts)
+        if len(parts)==3 and parts[0]=='products' and parts[2]=='git-token':
+            from .github import credential_file
+            self.ledger.get('products',parts[1])
+            return {'configured': credential_file().is_file()}
+        if len(parts)==3 and parts[0]=='products' and parts[2]=='git-status':
+            from .github import connection_status
+            product=self.ledger.get('products',parts[1])
+            return connection_status(product.get('git',{}).get('url'))
+        if len(parts)==3 and parts[0]=='products' and parts[2]=='automation':
+            product=self.ledger.get('products',parts[1])
+            policy=DEFAULTS | product.get('policy',{})
+            from .quota import snapshot
+            return {'evaluation_id':product.get('evaluation_id'),
+                    'next_inspection':product.get('last_inspect',0)+policy['inspection_seconds'],
+                    'tasks_used':self.ledger.budget_used(product['id'],'development'),
+                    'code_delivery_tokens_used':self.ledger.budget_used(product['id'],'code_delivery_tokens'),
+                    'tasks_limit':policy['runs_per_day'], **snapshot(self.ledger, product),
+                    'queued':sum(r['product_id']==product['id'] and r['status']=='queued' for r in self.ledger.list('runs'))}
+        if len(parts)==3 and parts[0]=='evidence' and parts[2]=='screenshot':
+            evidence=self.ledger.get('evidence',parts[1])
+            path=Path(evidence['screenshot']).resolve()
+            root=(self.ledger.store.state/'autopilot/evidence').resolve()
+            if not path.is_relative_to(root) or path.suffix.lower() not in ('.png','.jpg','.jpeg','.webp'):
+                raise ValueError('截图路径无效')
+            if path.stat().st_size>12*1024*1024:
+                raise ValueError('截图超过预览上限')
+            content=path.read_bytes()
+            if hashlib.sha256(content).hexdigest()!=evidence['sha256']:
+                raise ValueError('截图校验失败')
+            mime='image/jpeg' if path.suffix.lower() in ('.jpg','.jpeg') else 'image/'+path.suffix[1:]
+            return {'data_url':f'data:{mime};base64,'+base64.b64encode(content).decode()}
+        raise KeyError('接口不存在')
+
+    def mutate(self,path,body):
+        parts = path.strip('/').split('/')
+        kind = parts[0]
+        if parts == ['products']:
+            config = body.get('config',{})
+            self.validate_product(config)
+            if config.get('git'):
+                from .github import GitHub
+                GitHub(config['git']['url']).access(write=config['git'].get('enabled', False))
+            return self.ledger.create(kind,config | {'policy':DEFAULTS | config.get('policy',{})},'paused')
+        if parts == ['signals']:
+            return self.ledger.signal(body['product_id'],body['signal'])
+        if parts == ['requirements']:
+            self.ledger.get('products',body['product_id'])
+            value = redact({k:body[k] for k in ('product_id','title','evidence','acceptance','impact')})
+            if not all(value.values()):
+                raise ValueError('需求证据与验收条件不能为空')
+            return self.ledger.create(kind,value | {'priority':body.get('priority',2)},'pending')
+        if len(parts)!=3:
+            raise KeyError('接口不存在')
+        _,ident,action=parts
+        if kind=='products' and action=='today-token-limit':
+            from .quota import adjust_today
+            return adjust_today(self.ledger, ident, body)
+        if kind=='products' and action=='git-token':
+            from .github import save_credential
+            product=self.ledger.get('products',ident)
+            return save_credential(product.get('git',{}).get('url'), body.get('token'))
+        if kind=='products' and action=='nightly-attribution':
+            with self.ledger.store.transaction() as db:
+                product=self.ledger.get(kind,ident,db)
+                import datetime
+                from zoneinfo import ZoneInfo
+                midnight=datetime.datetime.now(ZoneInfo('Asia/Shanghai')).replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
+                return self.ledger.update(kind,ident,product['version'],{'nightly_attribution':True,
+                    'daily_report_enabled':True,'daily_report_enabled_at':product.get('daily_report_enabled_at',midnight),
+                    'policy':product.get('policy',{}) | {'inspection_seconds':3600}},db=db)
+        if kind=='products' and action=='daily-report':
+            if type(body.get('enabled')) is not bool:
+                raise ValueError('必须指定是否启用日报')
+            import datetime
+            from zoneinfo import ZoneInfo
+            with self.ledger.store.transaction() as db:
+                product=self.ledger.get(kind,ident,db)
+                midnight=datetime.datetime.now(ZoneInfo('Asia/Shanghai')).replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
+                return self.ledger.update(kind,ident,product['version'],{'daily_report_enabled':body['enabled'],
+                    'daily_report_enabled_at':product.get('daily_report_enabled_at',midnight)},db=db)
+        if kind=='products' and action=='continuous':
+            with self.ledger.store.transaction() as db:
+                product=self.ledger.get(kind,ident,db)
+                if body.get('version')!=product['version']:
+                    raise Conflict('记录已更新，请刷新后重试')
+                if not all(product.get(key) for key in ('repository','adapter','executor')):
+                    raise ValueError('尚未配置源码基线、巡检适配器和开发执行器')
+                if product.get('evaluation_id'):
+                    evaluation=self.ledger.get('evaluations',product['evaluation_id'],db)
+                    if evaluation['status']!='pass':
+                        raise Conflict('当前评测尚未完成，请先处理评测任务')
+                return self.ledger.update(kind,ident,product['version'],{'evaluation_id':None},'active',db)
+        if kind=='products' and action=='configure':
+            return self.configure_product(ident,body)
+        old=self.ledger.get(kind,ident)
+        if body.get('version') != old['version']:
+            raise Conflict('记录已更新，请刷新后重试')
+        if kind == 'products' and action == 'migrate-git':
+            from .delivery import start_migration
+            return start_migration(self.ledger, old)
+        if kind == 'deliveries' and action == 'close' and old['status'] not in ('online','cancelled'):
+            return self.ledger.update(kind, ident, old['version'], {'frozen': True, 'cutoff': time.time(), 'manual_close_at': time.time()})
+        if kind == 'deliveries' and action == 'migrate-review-flow':
+            from .delivery_migration import migrate
+            return migrate(self.ledger, old)
+        if kind == 'deliveries' and action == 'retry' and old['status'] == 'blocked' and not old.get('call'):
+            return self.ledger.update(kind, ident, old['version'], {'reason': '', 'next_attempt': 0, 'next_auto_retry_at': None, 'auto_retry_wait_reason': None}, old.get('resume_status', 'preparing'))
+        if kind=='products':
+            if action=='recover-runtime':
+                from .runtime_recovery import enabled, busy
+                with self.ledger.store.transaction() as db:
+                    latest=self.ledger.get(kind,ident,db)
+                    if latest['version']!=body.get('version'):
+                        raise Conflict('记录已更新，请刷新后重试')
+                    if not enabled(latest):
+                        raise Conflict('请先启用应用自动恢复，并将项目设为自主运行或仅监测')
+                    if latest.get('call') or (latest.get('runtime_recovery_state') or {}).get('phase') in ('requested','starting') or busy(self.ledger,ident):
+                        raise Conflict('应用已有操作进行中，请等待当前操作结束')
+                    return self.ledger.update(kind,ident,latest['version'],{'runtime_recovery_state':{'phase':'requested','attempts':0,'next_check_at':0,'message':'已安排恢复应用'}},db=db)
+            if action in ('enable','pause','observe'):
+                if action=='enable':
+                    for key in ('repository','adapter','executor'):
+                        if not old.get(key):
+                            raise ValueError(f'尚未配置 {key}')
+                return self.ledger.update(kind,ident,old['version'],{}, {'enable':'active','pause':'paused','observe':'observing'}[action])
+        if kind=='requirements' and action=='queue':
+            return self.queue(old)
+        if kind=='runs':
+            if action=='repair-timing':
+                import json
+                product=self.ledger.get('products',old['product_id'])
+                if old['status']!='blocked' or old.get('reason')!='累计开发执行时间已用尽' or old.get('legacy_execution_seconds') is not None:
+                    raise Conflict('任务不符合旧计时修复条件')
+                affected=False
+                for receipt in old.get('receipts',[]):
+                    result=receipt.get('result',{})
+                    if receipt.get('action') not in ('plan','develop') or result.get('status')!='pass' or result.get('timing'):
+                        continue
+                    call_id=str(uuid.UUID(receipt['call_id']))
+                    path=self.ledger.store.state/'autopilot/calls'/call_id/'request.json'
+                    request=json.loads(path.read_text())
+                    if request['input']['record']['id']==ident and result.get('elapsed',0)>request['timeout']+30:
+                        affected=True
+                if not affected:
+                    raise Conflict('未找到成功回执超出调用上限的旧计时异常')
+                return self.ledger.update(kind,ident,old['version'],{'legacy_execution_seconds':old.get('execution_seconds',0),
+                    'execution_seconds':0,'timing_repair_reason':'旧墙钟计时超过调用超时上限且执行成功；历史实际运行时长无法还原，保留旧记录并恢复一次单调计时窗口',
+                    'reason':'旧计时异常已隔离，使用单调计时继续开发'},old.get('resume_status','developing'))
+            if action=='release' and old['status']=='accepted':
+                from .delivery import configured
+                if configured(self.ledger.get('products', old['product_id'])):
+                    raise Conflict('已启用 Git 交付；验收成果将自动进入每日 release，客户端安装独立管理')
+                if not old.get('manifest') or not old.get('commit'):
+                    raise Conflict('缺少已验收的候选产物')
+                if any(r['product_id']==old['product_id'] and r['status'] not in TERMINAL | {'queued','blocked'} for r in self.ledger.list('runs')):
+                    raise Conflict('请等待当前任务完成后再发布已验收版本')
+                return self.ledger.update(kind,ident,old['version'],{'reason':'已验收版本进入连续空闲检查','last_idle_check':0,'idle_since':None},'awaiting_release')
+            if action=='cancel' and old['status'] not in TERMINAL:
+                return self.ledger.update(kind,ident,old['version'],{'control':'cancel','reason':'用户取消；等待执行器停止并核对'},'cancelling')
+            if action=='pause' and old['status'] not in TERMINAL:
+                return self.ledger.update(kind,ident,old['version'],{'control':'pause','resume_status':old['status'],'reason':'用户暂停；等待执行器停止并核对'},'pausing')
+            if action=='retry' and old['status']=='blocked':
+                if old.get('uncertain'):
+                    raise Conflict('先核对未确认的进程或发布结果，不能重复执行')
+                return self.ledger.update(kind,ident,old['version'],{'control':None,'reason':'','next_auto_retry_at':None,'auto_retry_wait_reason':None},old.get('resume_status','queued'))
+        if kind=='releases' and action=='rollback' and old['status'] in ('observing','completed','blocked'):
+            newer=[r for r in self.ledger.list('releases') if r['product_id']==old['product_id'] and r['created']>old['created'] and r['status'] not in ('cancelled','rolled_back')]
+            if newer:
+                raise Conflict('只能回滚当前最新发布，不能覆盖后续版本')
+            return self.ledger.update(kind,ident,old['version'],{'reason':'用户请求回滚'},'rollback_pending')
+        raise Conflict('当前状态不支持此操作')
+
+    def configure_product(self,ident,body):
+        """在同一事务中核对编辑基线，允许监测记录更新而不覆盖并发配置修改。"""
+        changes=body.get('config',{})
+        if not isinstance(changes,dict):
+            raise ValueError('项目配置必须为对象')
+        current = self.ledger.get('products', ident)
+        if 'git' in changes and changes['git'] != current.get('git'):
+            self.validate_product({k:v for k,v in current.items()} | changes)
+            from .github import GitHub
+            GitHub(changes['git']['url']).access(write=changes['git'].get('enabled', False))
+        with self.ledger.store.transaction() as db:
+            old=self.ledger.get('products',ident,db)
+            if 'base_config' in body:
+                base=body['base_config']
+                # Only the settings form may use content-based concurrency checks.
+                if not isinstance(base,dict) or not set(changes)<=set(base)<= {'goal','agents','policy','git','code_review','runtime_recovery'}:
+                    raise ValueError('项目配置编辑基线无效')
+                if any(old.get(key)!=base[key] for key in changes):
+                    raise Conflict('项目配置已被其他操作修改；当前草稿已保留，请核对后放弃修改以载入最新配置')
+            elif body.get('version')!=old['version']:
+                raise Conflict('记录已更新，请刷新后重试')
+            runs=db.execute('SELECT status FROM auto_runs WHERE product_id=?',(ident,))
+            changed={key for key,value in changes.items() if value!=old.get(key)}
+            live_limits={'runs_per_day','discovery_per_day','tokens_per_day'}
+            policy_changes={key for key in set(changes.get('policy',{})) | set(old.get('policy',{}))
+                            if changes.get('policy',{}).get(key)!=old.get('policy',{}).get(key)} if isinstance(changes.get('policy',{}),dict) else {'invalid'}
+            if 'policy' not in changes:
+                policy_changes = set()
+            limits_only=changed<= {'policy','code_review','runtime_recovery'} and policy_changes<=live_limits
+            staged_git = 'git' in changed and not old.get('git', {}).get('enabled') and not changes['git'].get('enabled')
+            limits_only = limits_only or (staged_git and changed <= {'git','code_review','policy'} and policy_changes <= live_limits)
+            if 'git' in changed and any(r['product_id']==ident and r['status'] not in ('online','cancelled') for r in self.ledger.list('deliveries')):
+                raise Conflict('有未结束的交付批次，不能更改 Git 仓库配置')
+            if not limits_only and any(r['status'] not in TERMINAL | {'queued','blocked'} for r in runs):
+                raise Conflict('有执行中的任务，请暂停并核对后修改产品策略')
+            config={k:v for k,v in old.items() if k not in ('id','status','version','created','updated')}
+            config.update(changes)
+            self.validate_product(config)
+            if 'runtime_recovery' in changed:
+                changes['runtime_recovery_state']={'phase':'requested' if changes['runtime_recovery']['enabled'] else 'disabled',
+                    'attempts':(old.get('runtime_recovery_state') or {}).get('attempts',0),'next_check_at':0}
+            if 'git' in changed:
+                changes['git_migration'] = {'status': 'required'}
+            return self.ledger.update('products',ident,old['version'],changes,db=db)
+
+    def queue(self, requirement):
+        with self.ledger.store.transaction() as db:
+            latest=self.ledger.get('requirements',requirement['id'],db)
+            if latest['version']!=requirement['version'] or latest['status']!='pending':
+                raise Conflict('需求已发生变化或已进入任务队列')
+            product=self.ledger.get('products',latest['product_id'],db)
+            evaluation=self.ledger.get('evaluations',product['evaluation_id'],db) if product.get('evaluation_id') else None
+            if evaluation and len(evaluation.get('run_ids',[]))>=evaluation['target_count']:
+                raise Conflict('本次用户指定的评测任务数已满，其余需求保留待评估')
+            run=self.ledger.create('runs',{'product_id':latest['product_id'],'requirement_id':latest['id'],
+                 'title':latest['title'],'budget_reserved':bool(latest.get('investigation_budget_reserved')),'revisions':0,'execution_seconds':0,'reason':'','receipts':[],
+                 **({'evaluation_id':evaluation['id']} if evaluation else {})},'queued',db=db)
+            if evaluation:
+                self.ledger.update('evaluations',evaluation['id'],evaluation['version'],{'run_ids':evaluation.get('run_ids',[])+[run['id']]},db=db)
+            self.ledger.update('requirements',latest['id'],latest['version'],{'run_id':run['id']},'queued',db)
+            return run
+
+    @staticmethod
+    def validate_product(config):
+        if 'runtime_recovery' in config:
+            value=config['runtime_recovery']
+            if not isinstance(value,dict) or set(value)!={'enabled'} or type(value.get('enabled')) is not bool:
+                raise ValueError('应用自动恢复开关必须为布尔值')
+            if value['enabled'] and any(not isinstance(config.get(k),str) or not Path(config[k]).is_absolute()
+                                        for k in ('application','app_support','runtime')):
+                raise ValueError('开启自动恢复前，请配置正式应用、数据目录和运行时的绝对路径')
+        if not isinstance(config,dict) or not all(isinstance(config.get(k),str) and config[k].strip() for k in ('name','source','goal')):
+            raise ValueError('产品名称、源码路径和目标必填')
+        if not Path(config['source']).is_absolute():
+            raise ValueError('源码必须为绝对路径')
+        if 'git' in config:
+            from .github import repository
+            import re
+            value = config['git']
+            if not isinstance(value, dict) or set(value) - {'url','base_branch','enabled'}:
+                raise ValueError('Git 配置字段无效')
+            repository(value.get('url'))
+            branch = value.get('base_branch', 'master')
+            if not isinstance(branch, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_/-]*', branch) or '//' in branch or branch.endswith('/'):
+                raise ValueError('目标分支名称无效')
+            if type(value.get('enabled', False)) is not bool:
+                raise ValueError('自动交付开关必须为布尔值')
+            if value.get('enabled'):
+                from reviewers import selection
+                choices = config.get('code_review', {})
+                selection(choices.get('reviewer') or config.get('agents', {}).get('acceptance'))
+                selection(choices.get('fixer') or config.get('agents', {}).get('implementation'))
+        if 'code_review' in config:
+            from reviewers import selection
+            value = config['code_review']
+            if not isinstance(value, dict) or set(value) - {'reviewer','fixer','max_revisions'}:
+                raise ValueError('代码评审配置字段无效')
+            for role in ('reviewer','fixer'):
+                if role in value:
+                    selection(value[role])
+                    if value[role].get('reasoning_effort', 'medium') not in ('low','medium','high','xhigh','max','ultra'):
+                        raise ValueError('推理强度无效')
+            limit = value.get('max_revisions', 0)
+            if type(limit) is not int or not 0 <= limit <= 20:
+                raise ValueError('自动修复轮数必须为 0 到 20，0 表示不限')
+        for key,value in config.get('policy',{}).items():
+            minimum=0 if key in ('runs_per_day','discovery_per_day','tokens_per_day') else 1
+            if key not in DEFAULTS or isinstance(value,bool) or not isinstance(value,int) or value<minimum:
+                raise ValueError('无效策略值')
+        for key in ('adapter','executor'):
+            if key in config and (not isinstance(config[key],list) or not config[key] or not all(isinstance(x,str) for x in config[key])):
+                raise ValueError(f'{key} 必须为命令参数数组')
+        if 'agents' in config:
+            from reviewers import selection
+            required={'discovery':'codex','implementation':'harness','verification':'codex','acceptance':'codex'}
+            if not isinstance(config['agents'],dict) or set(config['agents'])!=set(required):
+                raise ValueError('请配置需求发现、实现、验证、验收四个角色')
+            for name,provider in required.items():
+                selected=selection(config['agents'][name])
+                if selected['provider']!=provider:
+                    raise ValueError(f'{name} 当前应使用 {provider}')

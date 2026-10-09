@@ -1,3 +1,4 @@
+import { ErrorNotice, errorText } from "./errors";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, App as AntApp, Badge, Button, Space, Spin, Tag } from "antd";
 import React from "react";
@@ -5,6 +6,11 @@ import { api } from "./api";
 import type { Connector } from "./types";
 
 export const labels: Record<string, string> = {
+  planning: "待方案审批",
+  developing: "开发中",
+  waiting: "等待审查员审批 / 验收",
+  verified: "审查员验收通过",
+  manual_released: "人工放行，未通过审查员验收",
   queued: "等待审查",
   running: "进行中",
   awaiting_human: "待人工审批",
@@ -41,8 +47,17 @@ export const colors: Record<string, string> = {
   unknown: "warning",
 };
 export const eventLabels: Record<string, string> = {
-  codex_started: "GPT 开始审查",
-  codex_finished: "GPT 审查结束",
+  autopilot_created: "建立研发记录",
+  autopilot_transition: "研发阶段变更",
+  autopilot_token_limit_changed: "调整今日开发 Token 上限",
+  autopilot_monitor_error: "巡检异常",
+  autopilot_daily_error: "日报调度异常",
+  autopilot_error: "研发调度异常",
+  native_released: "人工放行当前审批点",
+  native_consumed: "会话已消费审批结果",
+  native_cancelled: "插件审批点已取消",
+  codex_started: "审查员 开始审查",
+  codex_finished: "审查员 审查结束",
   service_started: "监工已启动",
   service_stopped: "监工已停止",
   settings_updated: "更新服务配置",
@@ -108,7 +123,7 @@ export function useAction() {
       message.success("操作已提交");
     },
     onError: (error) => {
-      message.error(error.message);
+      message.error(errorText(error));
       void cache.invalidateQueries();
     },
   });
@@ -133,7 +148,7 @@ export function QueryState({
         type="error"
         showIcon
         message="数据暂时不可用"
-        description={query.error.message}
+        description={<ErrorNotice value={query.error} subject="管理服务"/>}
         action={<Button onClick={() => query.refetch()}>重试</Button>}
       />
     );
@@ -172,6 +187,13 @@ export function Connection({ value }: { value?: Connector }) {
           ? "Harness 已连接"
           : "会话目录不匹配"
         : "Harness 未连接"}
+      {value?.online && (
+        <Tag color={value.native_supervision ? "blue" : "default"}>
+          {value.native_supervision
+            ? "插件强制监管已启用"
+            : "当前连接不支持强制监管"}
+        </Tag>
+      )}
     </span>
   );
 }

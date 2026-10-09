@@ -34,7 +34,7 @@
 
 审批规则：
 
-- 只有 `mode=handoff` 的活动审查可接管；`awaiting_human` 状态才可提交人工结论。
+- 只有 `mode=handoff` 或 `mode=native_handoff` 的活动审查可接管；`awaiting_human` 状态才可提交人工结论。
 - `plan/checkpoint` 支持 `approve`、`revise`；`acceptance` 支持 `done`、`revise`。
 - 必须填写明确的 instruction。暂停证据失败仍返回 blocked，人工按钮不能绕过。
 - 自动模式下模型结果可能先于接管提交返回；409 表示需要重新核对，不能伪造新 version 覆盖终态。
@@ -58,3 +58,7 @@
 管理服务默认 13084；新版交接桥默认 13083。项目根目录的旧兼容入口 `dsh_bridge.py` 默认 13081，不能与新版参数混用。
 
 设置页 `state_dir` 是管理数据库和当前证据所在位置；`history_dir` 只是历史读取来源。更改 home/bridge_port 前先停止监工并等待操作结束，保留已有额度与证据。显示时间为 Asia/Shanghai。
+
+## 原生插件审批点
+
+读取 `/native-gates/<id>`；会话 `supervision.gate_id` 和审查 `packet.native_gate_id` 指向该记录。显式重试使用 `/native-gates/<id>/retry`，正文为当前 `review_id`；显式单次放行使用 `/native-gates/<id>/release`，正文还须包含非空 `reason`。二者沿用操作 UUID，原审查与暂停证据保持不变。插件 `native_handoff` 可使用人工接管和审批；CLI `handoff` 与页面 `observation` 保留原语义。

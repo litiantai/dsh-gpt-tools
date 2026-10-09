@@ -7,8 +7,11 @@ import {
   Form,
   Input,
   InputNumber,
+  Radio,
+  Collapse,
 } from "antd";
 import React from "react";
+import { ReviewerSelect } from "../ReviewerSelect";
 import type { Settings } from "../types";
 
 import {
@@ -25,6 +28,21 @@ export default function SettingsPage() {
   const action = useAction();
   const [initialized, setInitialized] = React.useState(false);
   const data = query.data;
+  const mode = Form.useWatch("reviewer_mode", form) || "unified";
+  const connection = () =>
+    Object.fromEntries(
+      ["codex_bin", "claude_bin", "harness_bin", "harness_profile"]
+        .map((k) => [k, form.getFieldValue(k)])
+        .filter(([, v]) => v),
+    );
+  const selectionRules = [
+    {
+      validator: (_: unknown, value: { model?: string }) =>
+        value?.model
+          ? Promise.resolve()
+          : Promise.reject(new Error("请选择审查模型")),
+    },
+  ];
   React.useEffect(() => {
     if (data && !initialized) {
       form.setFieldsValue(data);
@@ -55,25 +73,100 @@ export default function SettingsPage() {
                   action.mutate({
                     path: "/settings",
                     method: "PUT",
-                    body: values,
+                    body: { ...form.getFieldsValue(true), ...values },
                   })
                 }
               >
+                <Form.Item name="reviewer_mode" label="审查配置模式">
+                  <Radio.Group
+                    onChange={(e) => {
+                      if (
+                        e.target.value === "stages" &&
+                        !Object.keys(
+                          form.getFieldValue("reviewer_stages") || {},
+                        ).length
+                      ) {
+                        const value = form.getFieldValue("reviewer_unified");
+                        form.setFieldValue("reviewer_stages", {
+                          plan: { ...value },
+                          checkpoint: { ...value },
+                          acceptance: { ...value },
+                        });
+                      }
+                    }}
+                    options={[
+                      { value: "unified", label: "统一配置" },
+                      { value: "stages", label: "按阶段配置" },
+                    ]}
+                  />
+                </Form.Item>
+                {mode === "unified" ? (
+                  <Form.Item
+                    name="reviewer_unified"
+                    label="全部阶段"
+                    rules={selectionRules}
+                  >
+                    <ReviewerSelect connection={connection} />
+                  </Form.Item>
+                ) : (
+                  [
+                    ["plan", "方案审查"],
+                    ["checkpoint", "异常检查"],
+                    ["acceptance", "最终验收"],
+                  ].map(([phase, label]) => (
+                    <Form.Item
+                      key={phase}
+                      name={["reviewer_stages", phase]}
+                      label={label}
+                      rules={selectionRules}
+                    >
+                      <ReviewerSelect connection={connection} />
+                    </Form.Item>
+                  ))
+                )}
+                <Collapse
+                  className="spaced-bottom"
+                  items={[
+                    {
+                      key: "advanced",
+                      label: "高级：CLI 与 Harness 运行配置",
+                      forceRender: true,
+                      children: (
+                        <>
+                          <Form.Item
+                            name="codex_bin"
+                            label="Codex CLI"
+                            rules={[{ required: true, whitespace: true }]}
+                          >
+                            <Input />
+                          </Form.Item>
+                          <Form.Item
+                            name="claude_bin"
+                            label="Claude CLI"
+                            rules={[{ required: true, whitespace: true }]}
+                          >
+                            <Input />
+                          </Form.Item>
+                          <Form.Item
+                            name="harness_bin"
+                            label="Harness CLI"
+                            rules={[{ required: true, whitespace: true }]}
+                          >
+                            <Input />
+                          </Form.Item>
+                          <Form.Item
+                            name="harness_profile"
+                            label="Harness 独立审查 profile"
+                            rules={[{ required: true, whitespace: true }]}
+                          >
+                            <Input />
+                          </Form.Item>
+                        </>
+                      ),
+                    },
+                  ]}
+                />
                 <div className="form-grid">
-                  <Form.Item
-                    name="model"
-                    label="GPT 审查模型"
-                    rules={[{ required: true, whitespace: true }]}
-                  >
-                    <Input placeholder="模型名称" />
-                  </Form.Item>
-                  <Form.Item
-                    name="codex_bin"
-                    label="Codex CLI"
-                    rules={[{ required: true, whitespace: true }]}
-                  >
-                    <Input />
-                  </Form.Item>
                   <Form.Item
                     name="review_timeout"
                     label="单次模型审查超时（秒）"

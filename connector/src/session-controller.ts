@@ -1,8 +1,9 @@
 /** Connector entry for Harness hosts exposing the sessionController service. */
 import { apply as connect, type Api } from "./index.js";
+import { installNative, type NativeContext } from "./native-supervision.js";
 
 export const name = "dsh-supervisor-connector";
-export const inject = ["sessionController"];
+export const inject = ["sessionController", "tools", "agents", "jobs"];
 
 type Prompt = Parameters<Api["sessions"]["prompt"]>[0]["payload"];
 type History = Extract<
@@ -65,17 +66,19 @@ export function adaptController(controller: SessionController): Api {
  * @param config Local supervisor paths and origin.
  */
 export function apply(
-  ctx: {
+  ctx: NativeContext & {
     sessionController: SessionController;
     effect(callback: () => () => void, label?: string): void;
   },
   config: Parameters<typeof connect>[1] = {},
 ): void {
+  if (process.env.DSH_SUPERVISOR_REVIEW) return;
   connect(
     {
       apiProxy: adaptController(ctx.sessionController),
       effect: ctx.effect.bind(ctx),
     },
-    config,
+    { ...config, nativeSupervision: true },
   );
+  installNative(ctx, config);
 }

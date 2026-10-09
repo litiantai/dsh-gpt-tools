@@ -12,8 +12,11 @@ import {
   Route,
   Routes,
   useNavigate,
+  useLocation,
 } from "react-router-dom";
 import type { Overview } from "./types";
+import { useEffect, useState } from 'react';
+import { projectSection, projectSections } from './projectNavigation';
 
 import { Connection, useData } from "./components";
 import EventsPage from "./pages/EventsPage";
@@ -21,32 +24,47 @@ import OverviewPage from "./pages/OverviewPage";
 import ReviewsPage from "./pages/ReviewsPage";
 import SessionsPage from "./pages/SessionsPage";
 import SettingsPage from "./pages/SettingsPage";
+import AutopilotPage from "./pages/AutopilotPage";
 export default function Shell() {
   const overview = useData<Overview>("/overview");
   const navigate = useNavigate();
+  const location = useLocation();
+  const projectView = location.pathname === '/autopilot' || location.pathname === '/';
+  const [projectUrl,setProjectUrl]=useState(()=>sessionStorage.getItem('last-project-url') || '/autopilot');
+  useEffect(()=>{
+    if(location.pathname==='/autopilot') {
+      const url=location.pathname+location.search;
+      setProjectUrl(url);
+      sessionStorage.setItem('last-project-url',url);
+    }
+  },[location.pathname,location.search]);
   const nav = [
-    ["/", "总览", <DashboardOutlined />],
-    ["/sessions", "会话管理", <ApartmentOutlined />],
-    ["/reviews", "审查中心", <FileSearchOutlined />],
-    ["/events", "操作日志", <HistoryOutlined />],
-    ["/settings", "设置", <SettingOutlined />],
+    ["/supervisor", "监工总览", <DashboardOutlined />],
+    ["/sessions", "全部会话", <ApartmentOutlined />],
+    ["/reviews", "全部审查", <FileSearchOutlined />],
+    ["/events", "平台日志", <HistoryOutlined />],
+    ["/settings", "平台设置", <SettingOutlined />],
   ] as const;
   return (
-    <div className="workspace">
+    <div className={`workspace ${projectView ? 'project-workspace' : ''}`}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-icon">
             <ApartmentOutlined />
           </div>
           <div>
-            <strong>监工工作台</strong>
+            <strong>研发控制台</strong>
             <small>DEEPSEEK ↔ GPT</small>
           </div>
         </div>
-        <div className="nav-label">工作空间</div>
-        <nav>
+        <div className="nav-label">项目工作区</div>
+        <nav aria-label="项目导航">
+          <NavLink to={projectUrl} aria-label="持续研发"><ApartmentOutlined/><span>持续研发</span></NavLink>
+        </nav>
+        <div className="nav-label platform-nav-label">平台管理 · 全部项目</div>
+        <nav aria-label="平台管理">
           {nav.map(([to, label, icon]) => (
-            <NavLink key={to} to={to} end={to === "/"}>
+            <NavLink key={to} to={to} aria-label={label} end>
               {icon}
               <span>{label}</span>
               {to === "/reviews" && !!overview.data?.counts.awaiting_human && (
@@ -70,7 +88,7 @@ export default function Shell() {
       <div className="main">
         <header className="topbar">
           <span className="breadcrumb">
-            工作空间 <span>/</span> 监工管理
+            {projectView ? '项目工作区' : '平台管理'} <span>/</span> {projectView ? projectSections[projectSection(new URLSearchParams(location.search))].label : nav.find(([path])=>path===location.pathname)?.[1] || '监工管理'}
           </span>
           <div className="topbar-right">
             <Connection value={overview.data?.connector} />
@@ -81,7 +99,9 @@ export default function Shell() {
         </header>
         <main>
           <Routes>
-            <Route path="/" element={<OverviewPage />} />
+            <Route path="/autopilot" element={<AutopilotPage />} />
+            <Route path="/" element={<Navigate to="/autopilot" replace />} />
+            <Route path="/supervisor" element={<OverviewPage />} />
             <Route path="/sessions" element={<SessionsPage />} />
             <Route path="/reviews" element={<ReviewsPage />} />
             <Route path="/events" element={<EventsPage />} />
@@ -90,9 +110,9 @@ export default function Shell() {
           </Routes>
         </main>
         <footer className="page-footer">
-          <span>DeepSeek ↔ GPT · 本地监工管理</span>
+          <span>持续研发控制中心 · 数据保存在本机</span>
           <button onClick={() => navigate("/settings")}>
-            连接与配置 <ArrowRightOutlined />
+            平台连接与配置 <ArrowRightOutlined />
           </button>
         </footer>
       </div>

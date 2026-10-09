@@ -20,10 +20,10 @@ from urllib.request import (
 )
 
 READ = re.compile(
-    r"/(?:overview|settings|events|sessions(?:/[^/?#]+)?|reviews(?:/[^/?#]+)?)$"
+    r"/(?:overview|settings|events|reviewers/(?:codex|claude|harness)/models|sessions(?:/[^/?#]+)?|reviews(?:/[^/?#]+)?|native-gates/[^/?#]+)$"
 )
 WRITE = re.compile(
-    r"/(?:service/(?:start|stop)|settings|reviews(?:/[^/?#]+/(?:retry|cancel|takeover|decision))?|sessions/[^/?#]+/(?:approval-mode|messages|stop))$"
+    r"/(?:service/(?:start|stop)|settings|reviewers/(?:codex|claude|harness)/models/refresh|reviews(?:/[^/?#]+/(?:retry|cancel|takeover|decision))?|sessions/[^/?#]+/(?:approval-mode|messages|stop)|native-gates/[^/?#]+/(?:retry|release))$"
 )
 
 

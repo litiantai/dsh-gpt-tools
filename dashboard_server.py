@@ -2,6 +2,7 @@
 """Local dashboard HTTP API and static host. Python standard library only."""
 
 from __future__ import annotations
+import hashlib
 import argparse, datetime, fcntl, hmac, json, mimetypes, os, secrets, signal, subprocess, sys, threading, time, uuid
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,6 +26,11 @@ from review_core import (
     stamp,
 )
 
+from native_supervision import NativeSupervision
+import reviewers
+from autopilot.api import Control
+from error_messages import present_errors, failure_fields
+
 
 class Dashboard:
     def __init__(self, state):
@@ -37,6 +43,8 @@ class Dashboard:
         self.lock = threading.RLock()
         self.cache = (0, [])
         self.bridge = None
+        self.native = NativeSupervision(self)
+        self.autopilot = Control(self.store)
 
     def sessions(self):
         with self.lock:
@@ -66,6 +74,9 @@ class Dashboard:
         with self.store.connect() as db:
             row = db.execute("SELECT * FROM connector WHERE id=1").fetchone()
         value = dict(row) if row else dict(home=None, last_seen=None)
+        with self.store.connect() as db:
+            cap = db.execute("SELECT response FROM operations WHERE id='connector-capabilities'").fetchone()
+        value["native_supervision"] = bool(cap and json.loads(cap[0]).get("native_supervision"))
         value["online"] = bool(row and time.time() - row["last_seen"] < 10)
         value["home_matches"] = bool(
             row
@@ -201,6 +212,33 @@ class Dashboard:
         return sorted(current + result, key=lambda r: r["created"], reverse=True)[:500]
 
     def get(self, path):
+        if path.startswith('/reviews/') and path.endswith('/context'):
+            from autopilot.record_context import record_context
+            ident = path.split('/')[2]
+            return record_context(self.autopilot.ledger, 'reviews', ident, self.get('/reviews/' + ident))
+        if path == '/autopilot/workbench-empty':
+            return {'sessions': [], 'reviews': [], 'events': []}
+        if path.startswith('/products/') and path.endswith('/workbench'):
+            product = self.autopilot.ledger.get('products', path.split('/')[2])
+            roots = [Path(product['source']).resolve()]
+            runs = [r for r in self.autopilot.ledger.list('runs') if r['product_id'] == product['id']]
+            roots += [Path(r['workspace']).resolve() for r in runs if r.get('workspace')]
+            def belongs(cwd):
+                if not cwd:
+                    return False
+                directory = Path(cwd).resolve()
+                return any(directory == root or directory.is_relative_to(root) for root in roots)
+            sessions = [s for s in self.sessions() if belongs(s.get('cwd'))]
+            session_ids = {s['id'] for s in sessions} | {r['id'] for r in runs}
+            reviews = [r for r in self.history() if r['session_id'] in session_ids or belongs(r.get('packet', {}).get('cwd'))]
+            review_ids = {r['id'] for r in reviews}
+            events = [e for e in self.get('/events') if e.get('session_id') in session_ids or e.get('review_id') in review_ids
+                      or e.get('detail', {}).get('product_id') == product['id']]
+            return {'sessions': [s | {'product_id':product['id']} for s in sessions],
+                    'reviews': [r | {'product_id':product['id'], 'title':r.get('packet', {}).get('summary') or r['id']} for r in reviews],
+                    'events': [e | {'product_id':product['id'], 'title':e.get('kind'), 'status':'recorded', 'updated':e.get('at')} for e in events]}
+        if self.autopilot.handles(path):
+            return self.autopilot.get(path)
         cfg = self.store.settings()
         if path == "/bootstrap":
             return {"csrf": self.csrf}
@@ -255,6 +293,8 @@ class Dashboard:
                     )
                 ]
             return item
+        if path.startswith("/reviewers/") and path.endswith("/models"):
+            return reviewers.catalog(cfg, self.store.state, path.split("/")[2])
         if path == "/reviews":
             return self.history()
         if path.startswith("/reviews/"):
@@ -314,6 +354,8 @@ class Dashboard:
                         except ValueError:
                             continue
             return sorted(events, key=lambda event: event["at"], reverse=True)[:500]
+        if path.startswith("/native-gates/"):
+            return self.native.get(path.split("/")[2])
         if path == "/settings":
             return cfg | {
                 "state_dir": str(self.store.state),
@@ -322,17 +364,36 @@ class Dashboard:
         raise KeyError("接口不存在")
 
     def mutate(self, path, body):
+        if self.autopilot.handles(path):
+            return self.autopilot.mutate(path, body)
+        if path.startswith("/reviewers/") and path.endswith("/models/refresh"):
+            cfg = self.store.settings()
+            # Preview unsaved executable/profile fields without persisting credentials or settings.
+            for key in ("codex_bin", "claude_bin", "harness_bin", "harness_profile"):
+                if key in body:
+                    if not isinstance(body[key], str) or not body[key].strip():
+                        raise ValueError(f"{key} 不能为空")
+                    cfg[key] = body[key].strip()
+            return reviewers.catalog(cfg, self.store.state, path.split("/")[2], True)
         if path == "/service/start":
             return self.service(True)
         if path == "/service/stop":
             return self.service(False)
         if path == "/settings":
             cfg = self.store.settings()
-            for key in ("model", "home", "history_dir", "codex_bin"):
+            for key in ("model", "home", "history_dir", "codex_bin", "claude_bin", "harness_bin", "harness_profile"):
                 if key in body:
                     if not isinstance(body[key], str) or not body[key].strip():
                         raise ValueError(f"{key} 不能为空")
                     cfg[key] = body[key].strip()
+            for key in ("reviewer_mode", "reviewer_unified", "reviewer_stages"):
+                if key in body:
+                    cfg[key] = body[key]
+            if "model" in body and "reviewer_unified" not in body and cfg["reviewer_unified"]["provider"] == "codex":
+                cfg["reviewer_unified"] = {"provider": "codex", "model": cfg["model"]}
+            reviewers.validate_config(cfg)
+            if cfg["reviewer_unified"]["provider"] == "codex":
+                cfg["model"] = cfg["reviewer_unified"]["model"]
             for key, lo, hi in (
                 ("review_timeout", 1, 450),
                 ("max_per_day", 1, 10000),
@@ -366,6 +427,8 @@ class Dashboard:
             )
             return cfg
         parts = path.strip("/").split("/")
+        if parts[0] == "native-gates" and len(parts) == 3:
+            return self.native.control(parts[1], parts[2], body)
         if parts[0] == "sessions" and len(parts) == 3:
             sid, action = parts[1:]
             session = self.session(sid)
@@ -461,6 +524,8 @@ class Dashboard:
                 ):
                     raise Conflict("请先启动新版监工；旧版服务须先通过原 CLI 停止")
                 old = self.store.get(rid)
+                if old["mode"] == "native_handoff":
+                    raise Conflict("插件审查请在对应审批点重试")
                 if old["status"] in ACTIVE:
                     raise Conflict("当前审查尚未结束")
                 packet = old["packet"] | {"request_id": body["operation_id"]}
@@ -484,6 +549,9 @@ class Dashboard:
         oid = body.get("operation_id", "")
         uuid.UUID(oid)
         fingerprint = json.dumps([path, body], sort_keys=True, ensure_ascii=False)
+        if path.rstrip('/').endswith('/git-token'):
+            # Idempotency must never persist the credential request body.
+            fingerprint = 'sha256:' + hashlib.sha256(fingerprint.encode()).hexdigest()
         with self.lock:
             with self.store.connect() as db:
                 row = db.execute(
@@ -519,6 +587,8 @@ class Dashboard:
         if not isinstance(home, str) or not Path(home).is_absolute():
             raise ValueError("插件必须报告绝对会话目录")
         now = time.time()
+        with self.store.connect() as db:
+            db.execute("INSERT OR REPLACE INTO operations VALUES ('connector-capabilities','capabilities',?)", (json.dumps({"native_supervision": body.get("native_supervision") is True}),))
         matches = Path(home).resolve() == Path(self.store.settings()["home"]).resolve()
         with self.store.transaction() as db:
             db.execute("INSERT OR REPLACE INTO connector VALUES (1,?,?)", (home, now))
@@ -589,6 +659,8 @@ def handler_for(app, port, dist):
             content_type="application/json; charset=utf-8",
             cookie=False,
         ):
+            if not isinstance(data,bytes) and not self.path.startswith('/api/connector/'):
+                data=present_errors(data)
             raw = (
                 json.dumps(data, ensure_ascii=False).encode()
                 if not isinstance(data, bytes)
@@ -621,14 +693,14 @@ def handler_for(app, port, dist):
                     self.send(403, {"error": "Host rejected"})
                     return
                 path = unquote(urlparse(self.path).path)
-                if path == "/api/connector/poll" and self.command == "POST":
+                if path in ("/api/connector/poll", "/api/connector/native") and self.command == "POST":
                     if not hmac.compare_digest(
                         self.headers.get("Authorization", ""),
                         "Bearer " + app.connector_key,
                     ):
                         self.send(403, {"error": "插件认证失败"})
                         return
-                    self.send(200, app.connector(self.body()))
+                    self.send(200, app.connector(self.body()) if path.endswith("/poll") else app.native.connector(self.body()))
                     return
                 origin = self.headers.get("Origin")
                 if origin and origin not in (
@@ -684,14 +756,18 @@ def handler_for(app, port, dist):
                     mimetypes.guess_type(target.name)[0] or "application/octet-stream",
                 )
             except Conflict as exc:
-                self.send(409, {"error": str(exc)})
+                fields=failure_fields(exc,'管理服务')
+                self.send(409, {**fields,"error": fields['reason']})
             except KeyError as exc:
-                self.send(404, {"error": str(exc)})
+                fields=failure_fields(exc,'管理服务')
+                self.send(404, {**fields,"error": fields['reason']})
             except (ValueError, TypeError) as exc:
-                self.send(400, {"error": str(exc)})
+                fields=failure_fields(exc,'管理服务')
+                self.send(400, {**fields,"error": fields['reason']})
             except Exception as exc:
                 app.store.event("api_error", detail={"error": str(exc)})
-                self.send(500, {"error": "操作失败，请查看操作日志"})
+                fields=failure_fields(exc,'管理服务')
+                self.send(500, {**fields,"error": fields['reason']})
 
         def body(self):
             size = int(self.headers.get("Content-Length", "0"))

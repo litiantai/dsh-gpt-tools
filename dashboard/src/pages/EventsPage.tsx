@@ -1,3 +1,4 @@
+import { RecordValue } from '../RecordDetails';
 import { ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import { Button, Card, Input, Table } from "antd";
 import React from "react";
@@ -49,7 +50,7 @@ export default function EventsPage() {
             )}
             expandable={{
               expandedRowRender: (e) => (
-                <pre className="log">{JSON.stringify(e.detail, null, 2)}</pre>
+                <RecordValue value={e.detail}/>
               ),
             }}
             columns={[

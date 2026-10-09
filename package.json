@@ -19,5 +19,10 @@
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "prettier": "^3.9.9"
+  },
+  "dependencies": {
+    "@alibaba-group/open-code-review": "1.12.12",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.289",
+    "yaml": "^2.9.1"
   }
 }

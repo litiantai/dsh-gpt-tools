@@ -48,7 +48,7 @@ dsh plugin --profile "<profile>" add "<project>/connector"
 
 ```yaml
 - id: dsh-supervisor-connector
-  name: '@dsh-supervisor/connector'
+  name: '@dsh-supervisor/connector/session-controller'
   config:
     stateDir: /absolute/supervisor-state
     home: /absolute/harness-home
@@ -56,6 +56,8 @@ dsh plugin --profile "<profile>" add "<project>/connector"
 ```
 
 加载 profile 后，以看板设置页报告的 home 与心跳为准。`connector.key` 由管理服务保存在 state 中，插件自行读取，不复制进网页、聊天或日志。
+
+当前 bundle 已插入新版入口，不要再手动插入 `dsh-supervisor-connector-modern`。升级时删除旧的额外插入项并把配置移回默认项；patch 的 `name` 是匹配条件，旧入口名称不会匹配新版入口。旧宿主必须用无 `name` 的 ID override 停用默认项，再只插入一个旧版连接入口。
 
 ## 4. 最终核对
 

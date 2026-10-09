@@ -29,3 +29,12 @@ description: 安装、升级或修复 dsh-gpt-tools 的 DeepSeek ↔ GPT 监工�
 安装过程不通过发送真实会话消息或运行收费审查来冒充连接检查。用户明确要求联调时，选定独立测试会话再执行。
 
 报告看板 URL、项目/home/state/profile 的实际位置、启动方式和检查结果。若插件未加载、旧服务未切换或用户尚未登录，逐项标为未完成，不宣称整个安装已就绪。
+
+
+## 多审查器设置
+
+设置页可选择统一配置或按 plan/checkpoint/acceptance 分阶段配置，审查器支持 Codex/GPT、Claude CLI、DeepSeek Harness。模型从工具目录下拉选择，刷新失败时保留缓存并明确显示错误，不自动改选模型。每个已入队审批保存实际审查器和模型，改设置不重跑历史任务。
+
+Harness 审查必须使用独立 base + headless profile，模型和凭据沿用指定 home；专用进程禁用自动监管与连接插件，避免递归。安装方法见项目 README 的“多审查器与模型”。Claude 模型目录通过项目依赖 Agent SDK 连接本机 CLI 查询，不发送生成请求。升级复制完整 scripts，并保留指向已安装依赖的 reviewer_helper 路径。
+
+`GET /reviewers/<provider>/models` 读取目录；`POST /reviewers/<provider>/models/refresh` 刷新目录，沿用管理鉴权和操作 UUID。目录查询不消耗审查次数；真实验收按原额度计数。历史记录没有模型快照时显示“未记录”，不可按当前设置推断历史使用模型。

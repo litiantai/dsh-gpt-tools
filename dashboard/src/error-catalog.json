@@ -1,0 +1,116 @@
+[
+  {
+    "code": "MODEL_BALANCE_INSUFFICIENT",
+    "pattern": "Insufficient Balance|余额不足|MODEL_BALANCE_INSUFFICIENT",
+    "message": "模型账户余额不足，本次操作未能完成。",
+    "suggestion": "请恢复模型账户余额后重试。"
+  },
+  {
+    "code": "QUOTA_EXHAUSTED",
+    "pattern": "额度.*(不足|已用尽|耗尽)|quota.exceeded|quota.exhausted",
+    "message": "本次操作所需额度不足。",
+    "suggestion": "请等待额度恢复，或检查额度设置。"
+  },
+  {
+    "code": "RATE_LIMITED",
+    "pattern": "rate.limit|too many requests|限流|HTTP[^\\n]*429",
+    "message": "{subject}请求过于频繁。",
+    "suggestion": "请稍后重试。"
+  },
+  {
+    "code": "CONNECTION_REFUSED",
+    "pattern": "connection refused|ECONNREFUSED|Errno (61|111)|连接被拒绝",
+    "message": "暂时无法连接{subject}。",
+    "suggestion": "请确认服务已启动，稍后重试。"
+  },
+  {
+    "code": "CONNECTION_LOST",
+    "pattern": "connection (reset|aborted|closed)|ECONNRESET|broken pipe|连接中断",
+    "message": "与{subject}的连接已中断。",
+    "suggestion": "请检查服务运行情况，稍后重试。"
+  },
+  {
+    "code": "DNS_FAILED",
+    "pattern": "getaddrinfo|\\bENOTFOUND\\b|\\bEAI_AGAIN\\b|name or service not known|nodename nor servname",
+    "message": "无法解析{subject}的网络地址。",
+    "suggestion": "请检查网络连接和服务地址。"
+  },
+  {
+    "code": "REQUEST_TIMEOUT",
+    "pattern": "timed?\\s*out|TimeoutError|超时",
+    "message": "等待{subject}响应超时。",
+    "suggestion": "请检查服务是否可用，稍后重试。"
+  },
+  {
+    "code": "AUTH_REQUIRED",
+    "pattern": "unauthorized|unauthenticated|invalid.api.key|HTTP[^\\n]*401|认证失效|凭据.*失效",
+    "message": "{subject}的身份认证未通过。",
+    "suggestion": "请检查登录状态或重新配置有效凭据。"
+  },
+  {
+    "code": "ACCESS_DENIED",
+    "pattern": "permission denied|operation not permitted|EACCES|EPERM|forbidden|HTTP[^\\n]*403",
+    "message": "当前没有权限完成此操作。",
+    "suggestion": "请检查相关服务或文件的访问权限。"
+  },
+  {
+    "code": "SERVICE_UNAVAILABLE",
+    "pattern": "bad gateway|service unavailable|gateway timeout|HTTP[^\\n]*50[234]",
+    "message": "{subject}暂时不可用。",
+    "suggestion": "请稍后重试。"
+  },
+  {
+    "code": "FILE_MISSING",
+    "pattern": "FileNotFoundError|No such file or directory|ENOENT",
+    "message": "操作所需的文件不存在。",
+    "suggestion": "请检查应用安装和文件配置。"
+  },
+  {
+    "code": "INVALID_RECEIPT",
+    "pattern": "JSONDecodeError|Unexpected token|Unexpected end of JSON|Expecting (value|property)|JSON.*(解析失败|无效)|回执.*(解析|读取)失败",
+    "message": "{subject}未返回可识别的结果。",
+    "suggestion": "请重试；若持续出现，请展开技术详情排查。"
+  },
+  {
+    "code": "ACCEPTANCE_TOOL_ERROR",
+    "pattern": "strict mode violation|locator\\.|page\\.goto|Target.*closed",
+    "message": "自动验收工具未能完成检查。",
+    "suggestion": "请检查验收环境或定位规则后重新验收。"
+  },
+  {
+    "code": "PROCESS_FAILED",
+    "pattern": "CalledProcessError|Command.*failed|non.zero exit|退出码|执行器异常退出|Harness.*执行失败",
+    "message": "执行程序未能正常完成操作。",
+    "suggestion": "请展开技术详情检查执行环境后重试。"
+  },
+  {
+    "code": "NETWORK_UNAVAILABLE",
+    "pattern": "Failed to fetch|fetch failed|NetworkError|Load failed|network.*error",
+    "message": "暂时无法连接{subject}。",
+    "suggestion": "请检查网络或服务运行情况后重试。"
+  },
+  {
+    "code": "APP_STOPPED",
+    "pattern": "^APP_STOPPED$",
+    "message": "应用未运行，当前无法确认运行状态。",
+    "suggestion": "请启动应用，或开启应用自动恢复。"
+  },
+  {
+    "code": "HOST_NOT_READY",
+    "pattern": "^HOST_NOT_READY$",
+    "message": "应用已启动，正在等待服务就绪。",
+    "suggestion": "请稍候，系统会继续检查运行状态。"
+  },
+  {
+    "code": "IDENTITY_MISMATCH",
+    "pattern": "^IDENTITY_MISMATCH$",
+    "message": "服务身份与当前项目不一致。",
+    "suggestion": "请检查应用和数据目录配置。"
+  },
+  {
+    "code": "UNKNOWN",
+    "pattern": "(?!)",
+    "message": "本次操作未能完成，具体原因暂未识别。",
+    "suggestion": "请展开技术详情查看诊断信息。"
+  }
+]
