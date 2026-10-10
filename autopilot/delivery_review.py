@@ -184,7 +184,7 @@ def verify(request, workspace, head, base, folder):
                     'source_digest': actual_digest, 'baseline_source_digest': baseline_digest}}
             atomic(folder / 'verification.json', result)
             return result
-    record = batch | {'id': str(uuid.uuid4()), 'workspace': str(workspace), 'commit': head, 'base_commit': base,
+    record = batch | {'id': str(uuid.uuid4()), 'delivery_id': batch['id'], 'workspace': str(workspace), 'commit': head, 'base_commit': base,
         'summary': '交付整合后完整验证；核对全部关联业务验收条件'}
     if baseline_acceptance:
         record['source_digest'] = actual_digest
@@ -325,7 +325,7 @@ def execute(action, request):
                          workspace, head, base, folder)
         if checked.get('status') != 'pass':
             gh.status(head, 'failure', '交付验证：' + checked.get('reason', '必需检查未通过'))
-            return checked
+            return checked | {'head_sha': head, 'base_sha': base, 'pr_url': record['pr_url']}
         _, current = load_pull_request(record)
         if digest(workspace) != before or git(workspace, 'rev-parse', 'HEAD') != head or current.get('state') != 'open' or current['head']['sha'] != head or current['base']['sha'] != base:
             return {'status': 'stale', 'stale': True, 'reason': '运行验证期间源码或 PR 变化，结论失效'}
