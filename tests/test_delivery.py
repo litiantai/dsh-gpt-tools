@@ -2,6 +2,7 @@
 import copy
 import datetime as dt
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -362,7 +363,7 @@ class DeliveryTests(unittest.TestCase):
         folder = paths(self.request(batch))[1] / 'rounds' / batch['round_id']
         self.assertEqual(json.loads((folder / 'result.json').read_text()), result)
 
-    @unittest.skipUnless(sys.platform == 'darwin', 'requires macOS sandbox')
+    @unittest.skipUnless(sys.platform == 'darwin' and not os.environ.get('DSH_PROJECT_ISOLATED'), '由外层验证运行 macOS 沙箱执行器测试，系统不允许嵌套 Seatbelt')
     def test_harness_review_uses_private_profile_and_retains_failure_diagnostics(self):
         from autopilot.delivery_review import model
         from reviewers import command as real_command
@@ -424,6 +425,49 @@ sys.exit(1)
         self.assertEqual(worker['worker_home'], str(folder / 'home'))
         self.assertEqual(actual['evidence'], '/execution/evidence')
         self.assertEqual(actual['plan'], result['plan'])
+
+    def test_codex_review_persists_terminal_usage_error_instead_of_stderr_warning(self):
+        from autopilot.delivery_review import model
+        batch, _ = self.bootstrap()
+        batch['selection'] = {'provider': 'codex', 'model': 'fixture'}
+        folder = self.root / 'codex-error'
+        def failed(argv, **kwargs):
+            kwargs['stdout'].write(json.dumps({'type': 'turn.failed', 'error': {
+                'message': 'You’ve hit your usage limit. Try again later.'}}) + '\n')
+            kwargs['stderr'].write('model list request timed out')
+            return subprocess.CompletedProcess(argv, 1)
+        with patch('codex_account.account_status', return_value={'status': 'available', 'checked_at': 123}) as account, \
+                patch('autopilot.delivery_review.restrict', side_effect=lambda argv, *args, **kwargs: argv), \
+                patch('autopilot.delivery_review.subprocess.run', side_effect=failed):
+            result = model(self.request(batch), folder, '只读评审', review=True)
+        self.assertEqual(account.call_args.args[1]['bin'], self.store.settings()['codex_bin'])
+        self.assertEqual(result['account_snapshot']['status'], 'available')
+        self.assertEqual(result['error_code'], 'QUOTA_EXHAUSTED')
+        self.assertEqual(result['failure_kind'], 'agent_execution')
+        self.assertFalse(result['retryable'])
+        self.assertEqual(result['model'], 'fixture')
+        self.assertEqual(json.loads((folder / 'result.json').read_text()), result)
+
+    def test_live_codex_quota_blocks_generation_but_unknown_query_does_not(self):
+        from autopilot.delivery_review import model
+        batch, _ = self.bootstrap()
+        batch['selection'] = {'provider': 'codex', 'model': 'fixture'}
+        for status in ('limited', 'unauthenticated', 'unknown'):
+            folder = self.root / ('preflight-' + status)
+            with patch('codex_account.account_status', return_value={'status': status, 'checked_at': 123}), \
+                    patch('autopilot.delivery_review.restrict', side_effect=lambda argv, *args, **kwargs: argv), \
+                    patch('autopilot.delivery_review.subprocess.run', return_value=subprocess.CompletedProcess([], 0)) as run, \
+                    patch('reviewers.read_result', return_value={'status': 'pass'}):
+                result = model(self.request(batch), folder, '只读评审', review=True)
+            self.assertEqual(result['account_snapshot']['status'], status)
+            self.assertEqual(json.loads((folder / 'account.json').read_text())['status'], status)
+            if status == 'unknown':
+                run.assert_called_once()
+                self.assertEqual(result['status'], 'pass')
+            else:
+                run.assert_not_called()
+                self.assertEqual(result['status'], 'blocked')
+                self.assertFalse(result['retryable'])
 
     def test_review_runs_real_pinned_ocr_without_starting_runtime_verification(self):
         from autopilot.delivery_review import execute
@@ -591,8 +635,9 @@ class GitHubTests(unittest.TestCase):
     def test_agent_failure_report_is_an_execution_error_not_a_code_verdict(self):
         from autopilot.delivery_review import publish_result
         gh = GitHub('https://github.com/example/repo')
-        result = {'status': 'blocked', 'failure_kind': 'agent_execution', 'reason': '模型启动失败',
-            'head_sha': 'a'*40, 'base_sha': 'b'*40}
+        result = {'status': 'blocked', 'failure_kind': 'agent_execution', 'reason': '模型账户额度不足',
+            'detail': 'You’ve hit your usage limit. token=fixture-secret </pre><script>bad</script>',
+            'total_files': 36, 'head_sha': 'a'*40, 'base_sha': 'b'*40}
         saved = {'html_url': 'https://github.com/example/repo/pull/2#issuecomment-43'}
         with patch.object(gh, 'api', side_effect=[[], saved, {}]) as api:
             receipt = publish_result(gh, 2, 'agent-error', Path(self.tmp.name), result, 'error', '评审 Agent 运行异常：模型启动失败')
@@ -600,6 +645,12 @@ class GitHubTests(unittest.TestCase):
         self.assertIn('评审 Agent 运行异常', body)
         self.assertIn('本轮未形成有效代码评审结论', body)
         self.assertNotIn('代码评审未通过', body)
+        self.assertIn('运行错误详情', body)
+        self.assertIn('hit your usage limit', body)
+        self.assertNotIn('fixture-secret', body)
+        self.assertNotIn('<script>', body)
+        self.assertIn('未形成有效统计', body)
+        self.assertNotIn('文件覆盖：0 / 36', body)
         self.assertEqual(api.call_args.args[2]['state'], 'error')
         self.assertEqual(receipt['status'], 'blocked')
         self.assertEqual(json.loads((Path(self.tmp.name) / 'result.json').read_text()), receipt)

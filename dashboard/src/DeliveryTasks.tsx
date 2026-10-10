@@ -5,6 +5,7 @@ import { Alert, Button, Card, Descriptions, Empty, Image, Modal, Space, Spin, Ta
 import { api } from './api';
 import { ReceiptList, RecordValue, recordLabel } from './RecordDetails';
 import RecordInspector from './RecordInspector';
+import { currentProgress } from './currentProgress';
 
 type Item = {id:string;title?:string;name?:string;status:string;[key:string]:unknown};
 type Task = {run:Item;requirement:Partial<Item>;signals:Item[];inspections:Item[];evidence:Item[];prs:{label:string;pr_url:string}[]};
@@ -44,14 +45,14 @@ export default function DeliveryTasks({deliveryId,day}:{deliveryId:string;day?:s
     try {setError('');setImage((await api<{data_url:string}>(`/evidence/${id}/screenshot`)).data_url);}
     catch(e){setError(serializeError(e));}
   };
-  const task=selected?.task;
+  const task=query.data?.tasks.find(row=>row.run.id===selected?.task.run.id) || selected?.task;
   return <div className="delivery-tasks" style={{width:'calc(100cqi - 32px)',maxWidth:'100%'}}>
     <p className="muted">{(day || query.data?.day)?.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3') || '当日'} 交付批次处理的问题</p>
     {query.error && <Alert type="error" message={<ErrorNotice value={query.error}/>}/>}
     {!!query.data?.missing_ids.length && <Alert type="warning" message={`${query.data.missing_ids.length} 条关联任务记录缺失，暂无法展示`}/>}
     <Table<Task> rowKey={row=>row.run.id} size="small" loading={query.isLoading} dataSource={query.data?.tasks || []} pagination={false} scroll={{x:760}} locale={{emptyText:'该交付批次尚未关联任务'}} columns={[
       {title:'任务名称',render:(_,row)=>title(row)},
-      {title:'状态',width:150,render:(_,row)=>recordLabel(row.run.status)},
+      {title:'当前进度',width:200,render:(_,row)=>currentProgress(row.run).label},
       {title:'操作',width:410,render:(_,row)=><Space wrap>{[['task','任务详情'],['discovery','发现过程（巡检记录）'],['pr','PR 详情'],['usage','查看用量']].map(([view,label])=><Button size="small" key={view} onClick={()=>{setError('');setSelected({task:row,view});}}>{label}</Button>)}</Space>},
     ]}/>
     <Modal title={task?title(task):''} open={!!selected} onCancel={()=>{setSelected(undefined);setImage('');}} footer={null} width={900} destroyOnHidden>

@@ -1,6 +1,7 @@
 """Isolated integration server. Never uses real Harness sessions or model calls."""
 
 import json
+import os
 import socket
 import sys
 import signal
@@ -13,6 +14,8 @@ sys.path.insert(0, str(ROOT))
 from dashboard_server import Dashboard, ThreadingHTTPServer, handler_for
 
 fixture = Fixture()
+port = int(os.environ.get('DSH_E2E_PORT', '13085'))
+origin = f'http://127.0.0.1:{port}'
 fixture.setUp()
 app = Dashboard(fixture.state)
 with socket.socket() as sock:
@@ -38,6 +41,7 @@ meta.write_text(
             home=str(fixture.home),
             project=str(fixture.project),
             session=fixture.sid,
+            origin=origin,
         )
     )
 )
@@ -45,7 +49,7 @@ connector = subprocess.Popen(
     ["node", str(ROOT / "tests/connector-fixture.mjs"), str(meta)]
 )
 server = ThreadingHTTPServer(
-    ("127.0.0.1", 13085), handler_for(app, 13085, ROOT / "dashboard/dist")
+    ("127.0.0.1", port), handler_for(app, port, ROOT / "dashboard/dist")
 )
 
 
@@ -55,7 +59,7 @@ def shutdown(*_):
 
 signal.signal(signal.SIGTERM, shutdown)
 signal.signal(signal.SIGINT, shutdown)
-print("Integration fixture: http://127.0.0.1:13085", flush=True)
+print(f"Integration fixture: {origin}", flush=True)
 try:
     server.serve_forever()
 finally:

@@ -4,6 +4,9 @@ import { eventLabels, labels, time } from './components';
 
 export type RecordData = Record<string, unknown>;
 const names: Record<string, string> = {
+  account_snapshot:'评审启动前账户快照',auth_home:'认证目录',account_id:'账户标识',plan_type:'账户套餐',auth_mode:'认证方式',
+  checked_at:'查询时间',fetched_at:'获取时间',ordinary_usage_allowed:'服务端允许使用',rate_limits:'额度窗口',
+  primary:'主要额度窗口',secondary:'次要额度窗口',usedPercent:'已用百分比',windowDurationMins:'窗口时长（分钟）',resetsAt:'额度恢复时间',
   next_auto_retry_at:'下次异常重试',last_auto_retry_at:'最近自动重试',auto_retry_count:'异常自动重试次数',auto_retry_wait_reason:'重试等待原因',last_retry_reason:'上次异常原因',
   repair_deferred_until:'修复额度恢复时间',failure_kind:'异常类型',excluded_repair_rounds:'不计入修复额度的异常轮次',
   adapter_exit_code:'回执程序退出码',report_url:'GitHub 评审报告',
@@ -14,6 +17,7 @@ const names: Record<string, string> = {
   investigation_result:'调查结论',next_investigation:'下次调查时间',review_retries:'审查自动重试次数',
   outcome:'归因结论',requirement_day:'需求归属日期',attribution:'归因说明',
   status:'结果',decision:'审查结论',reason:'原因说明',summary:'结果摘要',instruction:'下一步指令',
+  pending_confirmation:'待确认',waiting_for_reply:'等待协作回复',rejected:'已拒绝',
   title:'名称',name:'名称',message:'说明',error:'错误说明',detail:'详细说明',details:'详细记录',
   action:'执行步骤',phase:'阶段',expected:'预期结果',actual:'实际结果',judgement:'判断依据',
   evidence:'依据',reproduction:'复现步骤',impact:'用户影响',acceptance:'验收条件',
@@ -27,7 +31,7 @@ const names: Record<string, string> = {
   problem_resolved:'原需求效果已验证',uncertain:'执行结果尚待核对',pause_verified:'暂停证据已核实',
   observation:'仅作观察',source_unchanged:'源码未发生变化',processes_stopped:'执行进程已停止',
   signals:'发现的信号',source:'信号来源',component:'影响模块',classification:'处理分类',in_scope:'属于项目范围',
-  priority:'优先级',count:'累计出现次数',revisions:'返修次数',execution_seconds:'累计执行耗时',
+  priority:'优先级',queue_first:'优先排队',queue_first_at:'手动入池时间',manual_requirement_id:'手动关联需求',count:'累计出现次数',extra_revisions:'额外返修次数',coordination_no_progress:'连续无进展轮数',coordination_progress:'修复进展',coordination_pending:'待执行协调授权',coordination_reason:'协调依据',coordination_wait:'协调等待原因',role_skill:'角色技能快照',revisions:'累计返修次数',execution_seconds:'累计执行耗时',
   passed:'通过数量',blocked:'阻塞数量',target:'目标数量',target_count:'评测任务数',target_phase:'评测终点',
   method:'巡查方式',environment:'执行环境',results:'各项结果',steps:'巡查步骤',
   at:'记录时间',created:'创建时间',updated:'更新时间',started:'开始时间',finished:'结束时间',
@@ -42,6 +46,7 @@ const names: Record<string, string> = {
   acceptance_review_id:'验收审查',review_packet:'审查输入',session_id:'关联会话',
 };
 const values: Record<string,string> = {
+  available:'当前可用',limited:'当前额度受限',unauthenticated:'尚未登录','codex-app-server':'Codex CLI 实时查询',
   daily_attribution:'晚间统一归因',duplicate:'重复问题',no_issue:'无新问题',requirement:'形成需求',
   daily_acceptance:'晚间逐项复验',daily_retrospective:'日报与复盘',
   products:'项目',runs:'研发任务',requirements:'需求',daily_reports:'日报',
@@ -56,17 +61,18 @@ const values: Record<string,string> = {
   superseded:'已被后续记录替代',planning:'制定方案',plan_review:'方案审查',verifying:'验证中',
   acceptance_review:'最终验收',awaiting_release:'等待发布条件',deploying:'正在发布',observing:'上线观察中',
   rolled_back:'已回滚',rollback_pending:'等待回滚',pausing:'正在暂停',cancelling:'正在取消',
+  pending_confirmation:'待确认',waiting_for_reply:'等待协作回复',rejected:'已拒绝',
   'recover-runtime':'应用自动恢复',acceptance_infrastructure:'验收环境异常',
   master_sync:'master 实例更新',final_acceptance:'master 最终验收',probe:'运行监测',inspect:'体验巡检',discover:'需求发现',plan:'制定方案',develop:'开发实现',
   verify:'独立验证',idle:'空闲检查',publish:'发布上线',observe:'上线观察',rollback:'回滚恢复',
   codex:'Codex / GPT',harness:'DeepSeek Harness',claude:'Claude',ready:'已就绪',stopped:'已停止',
   development:'开发需求',investigation:'待调查',environment:'环境问题',isolated:'隔离测试环境',
-  runtime:'运行监测',inspection:'体验巡检',feedback:'用户反馈',active:'自主运行',paused:'已暂停',
+  runtime:'运行监测',inspection:'体验巡检',feedback:'用户反馈',manual:'手动入池',active:'自主运行',paused:'已暂停',
   user:'用户',assistant:'助手',system:'系统',tool:'工具',
   'session/header':'会话已建立','session/title':'更新会话标题','user/message':'用户发送消息',
   'assistant/message':'助手回复','autopilot/process-completed':'执行步骤已结束',
 };
-const timeFields = new Set(['next_auto_retry_at','last_auto_retry_at','next_investigation','repair_deferred_until','cutoff','at','created','updated','started','finished','started_at','finished_at','sampledAt','last_seen']);
+const timeFields = new Set(['checked_at','fetched_at','resetsAt','queue_first_at','next_auto_retry_at','last_auto_retry_at','next_investigation','repair_deferred_until','cutoff','at','created','updated','started','finished','started_at','finished_at','sampledAt','last_seen']);
 const isRecord = (value: unknown): value is RecordData => !!value && typeof value === 'object' && !Array.isArray(value);
 export function unpack(value:unknown):unknown {
   if(typeof value==='string' && /^[\[{]/.test(value.trim())) {

@@ -8,7 +8,7 @@ export function apply(ctx) {
   if (!process.env.DSH_AUTOPILOT_WORKER) throw new Error('Missing autonomous worker identity');
   if(defineTool && process.env.DSH_AUTOPILOT_RESULT) ctx.tools.register(defineTool({
     name:'autopilot_result',description:'提交本阶段的最终结构化回执。方案写入 plan，实现及测试证据写入 summary；缺前提用 blocked，检查失败用 fail。提交后结束本轮。',
-    parameters:{status:{type:'string',enum:['pass','fail','blocked'],required:true},plan:{type:'string'},summary:{type:'string'},reason:{type:'string'}},
+    parameters:{status:{type:'string',enum:['pass','fail','blocked','waiting_for_reply'],required:true},plan:{type:'string'},summary:{type:'string'},reason:{type:'string'},collaboration_requests:{type:'array',items:{type:'object',additionalProperties:false,properties:{to_role:{type:'string'},topic:{type:'string'},content:{type:'string'},evidence_ids:{type:'array',items:{type:'string'}}}}}},
     output:{schema:{type:'object',additionalProperties:true},render:(_args,value)=>[{type:'text',text:JSON.stringify(value)}]},
     isConcurrencySafe:()=>false,
     async execute(args) {
@@ -19,6 +19,7 @@ export function apply(ctx) {
     },
   }));
   ctx.tools.guard(exec => {
+    if (process.env.DSH_AUTOPILOT_TEST_EXECUTION==='local' && exec.name==='bash') return '本项目由本机控制器运行命令和测试；开发 Agent 使用文件工具修改 feat/release 源码，完成后提交代码修改回执。';
     const allowed=['autopilot_result','bash','read','read_file','glob','grep','write','write_file','edit','apply_patch'];
     if (!allowed.includes(exec.name)) return '自主工作进程仅可操作隔离工作区，不启动会话、子代理或外部操作。';
     if (exec.name==='bash' && (exec.arguments?.run_in_background || Number(exec.arguments?.timeoutMs || 0)>300000)) return '工具必须前台执行，单次最多 5 分钟。';

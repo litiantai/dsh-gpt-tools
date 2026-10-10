@@ -37,7 +37,8 @@ def network_git(root, *args):
 def paths(request):
     root = Path(request['state_root']) / 'git-delivery' / request['product']['id']
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    batch = root / request['record']['day']
+    sequence = request['record'].get('sequence', 1)
+    batch = root / (request['record']['day'] + (f'-{sequence}' if sequence > 1 else ''))
     batch.mkdir(exist_ok=True, mode=0o700)
     name = 'feat-workspace' if request['record'].get('review_target') == 'feature' else 'release-workspace' if request['record'].get('flow') == 'review_before_release' else 'workspace'
     if request['record'].get('review_target') == 'feature' and request['record'].get('feature_requirement_id'):
@@ -238,18 +239,18 @@ def sync(request):
     head = git(workspace, 'rev-parse', 'HEAD')
     network_git(repo, 'push', 'origin', record['branch'])
     if head != record.get('head_sha') or base != record.get('base_sha'):
-        gh.status(head, 'pending', '目标分支变化，等待重新验证与评审')
+        gh.status(head, 'pending', '目标分支变化，等待重新验证' if record.get('flow') == 'review_before_release' else '目标分支变化，等待重新验证与评审')
     return {'status': 'pass', 'base_sha': base, 'head_sha': head}
 
 
 def merge(request):
     record = request['record']
     gh, pr = load_pull_request(record)
+    proof = record.get('release_sync_pass' if record.get('flow') == 'review_before_release' else 'review_pass') or {}
     if pr.get('merged'):
-        if pr['head']['sha'] != record.get('review_pass', {}).get('head_sha'):
-            raise ValueError('外部合并版本与评审证据不一致，需人工核对')
+        if pr['head']['sha'] != proof.get('head_sha'):
+            raise ValueError('外部合并版本与交付证据不一致，需人工核对')
         return {'status': 'pass', 'merged': True, 'merge_sha': pr['merge_commit_sha']}
-    proof = record.get('review_pass') or {}
     validation = record.get('validation_pass') or {}
     if any(evidence.get('head_sha') != pr['head']['sha'] or evidence.get('base_sha') != pr['base']['sha'] for evidence in (proof, validation)):
         return {'status': 'pass', 'stale': True}

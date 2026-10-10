@@ -43,7 +43,7 @@ def main(request_path):
         if len(content)>2_000_000:
             raise ValueError('执行器输出超过限制')
         result=json.loads(content)
-        if not isinstance(result,dict) or result.get('status') not in ('pass','fail','blocked','busy','stale','deferred'):
+        if not isinstance(result,dict) or result.get('status') not in ('pass','fail','blocked','busy','stale','deferred','waiting_for_reply'):
             raise ValueError('执行器缺少结构化状态')
         if child.returncode and result['status']=='pass':
             result=result | {'status':'blocked','failure_kind':'agent_execution','reason':f'执行器异常退出，退出码 {child.returncode}'}

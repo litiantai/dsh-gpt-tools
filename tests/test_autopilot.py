@@ -222,7 +222,7 @@ for(const command of ['node test.js &','nohup node test.js','node test.js & node
         self.assertEqual(scoped.settings()['reviewer_unified']['model'],'fixture-model')
         self.assertEqual(self.store.settings()['reviewer_unified'],previous)
 
-    @unittest.skipUnless(sys.platform=='darwin','macOS isolation')
+    @unittest.skipUnless(sys.platform=='darwin' and not os.environ.get('DSH_PROJECT_ISOLATED'),'由外层验证运行 macOS 沙箱边界测试，系统不允许嵌套 Seatbelt')
     def test_sandbox_denies_external_writes_and_private_data_but_allows_dev_null(self):
         allowed=self.root/'allowed';allowed.mkdir()
         private=self.root/'private';private.mkdir()
@@ -442,6 +442,24 @@ for(const command of ['node test.js &','nohup node test.js','node test.js & node
         self.assertEqual(len(self.ledger.list('releases')),1)
         self.assertEqual((self.source/'calc.py').read_text(),'value = 0\n')
         self.assertEqual(git(self.root/'baseline','show','codex/autonomous:calc.py'),'value = 1')
+
+    def test_review_keeps_post_release_assertions_pending_before_publish(self):
+        requirement = self.requirement()
+        run = self.control.queue(requirement)
+        run = self.ledger.update('runs', run['id'], run['version'], {
+            'workspace': str(self.source), 'worker_home': str(self.root/'worker'),
+            'commit': 'candidate', 'plan': '完整计划' * 10000}, 'acceptance_review')
+        with patch('autopilot.scheduler.Engine') as engine:
+            Scheduler(self.store).review(run, self.product, requirement)
+        packet = engine.return_value.submit.call_args.args[0]
+        # 阶段协议位于长方案之前，不能被原有的摘要截断吞掉。
+        self.assertIn('当前为发布前候选版本验收', packet['summary'])
+        self.assertIn('"stage": "pre_release"', packet['summary'])
+        self.assertIn('"status": "pending"', packet['summary'])
+        self.assertIn('"commit": "candidate"', packet['summary'])
+        current = self.ledger.get('runs', run['id'])
+        self.assertEqual(current['status'], 'acceptance_review')
+        self.assertEqual(self.ledger.list('releases'), [])
 
     def test_process_receipt_survives_scheduler_restart(self):
         scheduler=Scheduler(self.store)

@@ -1,0 +1,1 @@
+ 项目还支持已登记 acceptance_checks 的隔离命令断言：path 为 check:检查名称，pointer=/status，operator=equals，expected=pass。不得输出未登记命令或将健康检查冒充效果验证。

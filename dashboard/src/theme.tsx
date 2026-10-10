@@ -64,8 +64,9 @@ function createTheme(mode: keyof typeof palettes): ThemeConfig {
 const themes = { light: createTheme('light'), dark: createTheme('dark') };
 
 export default function DashboardTheme({ children }: { children: ReactNode }) {
-  const { pathname } = useLocation();
-  const mode = pathname === '/' || pathname === '/autopilot' ? 'dark' : 'light';
+  const { pathname, search } = useLocation();
+  const dialogue = pathname === '/autopilot' && new URLSearchParams(search).get('view') === 'intelligence';
+  const mode = !dialogue && (pathname === '/' || pathname === '/autopilot') ? 'dark' : 'light';
   useLayoutEffect(() => {
     const root = document.documentElement;
     root.dataset.theme = mode;

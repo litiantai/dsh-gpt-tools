@@ -8,7 +8,7 @@ test('monitoring keeps the actual receipt and shows overall evidence without inv
     last_inspect:1791515520,last_inspect_result:{status:'blocked',checks:[{name:'隔离页面检查',status:'blocked',reason:'页面未就绪'}]}}]}));
   await page.route('**/api/evidence/probe-evidence/context',r=>r.fulfill({json:{record:{id:'probe-evidence',call_id:'probe-call',phase:'probe',at:1791515514,details:result},related:[],missing:[]}}));
   await page.goto('/autopilot?project=monitor-context&view=overview&tab=monitoring');
-  await page.getByRole('alert').filter({hasText:'运行监测 · 通过'}).getByRole('button',{name:'查看回执'}).click();
+  await page.getByRole('alert').filter({hasText:'运行监测 · 上次结果：通过'}).getByRole('button',{name:'查看回执'}).click();
   const dialog=page.getByRole('dialog');
   await dialog.getByRole('tab',{name:'验收与检查'}).click();
   await expect(dialog.getByText('当前记录及直接关联记录未提供逐项验收或检查明细')).toBeVisible();

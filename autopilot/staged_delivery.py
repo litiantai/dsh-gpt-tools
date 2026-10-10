@@ -196,7 +196,7 @@ def execute(action, request):
             if not b.get('frozen') or time.time() < b['cutoff']:
                 return {'status': 'busy', 'reason': '等待 23:30 封板后统一验证'}
             gh, pr = load_pull_request(b)
-            proof = b.get('review_pass') or {}
+            proof = b.get('release_sync_pass') or {}
             if proof.get('head_sha') != pr['head']['sha'] or proof.get('base_sha') != pr['base']['sha']:
                 return {'status': 'stale', 'stale': True, 'reason': '统一验证前 PR 版本变化'}
             _, folder, _, workspace = paths(request)
@@ -316,9 +316,9 @@ def complete(scheduler, b, result, action):
     if action == 'sync_feature':
         return change({'feature_head_sha': result['head_sha'], 'feature_base_sha': result['base_sha'], 'feature_review_pass': None, 'reason': ''}, 'code_review')
     if action == 'sync_release':
-        same = (b.get('review_pass') or {}).get('head_sha') == result['head_sha'] and (b.get('review_pass') or {}).get('base_sha') == result['base_sha']
-        return change({'head_sha': result['head_sha'], 'base_sha': result['base_sha'], 'review_pass': b.get('review_pass') if same else None,
-            'validation_pass': None, 'reason': ''}, 'validating' if same else 'reviewing_release')
+        return change({'head_sha': result['head_sha'], 'base_sha': result['base_sha'],
+            'release_sync_pass': {'head_sha': result['head_sha'], 'base_sha': result['base_sha']},
+            'validation_pass': None, 'reason': ''}, 'validating')
     if action == 'review_release':
         return change({'review_pass': {'head_sha': result['head_sha'], 'base_sha': result['base_sha'], 'round_id': b['round_id']}, 'reason': ''}, 'validating')
     if action == 'repair_release':
@@ -350,7 +350,7 @@ def tick_product(scheduler, product, now):
     from reviewers import selection, normalize, snapshot
     import uuid
     ledger = scheduler.ledger
-    batches = sorted([b for b in ledger.list('deliveries') if b['product_id'] == product['id'] and b['status'] not in ('online', 'cancelled')], key=lambda b: b['day'])
+    batches = sorted([b for b in ledger.list('deliveries') if b['product_id'] == product['id'] and b['status'] not in ('online', 'cancelled')], key=lambda b: (b['day'], b.get('sequence', 1)))
     for b in batches:
         pending = b.get('pending_result')
         if b.get('call') or pending:
@@ -379,7 +379,7 @@ def tick_product(scheduler, product, now):
                 for run in candidates:
                     ledger.update('runs', run['id'], run['version'], {'delivery_id': batch['id']})
                 batch = scheduler.change('deliveries', batch, {'run_ids': list(dict.fromkeys(batch['run_ids'] + [r['id'] for r in candidates])), 'reason': ''}, 'preparing')
-    batches = sorted([b for b in ledger.list('deliveries') if b['product_id'] == product['id'] and b['status'] not in ('online', 'cancelled')], key=lambda b: b['day'])
+    batches = sorted([b for b in ledger.list('deliveries') if b['product_id'] == product['id'] and b['status'] not in ('online', 'cancelled')], key=lambda b: (b['day'], b.get('sequence', 1)))
     if not batches:
         return
     feature_states = {'preparing', 'code_review', 'review_failed', 'repairing_feature', 'syncing_feature', 'merging_feature'}
@@ -402,6 +402,9 @@ def tick_product(scheduler, product, now):
         b = scheduler.change('deliveries', b, {}, 'syncing_release')
     if b['status'] == 'blocked' or now < b.get('next_attempt', 0):
         return
+    # 兼容旧版留下的 release 复审或验证队列，重新同步后只做统一验证。
+    if b['status'] == 'reviewing_release' or b['status'] in ('validating', 'merging') and not b.get('release_sync_pass'):
+        b = scheduler.change('deliveries', b, {'validation_pass': None, 'reason': ''}, 'syncing_release')
     if b['status'] == 'preparing':
         b = assign_requirement(scheduler, b)
     choice = config(product)

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'dsh-gpt-supervisor/scripts')]
 from review_core import Store
 from autopilot.api import Control
-from autopilot.delivery_board import pending_issues, review_status, separate_prs
+from autopilot.delivery_board import pending_issues, review_status, separate_prs, dispatch_state
 
 URL = 'https://github.com/example/repo/pull/1'
 
@@ -21,6 +21,105 @@ def row(ident, phase, status, at, url=URL, **extra):
 
 
 class IssueTests(unittest.TestCase):
+    def finding_fixture(self):
+        proof = {'status': 'fail', 'reason': '能力确认前允许提交扫描', 'evidence': '/proof'}
+        batch = {'id': 'batch', 'product_id': 'project', 'status': 'online', 'pr_url': URL, 'updated': 8,
+                 'receipts': [{'call_id': 'verify', 'action': 'validate_release', 'at': 2,
+                              'result': {'status': 'fail', 'reason': '交付必需检查未通过', 'head_sha': 'head',
+                                         'checks': [{'name': '业务验收', 'status': 'fail', 'evidence': proof}]}}]}
+        requirement = {'id': 'finding', 'product_id': 'project', 'source': 'verification_finding',
+                       'title': '修复扫描能力预检', 'status': 'queued', 'updated': 9,
+                       'verification_occurrences': [{'delivery_id': 'batch', 'commit': 'head', 'verification': proof}]}
+        return batch, requirement
+
+    def test_deferred_finding_follows_requirement_instead_of_merged_batch(self):
+        batch, requirement = self.finding_fixture()
+        for status in ('queued', 'developing', 'blocked', 'cancelled', 'rejected', 'accepted'):
+            issue = pending_issues([batch], [], requirements=[requirement | {'status': status}])[0]
+            self.assertEqual(issue['status'], 'backlog')
+            self.assertEqual(issue['requirement']['status'], status)
+            self.assertEqual(issue['title'], '能力确认前允许提交扫描')
+            self.assertEqual(issue['updated'], 9)
+            self.assertFalse(issue['retryable'])
+        for status in ('online', 'completed'):
+            self.assertEqual(pending_issues([batch], [], requirements=[requirement | {'status': status}]), [])
+        self.assertEqual(batch['receipts'][0]['result']['status'], 'fail')
+
+    def test_finding_requires_matching_project_batch_commit_and_reason(self):
+        batch, requirement = self.finding_fixture()
+        occurrence = requirement['verification_occurrences'][0]
+        unrelated = [requirement | {'product_id': 'other'}, requirement | {'source': 'manual'}]
+        unrelated += [requirement | {'verification_occurrences': [occurrence | change]} for change in (
+            {'delivery_id': 'other'}, {'commit': 'other'}, {'verification': {'reason': '另一个缺陷'}})]
+        for other in unrelated:
+            issue = pending_issues([batch], [], requirements=[other | {'status': 'completed'}])[0]
+            self.assertNotIn('requirement', issue)
+
+    def test_resolved_finding_does_not_hide_other_failed_checks(self):
+        batch, requirement = self.finding_fixture()
+        batch['receipts'][0]['result']['checks'].append({'name': '构建', 'status': 'fail', 'reason': '编译失败'})
+        result = pending_issues([batch], [], requirements=[requirement | {'status': 'online'}])
+        self.assertEqual([i['title'] for i in result], ['编译失败'])
+
+    def test_nonblocking_backlog_finding_remains_visible_after_validation_passes(self):
+        batch, requirement = self.finding_fixture()
+        result = batch['receipts'][0]['result']
+        result['status'] = 'pass'
+        result['checks'][0].update(required=False, disposition='backlog', requirement_id='finding')
+        self.assertEqual(pending_issues([batch], [], requirements=[requirement])[0]['status'], 'backlog')
+
+    def test_later_failure_cannot_be_closed_by_an_older_requirement_completion(self):
+        batch, requirement = self.finding_fixture()
+        batch['receipts'][0]['at'] = 10
+        result = pending_issues([batch], [], requirements=[requirement | {'status': 'completed'}])
+        self.assertEqual(len(result), 1)
+
+    def test_current_execution_overlays_history_without_mutating_or_resolving_it(self):
+        rounds = [row('review', 'review_feature', 'fail', 1, result={'reason': '输入校验缺失'}),
+                  row('repair', 'repair_feature', 'blocked', 3, reason='旧提交已变化')]
+        batch = {'id': 'batch', 'status': 'syncing_feature', 'feature_pr_url': URL, 'version': 7,
+                 'updated': 10, 'reason': '等待同步新提交'}
+        issue = pending_issues([batch], rounds)[0]
+        self.assertEqual(issue['status'], 'waiting')
+        self.assertEqual(issue['last_attempt']['reason'], '旧提交已变化')
+        self.assertEqual(issue['reason'], '等待同步新提交')
+        self.assertFalse(issue['retryable'])
+        self.assertEqual(issue['delivery_version'], 7)
+        running = batch | {'status': 'code_review', 'call': {'id': 'new', 'action': 'review_feature', 'started': 11, 'path': 'private'}}
+        issue = pending_issues([running], rounds)[0]
+        self.assertEqual(issue['status'], 'running')
+        self.assertEqual(issue['reason'], '')
+        self.assertNotIn('path', issue['call'])
+        self.assertEqual(rounds[-1]['reason'], '旧提交已变化')
+        self.assertEqual(len(pending_issues([running], rounds)), 1)
+
+    def test_update_wait_retry_eligibility_and_other_pr_isolation(self):
+        rounds = [row('review', 'review_feature', 'fail', 1, result={'reason': '缺少校验'})]
+        batch = {'id': 'batch', 'status': 'syncing_feature', 'feature_pr_url': URL, 'updated': 9}
+        gate = {'status': 'observing', 'reason': '平台健康观察中'}
+        self.assertEqual(pending_issues([batch], rounds, gate)[0]['status'], 'waiting_update')
+        blocked = batch | {'status': 'blocked', 'reason': '新的阻塞'}
+        self.assertTrue(pending_issues([blocked], rounds)[0]['retryable'])
+        self.assertFalse(pending_issues([blocked], rounds, gate)[0]['retryable'])
+        self.assertFalse(pending_issues([blocked | {'uncertain': True}], rounds)[0]['retryable'])
+        other = batch | {'feature_pr_url': URL+'2', 'call': {'action': 'repair_feature'}}
+        issue = pending_issues([other], rounds)[0]
+        self.assertEqual(issue['status'], 'pending')
+        self.assertEqual(issue['call'], {})
+
+    def test_dispatch_marker_reports_unknown_until_validated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            self.assertIsNone(dispatch_state(state))
+            root = state/'autopilot'; root.mkdir()
+            (root/'update-drain.json').write_text('{')
+            self.assertEqual(dispatch_state(state)['status'], 'unknown')
+            (root/'updates').mkdir()
+            job = root/'updates/test.json'
+            job.write_text(json.dumps({'status': 'observing', 'healthy_since': 10}))
+            (root/'update-drain.json').write_text(json.dumps({'job': str(job)}))
+            self.assertEqual(dispatch_state(state)['status'], 'observing')
+
     def test_review_workflow_tracks_current_commit_and_repair_completion(self):
         pr = {'pr_url':URL,'status':'open','head_sha':'head','base_sha':'base'}
         passed = row('r1','review_release','pass',1,result={'head_sha':'head','base_sha':'base'})

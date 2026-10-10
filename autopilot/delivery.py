@@ -68,19 +68,59 @@ def repair_queue(scheduler, batch, product, now):
 
 def create_batch(ledger, product, now, bootstrap=False):
     day = day_at(now)
-    ident = product['id'] + '-' + day
     with ledger.store.transaction() as db:
-        try:
-            return ledger.get('deliveries', ident, db)
-        except KeyError:
-            staged = product.get('delivery_flow', 'review_before_release') == 'review_before_release'
-            cutoff = dt.datetime.fromtimestamp(now, ZONE).replace(hour=23, minute=30, second=0, microsecond=0).timestamp() if staged else (dt.datetime.fromtimestamp(now, ZONE).replace(hour=0, minute=0, second=0, microsecond=0) + dt.timedelta(days=1)).timestamp()
-            return ledger.create('deliveries', {'product_id': product['id'], 'title': day + (' 首次源码基线' if bootstrap else ' 每日代码交付'),
-                'day': day, 'cutoff': cutoff, 'feat_branch': 'feat-' + day, 'branch': 'release-' + day,
-                'base_branch': product['git'].get('base_branch', 'master'), 'git_url': product['git']['url'],
-                'flow': 'review_before_release' if staged else 'legacy',
-                'bootstrap': bootstrap, 'run_ids': [], 'integrated_ids': [], 'revisions': 0, 'receipts': [],
-                'reason': '', 'frozen': False}, 'preparing', ident, db)
+        sequence = 1
+        while True:
+            suffix = day + (f'-{sequence}' if sequence > 1 else '')
+            ident = product['id'] + '-' + suffix
+            try:
+                previous = ledger.get('deliveries', ident, db)
+            except KeyError:
+                break
+            if not (previous.get('manual_merge_at') and previous.get('frozen')):
+                return previous
+            sequence += 1
+        staged = product.get('delivery_flow', 'review_before_release') == 'review_before_release'
+        cutoff = dt.datetime.fromtimestamp(now, ZONE).replace(hour=23, minute=30, second=0, microsecond=0).timestamp() if staged else (dt.datetime.fromtimestamp(now, ZONE).replace(hour=0, minute=0, second=0, microsecond=0) + dt.timedelta(days=1)).timestamp()
+        bootstrap = bootstrap and sequence == 1
+        return ledger.create('deliveries', {'product_id': product['id'], 'title': day + (' 首次源码基线' if bootstrap else ' 每日代码交付') + (f' · 第 {sequence} 批' if sequence > 1 else ''),
+            'day': day, 'sequence': sequence, 'cutoff': cutoff, 'feat_branch': 'feat-' + suffix, 'branch': 'release-' + suffix,
+            'base_branch': product['git'].get('base_branch', 'master'), 'git_url': product['git']['url'],
+            'flow': 'review_before_release' if staged else 'legacy',
+            'bootstrap': bootstrap, 'run_ids': [], 'integrated_ids': [], 'revisions': 0, 'receipts': [],
+            'reason': '', 'frozen': False}, 'preparing', ident, db)
+
+
+def manual_merge_reason(batch, product):
+    """检查批次是否可提前进入正常验证与合并链路。"""
+    if product.get('automation_disabled') or product['status'] != 'active' or not enabled(product):
+        return '请先启用项目自主运行和 Git 交付'
+    if batch.get('call') or batch.get('pending_result') or batch.get('uncertain'):
+        return '当前执行尚未结束，请等待回执确认'
+    if batch.get('manual_merge_at'):
+        return '已提交手动合并，正在按流程处理'
+    expected = 'collecting' if batch.get('flow') == 'review_before_release' else 'awaiting_merge'
+    if batch['status'] != expected or not batch.get('pr_url'):
+        return '当前批次尚未进入待合并阶段'
+    if set(batch.get('run_ids', [])) - set(batch.get('integrated_ids', [])) - set(batch.get('deferred_ids', [])):
+        return '仍有需求未合入 release，请等待本批次处理完成'
+    return ''
+
+
+def request_manual_merge(ledger, ident, version):
+    """仅持久化提前封板请求；耗时检查和合并由调度器异步推进。"""
+    with ledger.store.transaction() as db:
+        batch = ledger.get('deliveries', ident, db)
+        if batch['version'] != version:
+            raise Conflict('记录已更新，请刷新后重试')
+        reason = manual_merge_reason(batch, ledger.get('products', batch['product_id'], db))
+        if reason:
+            raise Conflict(reason)
+        now = time.time()
+        return ledger.update('deliveries', ident, version,
+            {'frozen': True, 'cutoff': min(batch['cutoff'], now), 'manual_merge_at': now,
+             'next_attempt': 0, 'reason': '手动合并已提交，验证通过后自动合入目标分支'},
+            'syncing_release' if batch.get('flow') == 'review_before_release' else 'syncing', db)
 
 
 def start_migration(ledger, product):
@@ -223,13 +263,13 @@ def tick(scheduler, now=None):
     now = time.time() if now is None else now
     ledger = scheduler.ledger
     for product in ledger.list('products'):
-        if not enabled(product):
+        if product.get('automation_disabled') or not enabled(product):
             continue
         if product.get('delivery_flow', 'review_before_release') == 'review_before_release':
             from .staged_delivery import tick_product
             tick_product(scheduler, product, now)
             continue
-        batches = sorted([b for b in ledger.list('deliveries') if b['product_id'] == product['id'] and b['status'] not in FINISHED], key=lambda b: b['day'])
+        batches = sorted([b for b in ledger.list('deliveries') if b['product_id'] == product['id'] and b['status'] not in FINISHED], key=lambda b: (b['day'], b.get('sequence', 1)))
         # Consume in-flight calls even if the project was paused while they ran.
         active = next((b for b in batches if b.get('call')), None)
         pending = next((b for b in batches if b.get('pending_result')), None)
@@ -254,7 +294,7 @@ def tick(scheduler, now=None):
         if product['status'] != 'active':
             continue
         attach_accepted(ledger, product, now)
-        batches = sorted([b for b in ledger.list('deliveries') if b['product_id'] == product['id'] and b['status'] not in FINISHED], key=lambda b: b['day'])
+        batches = sorted([b for b in ledger.list('deliveries') if b['product_id'] == product['id'] and b['status'] not in FINISHED], key=lambda b: (b['day'], b.get('sequence', 1)))
         if not batches:
             continue
         # 仅跳过额度等待的修复，不让它占住后续已完成成果的上线队列。

@@ -1,0 +1,1 @@
+根据已确认需求和项目源码生成真实网页用户操作链路。只读分析。每步 goal 是业务操作，expected 是可由截图观察的稳定最终结果，不要求捕获短暂中间状态；acceptance_indices 引用从 0 开始的验收条件，必须覆盖每项条件。长耗时操作用 loop=true，执行一次后持续看结果；observation_action=none 或 reload，刷新必须确认不会重复提交；明确已知仅查看进度的页面时可用 navigate 并填写 observation_url 为实例内绝对路径，其他情况 observation_url 为空。不要编造接口、成功结果或截图。从项目入口开始，包括必要导航。纯后台或原生桌面功能无法用网页覆盖时返回 blocked。

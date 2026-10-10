@@ -2,11 +2,17 @@
 import re
 
 
-def validate(probes):
+def safe_path(path):
+    return isinstance(path, str) and bool(re.fullmatch(r"/[a-zA-Z0-9/_-]*", path)) and "//" not in path
+
+
+def validate(probes, product=None, assertions=False):
     if not isinstance(probes,list):
         raise ValueError('上线验证必须为只读探针列表')
     for probe in probes:
         if isinstance(probe,str):
+            if assertions:
+                raise ValueError('业务验收必须提供字段断言，不能仅检查接口可达')
             path=probe
         elif isinstance(probe,dict):
             path=probe.get('path','')
@@ -14,17 +20,23 @@ def validate(probes):
                 raise ValueError('上线验证断言无效')
         else:
             raise ValueError('上线验证探针无效')
-        if not re.fullmatch(r'/ths-octop(?:-[a-z-]+)?/api/[a-zA-Z0-9/_-]+',path) or '..' in path:
+        if product and isinstance(path, str) and path.startswith('check:'):
+            if path[6:] not in product.get('project_config', {}).get('acceptance_checks', {}):
+                raise ValueError('验收检查未在项目配置中登记')
+            continue
+        allowed = product.get('project_config', {}).get('readonly_paths', []) if product else None
+        valid = safe_path(path) and path in allowed if allowed is not None else bool(re.fullmatch(r'/ths-octop(?:-[a-z-]+)?/api/[a-zA-Z0-9/_-]+', path))
+        if not valid:
             raise ValueError('上线验证探针不是允许的只读路径')
 
 
-def check(probes,fetch):
-    validate(probes)
+def check(probes,fetch,product=None):
+    validate(probes,product,assertions=product is not None)
     if not probes:
         return False
     for probe in probes:
         data=fetch(probe if isinstance(probe,str) else probe['path'])
-        if data.get('ok') is not True:
+        if product is None and data.get('ok') is not True:
             return False
         if isinstance(probe,str):
             continue

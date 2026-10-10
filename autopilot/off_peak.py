@@ -42,6 +42,9 @@ def deepseek(selected):
 def selections(product, action):
     """按执行阶段解析角色，非模型阶段不受时段开关限制。"""
     agents = product.get('agents', {})
+    if action == 'coordinate':
+        from .coordinator import selected
+        return [selected(product)]
     if action in ('plan', 'develop'):
         return [agents.get('implementation', {'provider': 'harness'})]
     if action in ('discover', 'investigate', 'daily_attribution'):

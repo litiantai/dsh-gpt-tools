@@ -1,0 +1,77 @@
+.full-width{width:100%}
+.pure-chat-workspace{background:var(--surface)}
+.pure-chat-workspace>.sidebar,.pure-chat-workspace>.main>.topbar,.pure-chat-workspace>.main>.page-footer{display:none}
+.pure-chat-workspace>.main{margin:0;width:100%;min-width:0}
+.pure-chat-workspace>.main>main{padding:0;max-width:none}
+.pure-dialogue{height:calc(100dvh - 56px);display:flex;flex-direction:column;background:var(--surface);color:var(--text)}
+.dialogue-primary-tabs{height:56px;padding:0 20px}
+.dialogue-primary-tabs>.ant-tabs-nav{height:56px;margin:0}
+.dialogue-primary-tabs>.ant-tabs-content-holder{display:none}
+.competitor-actions{display:flex;gap:12px;flex-wrap:wrap}
+.competitor-analysis{overflow-wrap:anywhere}
+.competitor-analysis h2{margin-top:28px;font-size:18px}
+.dialogue-header{height:64px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 28px}
+.dialogue-header-button{display:flex;align-items:center;gap:9px;background:transparent;border:0;color:var(--secondary);padding:10px 8px;border-radius:8px;font-size:14px;max-width:36%}
+.dialogue-header-button span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dialogue-header-button:hover,.dialogue-icon:hover{background:var(--subtle)}
+.dialogue-header-title{font-size:13px;color:var(--muted);letter-spacing:.4px}
+.dialogue-body{display:flex;flex:1;flex-direction:column;min-height:0;min-width:0}
+.dialogue-scroll{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.dialogue-transcript{max-width:760px;margin:0 auto;padding:36px 24px 16px}
+.dialogue-welcome{text-align:center;padding:clamp(60px,18vh,190px) 0 60px}
+.dialogue-welcome h1{font-size:30px;font-weight:550;letter-spacing:-.7px;margin-bottom:16px}
+.dialogue-welcome p{color:var(--muted);font-size:15px}
+.dialogue-message{margin:0 0 34px;line-height:1.9;font-size:15px;overflow-wrap:anywhere}
+.dialogue-message-text{white-space:pre-wrap;line-height:1.9}
+.dialogue-author{display:block;font-size:12px;color:var(--muted);margin-bottom:10px}
+.dialogue-user{background:var(--subtle);border-radius:20px;padding:12px 18px;max-width:85%;width:fit-content;margin-left:auto}
+.dialogue-system{color:var(--secondary)}
+.dialogue-source-time{display:block;margin-top:10px;font-size:11px;color:var(--muted)}
+.dialogue-input-region{width:100%;max-width:760px;margin:0 auto;padding:10px 24px max(14px,env(safe-area-inset-bottom));flex-shrink:0}
+.dialogue-composer{border:1px solid var(--divider);border-radius:22px;padding:16px 18px 12px;box-shadow:0 2px 14px #00000004;background:var(--surface)}
+.dialogue-composer:focus-within{border-color:var(--border)}
+.dialogue-composer textarea.ant-input{border:0!important;background:transparent!important;box-shadow:none!important;resize:none;padding:0;font-size:15px;line-height:1.7;color:var(--text)}
+.dialogue-composer-tools{display:flex;align-items:center;margin-top:8px;gap:10px}
+.dialogue-icon,.dialogue-send{border:0;display:grid;place-items:center;width:34px;height:34px;border-radius:50%;font-size:19px}
+.dialogue-icon{background:transparent;color:var(--secondary)}
+.dialogue-send{margin-left:auto;background:var(--text);color:var(--surface)}
+.dialogue-send:disabled{background:var(--subtle);color:var(--disabled);cursor:default}
+.dialogue-footnote{font-size:11px;color:var(--muted);text-align:center;margin:10px 0 0;line-height:1.5}
+.dialogue-error{color:var(--error);font-size:13px;margin-top:8px}
+.dialogue-muted{color:var(--muted);font-size:13px}
+.dialogue-thinking{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:8px}
+.dialogue-thinking>span{width:6px;height:6px;border-radius:50%;background:var(--muted);animation:dialogue-pulse 1.5s infinite}
+@keyframes dialogue-pulse{50%{opacity:.3}}
+.dialogue-uploads{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.dialogue-uploads>div{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:9px;background:var(--subtle);font-size:12px;max-width:100%;overflow-wrap:anywhere}
+.dialogue-uploads button{border:0;background:transparent;color:var(--muted)}
+.dialogue-file-link,.dialogue-text-button{border:0;background:transparent;color:var(--secondary);font-size:12px;padding:8px 0 0;margin-right:14px}
+.dialogue-drawer .ant-drawer-content{background:var(--surface)}
+.project-introduction{margin:32px 0}
+.project-introduction h2{font-size:22px;font-weight:550;margin-bottom:18px}
+.project-introduction p{white-space:pre-wrap;color:var(--secondary);line-height:1.9}
+.project-introduction small{color:var(--muted)}
+.dialogue-workbench-link{display:block;font-size:13px;color:var(--secondary);margin-bottom:24px}
+.dialogue-settings-link{background:transparent;border:0;padding:0;color:var(--muted);font-size:13px;display:flex;gap:8px;align-items:center}
+.dialogue-new{display:flex;align-items:center;gap:8px;width:100%;padding:12px 14px;border:1px solid var(--divider);border-radius:10px;background:transparent;color:var(--text);text-align:left;margin-bottom:24px}
+.dialogue-history-list{display:flex;flex-direction:column;gap:5px}
+.dialogue-history-list button{display:flex;flex-direction:column;gap:7px;text-align:left;width:100%;border:0;border-radius:10px;padding:14px 12px;background:transparent;color:var(--text)}
+.dialogue-history-list button.selected,.dialogue-history-list button:hover{background:var(--subtle)}
+.dialogue-history-list span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;font-size:14px}
+.dialogue-history-list small{font-size:11px;color:var(--muted)}
+.collaboration-entry{padding:16px 0;border-bottom:1px solid var(--divider);white-space:pre-wrap}
+@media(max-width:640px){
+ .dialogue-header{height:56px;padding:0 12px}
+ .dialogue-header-title{font-size:12px}
+ .dialogue-header-button{font-size:13px}
+ .dialogue-transcript{padding:24px 20px 10px}
+ .dialogue-input-region{padding:8px 12px max(10px,env(safe-area-inset-bottom))}
+ .dialogue-composer{padding:14px;border-radius:20px}
+ .dialogue-composer textarea.ant-input{font-size:16px}
+ .dialogue-welcome{padding-top:17vh}
+ .dialogue-welcome h1{font-size:26px}
+ .dialogue-welcome p{font-size:13px}
+ .dialogue-user{max-width:90%}
+ .dialogue-drawer .ant-drawer-content-wrapper{max-width:calc(100vw - 30px)}
+}
+@media(prefers-reduced-motion:reduce){.dialogue-thinking>span{animation:none}}

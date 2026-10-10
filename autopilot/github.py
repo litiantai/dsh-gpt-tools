@@ -176,7 +176,9 @@ class GitHub:
 
     def review_report(self, number, round_id, result):
         """每轮发布独立评审报告；重放沿用已有评论，保留失败历史。"""
+        from html import escape
         from urllib.parse import quote
+        from error_messages import sanitize
         marker = '<!-- dsh-code-review:' + str(round_id) + ' -->'
         route = '/issues/' + str(number) + '/comments'
         page = 1
@@ -195,6 +197,9 @@ class GitHub:
             '', '### 结论', result.get('reason') or result.get('summary') or '请查看下方问题列表。']
         if result.get('summary') and result.get('summary') != result.get('reason'):
             lines += ['', result['summary']]
+        if result.get('failure_kind') == 'agent_execution' and result.get('detail'):
+            detail = escape(str(sanitize(result['detail']))[:4000])
+            lines += ['', '### 运行错误详情', '<pre>' + detail + '</pre>']
         lines += ['', '### 问题明细']
         issues = result.get('issues', [])
         if not issues:
@@ -205,7 +210,10 @@ class GitHub:
             link = f'https://github.com/{self.repo}/blob/{result["head_sha"]}/{quote(path, safe="/")}#L{line}'
             lines += ['', f'{index}. **{issue.get("severity", "unknown")}** · [{path}:{line}]({link})',
                 '', str(issue.get('content', '未提供问题说明'))]
-        lines += ['', f'文件覆盖：{result.get("reviewed_files", 0)} / {result.get("total_files", 0)}',
+        coverage = (f'文件覆盖：未形成有效统计（待评审文件：{result.get("total_files", 0)}）；不代表未执行代码读取。'
+            if result['status'] == 'blocked' and 'reviewed_files' not in result
+            else f'文件覆盖：{result.get("reviewed_files", 0)} / {result.get("total_files", 0)}')
+        lines += ['', coverage,
             '评审轮次：`' + str(round_id) + '`', '', '此报告绑定上述提交；后续修复与复审会保留本轮记录。']
         body = '\n'.join(lines)
         if len(body) > 60000:

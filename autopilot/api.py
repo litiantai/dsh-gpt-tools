@@ -9,6 +9,7 @@ import uuid
 
 from review_core import Conflict
 from .store import DEFAULTS, KINDS, TERMINAL, Ledger, redact
+from .scan_identity import repository_key
 
 
 class Control:
@@ -22,7 +23,29 @@ class Control:
         return path.strip('/').split('/')[0] in (*KINDS,'autopilot')
 
     def get(self,path):
+        if len(path.strip('/').split('/')) >= 3 and path.strip('/').split('/')[0] == 'products' and path.strip('/').split('/')[2] == 'test-chains':
+            from .test_chains import api
+            return api(self, path)
+        if '/intelligence' in path:
+            from .intelligence import get
+            return get(self, path)
         parts = path.strip('/').split('/')
+        if len(parts) >= 3 and parts[0] == 'products' and parts[2] == 'coordinator':
+            from .coordinator import api
+            return api(self, parts)
+        if len(parts)==3 and parts[0]=='scans' and parts[2]=='screenshot':
+            scan=self.ledger.get('scans',parts[1])
+            check=next((c for c in scan.get('result',{}).get('checks',[]) if c.get('screenshot')),None)
+            if not check:
+                raise KeyError('扫描尚无截图')
+            path=Path(check['screenshot']).resolve()
+            root=(self.ledger.store.state/'autopilot/scans'/scan['id']).resolve()
+            if not path.is_relative_to(root) or path.suffix!='.png' or path.stat().st_size>12*1024*1024:
+                raise ValueError('截图路径或大小无效')
+            content=path.read_bytes()
+            if hashlib.sha256(content).hexdigest()!=check.get('screenshot_sha256'):
+                raise ValueError('扫描截图发生变化')
+            return {'data_url':'data:image/png;base64,'+base64.b64encode(content).decode()}
         if len(parts)==3 and parts[2]=='context':
             from .record_context import record_context
             return record_context(self.ledger, parts[0], parts[1])
@@ -32,10 +55,16 @@ class Control:
         if len(parts)==3 and parts[0]=='runs' and parts[2]=='usage':
             from .delivery_tasks import task_usage
             return task_usage(self.ledger, self.ledger.get('runs', parts[1]))
+        if len(parts)==3 and parts[0]=='products' and parts[2]=='sync-master':
+            from .branch_sync import snapshot
+            return snapshot(self.ledger, self.ledger.get('products', parts[1]))
         if len(parts)==3 and parts[0]=='products' and parts[2]=='delivery-board':
             return self.delivery_board.get(self.ledger.get('products', parts[1]))
         if parts == ['autopilot','metrics']:
             return self.ledger.metrics()
+        if parts == ['scans']:
+            return [scan | {'repository_key': repository_key(scan['source'])}
+                    for scan in self.ledger.list('scans')]
         if len(parts)==1:
             return self.ledger.list(parts[0])
         if len(parts)==2:
@@ -44,6 +73,10 @@ class Control:
             from .github import credential_file
             self.ledger.get('products',parts[1])
             return {'configured': credential_file().is_file()}
+        if len(parts)==3 and parts[0]=='products' and parts[2]=='notifications':
+            from .notifications import get as notifications_get
+            self.ledger.get('products',parts[1])
+            return notifications_get(self.ledger,parts[1])
         if len(parts)==3 and parts[0]=='products' and parts[2]=='git-status':
             from .github import connection_status
             product=self.ledger.get('products',parts[1])
@@ -75,9 +108,52 @@ class Control:
             return {'data_url':f'data:{mime};base64,'+base64.b64encode(content).decode()}
         raise KeyError('接口不存在')
 
+    def enqueue_scan(self, data, previous_id=None, version=None):
+        """在同一事务中核对历史版本和活动扫描，防止并发重复入队。"""
+        with self.ledger.store.transaction() as db:
+            if previous_id:
+                old = self.ledger.get('scans', previous_id, db)
+                if old['version'] != version:
+                    raise Conflict('记录已更新，请刷新后重试')
+                data = {k: old[k] for k in ('source', 'product_id', 'title')}
+                data['previous_scan_id'] = previous_id
+            key = repository_key(data['source'])
+            for row in db.execute("SELECT * FROM auto_scans WHERE status IN ('queued', 'running') OR json_extract(data, '$.call') IS NOT NULL"):
+                active = self.ledger.decode(row)
+                if repository_key(active['source']) == key:
+                    raise Conflict('该仓库已有扫描正在执行或等待扫描，请查看已有记录，完成后再重试')
+            return self.ledger.create('scans', data | {'receipts': []}, 'queued', db=db)
+
     def mutate(self,path,body):
+        if len(path.strip('/').split('/')) >= 3 and path.strip('/').split('/')[0] == 'products' and path.strip('/').split('/')[2] == 'test-chains':
+            from .test_chains import api
+            return api(self, path, body)
+        if '/intelligence' in path:
+            from .intelligence import mutate
+            return mutate(self, path, body)
         parts = path.strip('/').split('/')
+        if len(parts) >= 3 and parts[0] == 'products' and parts[2] == 'coordinator':
+            from .coordinator import api
+            return api(self, parts, body)
         kind = parts[0]
+        if len(parts) == 3 and kind == 'requirements' and parts[2] in ('edit','confirm','reject','amend'):
+            from .intake import mutate
+            return mutate(self, parts[1], parts[2], body)
+        if parts == ['scans']:
+            source = body.get('source', '')
+            if isinstance(source, str):
+                source = source.strip()
+            if not isinstance(source, str) or not (Path(source).is_absolute() or source.startswith('https://')):
+                raise ValueError('请提供本地仓库绝对路径或 HTTPS Git URL')
+            if source.startswith('https://'):
+                from urllib.parse import urlsplit
+                address = urlsplit(source)
+                if not address.hostname or address.username or address.password or address.query or address.fragment:
+                    raise ValueError('仓库 URL 不允许内嵌凭据或查询参数')
+            product_id = body.get('product_id', '')
+            if product_id:
+                self.ledger.get('products', product_id)
+            return self.enqueue_scan({'source': source, 'product_id': product_id, 'title': '仓库接入扫描'})
         if parts == ['products']:
             config = body.get('config',{})
             self.validate_product(config)
@@ -93,9 +169,24 @@ class Control:
             if not all(value.values()):
                 raise ValueError('需求证据与验收条件不能为空')
             return self.ledger.create(kind,value | {'priority':body.get('priority',2)},'pending')
+        if len(parts)==4 and parts[0]=='products' and parts[2]=='notifications':
+            self.ledger.get('products',parts[1])
+            if parts[3]=='configure':
+                from .notifications import configure
+                return configure(self.ledger,parts[1],body)
+            if parts[3]=='recipients':
+                from .notifications import add_recipients
+                return add_recipients(self.ledger,parts[1],body)
+            if parts[3]=='send-test':
+                from .notifications import send_test
+                return send_test(self.ledger,parts[1])
+            raise KeyError('接口不存在')
         if len(parts)!=3:
             raise KeyError('接口不存在')
         _,ident,action=parts
+        if kind=='products' and action=='sync-master':
+            from .branch_sync import start
+            return start(self.ledger, self.ledger.get('products', ident))
         if kind=='products' and action=='today-token-limit':
             from .quota import adjust_today
             return adjust_today(self.ledger, ident, body)
@@ -136,19 +227,52 @@ class Control:
                 return self.ledger.update(kind,ident,product['version'],{'evaluation_id':None},'active',db)
         if kind=='products' and action=='configure':
             return self.configure_product(ident,body)
+        if kind=='signals' and action=='promote':
+            return self.promote_signal(ident,body)
         old=self.ledger.get(kind,ident)
         if body.get('version') != old['version']:
             raise Conflict('记录已更新，请刷新后重试')
+        if kind == 'scans' and action == 'retry':
+            return self.enqueue_scan({}, previous_id=ident, version=body['version'])
+        if kind == 'scans' and action == 'onboard':
+            if old['status'] != 'pass' or old.get('product_id'):
+                raise Conflict('仅可登记尚未关联项目的通过扫描')
+            from .onboarding import onboard
+            return onboard(self.ledger, old, body)
+        if kind == 'scans' and action == 'apply':
+            if old['status'] != 'pass' or not (old.get('product_id') or body.get('product_id')):
+                raise Conflict('仅可将通过的扫描应用于已关联项目')
+            if old.get('product_id') and body.get('product_id') and old['product_id'] != body['product_id']:
+                raise Conflict('扫描记录已关联其他项目，不能应用到当前项目')
+            product = self.ledger.get('products', old.get('product_id') or body['product_id'])
+            from .project import generic
+            if not generic(product):
+                raise Conflict('旧适配器项目不可应用通用扫描；请登记独立项目')
+            source = product.get('repository_source', product['source'])
+            same = (Path(old['source']).resolve() == Path(source).resolve()) if Path(old['source']).is_absolute() and Path(source).is_absolute() else old['source'] == source
+            if not same:
+                raise Conflict('扫描仓库与当前项目源码不一致')
+            result = self.configure_product(product['id'], {'version': body.get('product_version'), 'config': {
+                'project_config': old['result']['configuration'], 'config_scan_id': ident}})
+            return result
         if kind == 'products' and action == 'migrate-git':
             from .delivery import start_migration
             return start_migration(self.ledger, old)
         if kind == 'deliveries' and action == 'close' and old['status'] not in ('online','cancelled'):
             return self.ledger.update(kind, ident, old['version'], {'frozen': True, 'cutoff': time.time(), 'manual_close_at': time.time()})
+        if kind == 'deliveries' and action == 'manual-merge':
+            from .delivery import request_manual_merge
+            return request_manual_merge(self.ledger, ident, body['version'])
         if kind == 'deliveries' and action == 'migrate-review-flow':
             from .delivery_migration import migrate
             return migrate(self.ledger, old)
-        if kind == 'deliveries' and action == 'retry' and old['status'] == 'blocked' and not old.get('call'):
-            return self.ledger.update(kind, ident, old['version'], {'reason': '', 'next_attempt': 0, 'next_auto_retry_at': None, 'auto_retry_wait_reason': None}, old.get('resume_status', 'preparing'))
+        if kind == 'deliveries' and action == 'retry' and old['status'] in ('blocked', 'release_failed') and not old.get('call'):
+            if old.get('pending_result') or old.get('uncertain'):
+                raise Conflict('当前执行结果待核对，不能重复重试')
+            resume = 'syncing_release' if old['status'] == 'release_failed' else old.get('resume_status', 'preparing')
+            if old.get('flow') == 'review_before_release' and resume == 'reviewing_release':
+                resume = 'syncing_release'
+            return self.ledger.update(kind, ident, old['version'], {'reason': '', 'next_attempt': 0, 'next_auto_retry_at': None, 'auto_retry_wait_reason': None}, resume)
         if kind=='products':
             if action=='recover-runtime':
                 from .runtime_recovery import enabled, busy
@@ -163,6 +287,14 @@ class Control:
                     return self.ledger.update(kind,ident,latest['version'],{'runtime_recovery_state':{'phase':'requested','attempts':0,'next_check_at':0,'message':'已安排恢复应用'}},db=db)
             if action in ('enable','pause','observe'):
                 if action=='enable':
+                    if old.get('automation_disabled'):
+                        raise Conflict('项目已停用；需先显式解除停用状态')
+                    from .project import generic
+                    if generic(old):
+                        if not old.get('agents') or not old.get('config_scan_id'):
+                            raise Conflict('请先完成接入扫描并配置模型分工')
+                        if any(r.get('provider')=='harness' for r in old['agents'].values()) and not (Path(old.get('worker_runtime','/nonexistent'))/'node_modules/@deepseek-ai/dsh/package.json').is_file():
+                            raise Conflict('独立 Harness 运行时尚未安装')
                     for key in ('repository','adapter','executor'):
                         if not old.get(key):
                             raise ValueError(f'尚未配置 {key}')
@@ -191,6 +323,10 @@ class Control:
                     'execution_seconds':0,'timing_repair_reason':'旧墙钟计时超过调用超时上限且执行成功；历史实际运行时长无法还原，保留旧记录并恢复一次单调计时窗口',
                     'reason':'旧计时异常已隔离，使用单调计时继续开发'},old.get('resume_status','developing'))
             if action=='release' and old['status']=='accepted':
+                product=self.ledger.get('products', old['product_id'])
+                from .project import generic
+                if generic(product) and not {'idle','publish','observe'} <= set(product.get('adapter_spec',{}).get('capabilities',[])):
+                    raise Conflict('项目尚未配置部署能力，已验收成果继续保留')
                 from .delivery import configured
                 if configured(self.ledger.get('products', old['product_id'])):
                     raise Conflict('已启用 Git 交付；验收成果将自动进入每日 release，客户端安装独立管理')
@@ -259,16 +395,60 @@ class Control:
                 changes['git_migration'] = {'status': 'required'}
             return self.ledger.update('products',ident,old['version'],changes,db=db)
 
-    def queue(self, requirement):
+    def promote_signal(self, ident, body):
+        """将待处理信号原子登记为高优先级需求，保留来源并防止重复入池。"""
+        import datetime
+        from zoneinfo import ZoneInfo
+        value={}
+        for key in ('title','evidence','impact'):
+            raw=body.get(key)
+            if not isinstance(raw,str) or not raw.strip():
+                raise ValueError('需求名称、证据、用户影响与验收条件不能为空')
+            value[key]=raw.strip()
+        acceptance=body.get('acceptance')
+        if not isinstance(acceptance,list) or not acceptance or any(not isinstance(item,str) or not item.strip() for item in acceptance):
+            raise ValueError('验收条件必须是非空文本列表')
+        value['acceptance']=[item.strip() for item in acceptance]
         with self.ledger.store.transaction() as db:
+            signal=self.ledger.get('signals',ident,db)
+            if signal['version']!=body.get('version'):
+                raise Conflict('信号已更新，请刷新后重试')
+            if signal['status']!='pending' or signal.get('requirement_id') or signal.get('requirement_ids'):
+                raise Conflict('该信号已处理或已进入需求池，请查看关联需求')
+            self.ledger.get('products',signal['product_id'],db)
+            now=time.time()
+            requirement=self.ledger.create('requirements',redact(value) | {
+                'product_id':signal['product_id'],'signal_ids':[ident],'source':'manual',
+                'priority':0,'queue_first':True,'queue_first_at':now,
+                'requirement_day':datetime.datetime.fromtimestamp(now,ZoneInfo('Asia/Shanghai')).date().isoformat(),
+            },'pending',db=db)
+            self.ledger.update('signals',ident,signal['version'],{
+                'requirement_id':requirement['id'],'requirement_ids':[requirement['id']],
+                'manual_requirement_id':requirement['id'],'attribution_pending':False,
+            },'classified',db)
+            return requirement
+
+    def queue(self, requirement, db=None):
+        if db is None:
+            with self.ledger.store.transaction() as connection:
+                return self.queue(requirement, db=connection)
+        if db is not None:
             latest=self.ledger.get('requirements',requirement['id'],db)
             if latest['version']!=requirement['version'] or latest['status']!='pending':
                 raise Conflict('需求已发生变化或已进入任务队列')
+            from .intake import approved
+            if not approved(latest):
+                raise Conflict('需求必须由用户确认后才能排队')
             product=self.ledger.get('products',latest['product_id'],db)
             evaluation=self.ledger.get('evaluations',product['evaluation_id'],db) if product.get('evaluation_id') else None
             if evaluation and len(evaluation.get('run_ids',[]))>=evaluation['target_count']:
                 raise Conflict('本次用户指定的评测任务数已满，其余需求保留待评估')
+            from .test_chains import settings, enqueue_generation
+            if settings(product)['enabled']:
+                enqueue_generation(self.ledger, product, latest, db)
             run=self.ledger.create('runs',{'product_id':latest['product_id'],'requirement_id':latest['id'],
+                 'priority':latest.get('priority',2),'queue_first':latest.get('queue_first',False),
+                 'queue_first_at':latest.get('queue_first_at',0),
                  'title':latest['title'],'budget_reserved':bool(latest.get('investigation_budget_reserved')),'revisions':0,'execution_seconds':0,'reason':'','receipts':[],
                  **({'evaluation_id':evaluation['id']} if evaluation else {})},'queued',db=db)
             if evaluation:
@@ -278,6 +458,8 @@ class Control:
 
     @staticmethod
     def validate_product(config):
+        from .project import validate
+        validate(config)
         if 'runtime_recovery' in config:
             value=config['runtime_recovery']
             if not isinstance(value,dict) or set(value)!={'enabled'} or type(value.get('enabled')) is not bool:
@@ -337,5 +519,5 @@ class Control:
                 raise ValueError('请配置需求发现、实现、验证、验收四个角色')
             for name,provider in required.items():
                 selected=selection(config['agents'][name])
-                if selected['provider']!=provider:
-                    raise ValueError(f'{name} 当前应使用 {provider}')
+                if selected['provider'] not in ('codex', 'harness', 'claude'):
+                    raise ValueError(f'{name} 执行器不受支持')

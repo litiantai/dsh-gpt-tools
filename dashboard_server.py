@@ -32,6 +32,35 @@ from autopilot.api import Control
 from error_messages import present_errors, failure_fields
 
 
+# 仓库扫描 API 契约版本。当前运行代码声明自己实现的能力；不兼容变更时递增，
+# 前端据此在调用 /api/scans 前核对，避免新版页面连接旧版服务时反复提交无效扫描。
+REPOSITORY_SCAN_API_VERSION = 1
+
+
+def runtime_identity(root=ROOT):
+    """返回运行身份，并声明当前运行代码版本的仓库扫描能力。
+
+    能力以正在提供请求的代码为准，而不是磁盘上的 release marker，因此
+    “旧后端 + 新 marker” 不可能误报支持。旧字段保持原样，只新增 capabilities。
+    """
+    marker = Path(root) / "autopilot-release.json"
+    try:
+        payload = json.loads(marker.read_text()) if marker.exists() else {}
+    except (OSError, ValueError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.setdefault("product_id", None)
+    payload.setdefault("commit", None)
+    payload.setdefault("release_id", None)
+    existing = payload.get("capabilities")
+    payload["capabilities"] = {
+        **(existing if isinstance(existing, dict) else {}),
+        "repository_scans": REPOSITORY_SCAN_API_VERSION,
+    }
+    return payload
+
+
 class Dashboard:
     def __init__(self, state):
         self.store = Store(state)
@@ -212,6 +241,11 @@ class Dashboard:
         return sorted(current + result, key=lambda r: r["created"], reverse=True)[:500]
 
     def get(self, path):
+        if path == "/platform-update":
+            from autopilot.platform_update import status
+            return status(self.store.state)
+        if path == "/runtime-identity":
+            return runtime_identity()
         if path.startswith('/reviews/') and path.endswith('/context'):
             from autopilot.record_context import record_context
             ident = path.split('/')[2]
@@ -293,6 +327,9 @@ class Dashboard:
                     )
                 ]
             return item
+        if path == "/reviewers/codex/account":
+            from codex_account import account_status
+            return account_status(cfg)
         if path.startswith("/reviewers/") and path.endswith("/models"):
             return reviewers.catalog(cfg, self.store.state, path.split("/")[2])
         if path == "/reviews":
@@ -364,6 +401,9 @@ class Dashboard:
         raise KeyError("接口不存在")
 
     def mutate(self, path, body):
+        if path == "/platform-update/release":
+            from autopilot.platform_update import request_release
+            return request_release(self.store.state, body)
         if self.autopilot.handles(path):
             return self.autopilot.mutate(path, body)
         if path.startswith("/reviewers/") and path.endswith("/models/refresh"):
@@ -546,10 +586,12 @@ class Dashboard:
         raise KeyError("接口不存在")
 
     def operation(self, path, body):
+        if (self.store.state/'autopilot/update-drain.json').exists() and path not in ('/service/stop', '/platform-update/release') and not path.endswith(('/cancel','/pause','/stop')):
+            raise Conflict('平台正在更新，暂缓新写入与任务派发')
         oid = body.get("operation_id", "")
         uuid.UUID(oid)
         fingerprint = json.dumps([path, body], sort_keys=True, ensure_ascii=False)
-        if path.rstrip('/').endswith('/git-token'):
+        if path.rstrip('/').endswith(('/git-token', '/intelligence/attachments', '/notifications/configure')):
             # Idempotency must never persist the credential request body.
             fingerprint = 'sha256:' + hashlib.sha256(fingerprint.encode()).hexdigest()
         with self.lock:
@@ -711,6 +753,9 @@ def handler_for(app, port, dist):
                 ):
                     self.send(403, {"error": "Origin rejected"})
                     return
+                if path == "/api/runtime-identity" and self.command == "GET":
+                    self.send(200, app.get("/runtime-identity"))
+                    return
                 if path == "/api/bootstrap" and self.command == "GET":
                     # Cross-site fetches cannot mint a local browser session.
                     if self.headers.get("Sec-Fetch-Site") == "cross-site":
@@ -726,7 +771,7 @@ def handler_for(app, port, dist):
                         self.send(401, {"error": "本地会话已失效，请刷新页面"})
                         return
                     if self.command == "GET":
-                        self.send(200, app.get(path[4:]))
+                        self.send(200, app.get(path[4:] + (("?" + urlparse(self.path).query) if "/intelligence" in path and urlparse(self.path).query else "")))
                         return
                     if not hmac.compare_digest(
                         self.headers.get("X-CSRF-Token", ""), app.csrf
@@ -771,7 +816,8 @@ def handler_for(app, port, dist):
 
         def body(self):
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= 100000:
+            limit = 14 * 1024 * 1024 if urlparse(self.path).path.endswith("/intelligence/attachments") else 100000
+            if not 0 < size <= limit:
                 raise ValueError("请求内容大小无效")
             value = json.loads(self.rfile.read(size))
             if not isinstance(value, dict):

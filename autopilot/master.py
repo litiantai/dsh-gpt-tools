@@ -11,7 +11,25 @@ from .call import atomic
 from .workspace import git
 
 
+def source_workspace(request):
+    """需求、调查和复盘读取当前 master 提交，不复用 feat/release 候选源码。"""
+    product = request['product']
+    expected = target(product)
+    root = Path(request['state_root'])/'master-source'/product['id']/expected
+    root.parent.mkdir(parents=True, exist_ok=True)
+    with (root.parent/'checkout.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not root.exists():
+            git(product['delivery_repository'], 'worktree', 'add', '--detach', str(root), expected)
+        if git(root, 'rev-parse', 'HEAD') != expected or git(root, 'status', '--porcelain'):
+            raise ValueError('master 只读工作区提交不一致或源码发生变化')
+    return str(root)
+
+
 def enabled(product):
+    from .project import generic
+    if generic(product):
+        return bool(product.get('git', {}).get('enabled') and product.get('delivery_repository') and product.get('deployment'))
     return bool(product.get('git', {}).get('enabled') and product.get('delivery_repository')
                 and all(product.get(k) for k in ('application', 'runtime', 'app_support')))
 
@@ -27,6 +45,10 @@ def target(product):
 
 def identity(product, expected):
     """核对实际进程、认证监测与安装标记，旧测试实例不能充当主实例。"""
+    from .project import generic
+    if generic(product):
+        from .generic_adapter import identity as identify
+        return identify(product, expected)
     from .thsoctop import endpoint, monitor
     origin = endpoint(product)
     marker = json.loads((Path(product['runtime'])/'autopilot-release.json').read_text())
@@ -95,6 +117,10 @@ def inspect(request, expected=None):
 @stable_instance
 def acceptance(request):
     """合入 master 后在同一主实例逐项执行原需求效果断言。"""
+    from .project import generic
+    if generic(request['product']):
+        from .generic_adapter import acceptance as accept
+        return accept(request)
     from .probes import check
     from .thsoctop import http
     product = request['product']

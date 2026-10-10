@@ -1,0 +1,1 @@
+ 如遇必须由其他角色回答的问题，停止当前阶段，status=waiting_for_reply，在 collaboration_requests 中提交一个 {to_role,topic,content,evidence_ids}。角色为 discovery/implementation/verification/acceptance/human。不能通过消息请求绕过审批。

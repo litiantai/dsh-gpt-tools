@@ -21,7 +21,8 @@ export default function ProjectEvidence({productId,tab,onTabChange}:{productId?:
   const inspections=useData<Evidence[]>('/inspections');
   const evidence=useData<Evidence[]>('/evidence');
   const evaluations=useData<Evidence[]>('/evaluations');
-  const [selected,setSelected]=useState<Evidence>();
+  const [selection,setSelected]=useState<Evidence>();
+  const selected=inspections.data?.find(row=>row.id===selection?.id && row.product_id===productId) || selection;
   const [image,setImage]=useState('');
   const [error,setError]=useState('');
   const entries=evidence.data?.filter(e=>e.product_id===productId) ?? [];

@@ -5,7 +5,8 @@ test('old monitoring exception is Chinese by default and diagnostic is opt-in an
   await page.route('**/api/products',r=>r.fulfill({json:[{id:'error-copy',name:'异常中文验证',status:'active',version:1,
     last_probe:1791515515,last_probe_result:{status:'blocked',reason:raw}}]}));
   await page.goto('/autopilot?project=error-copy&view=overview&tab=monitoring');
-  const alert=page.getByRole('alert').filter({hasText:'运行监测 · 已阻塞'});
+  const alert=page.getByRole('alert').filter({hasText:'运行监测 · 上次结果：已阻塞'});
+  await alert.locator('summary').first().click();
   await expect(alert.getByText('暂时无法连接应用服务。请确认服务已启动，稍后重试。',{exact:true})).toBeVisible();
   expect(await alert.innerText()).not.toContain('Connection refused');
   expect(await page.locator('body').innerText()).not.toContain('Connection refused');

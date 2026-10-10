@@ -7,7 +7,7 @@
   },
   {
     "code": "QUOTA_EXHAUSTED",
-    "pattern": "额度.*(不足|已用尽|耗尽)|quota.exceeded|quota.exhausted",
+    "pattern": "额度.*(不足|已用尽|耗尽)|quota.exceeded|quota.exhausted|(?:hit|reached|exceeded) your usage limit|usage_limit_reached",
     "message": "本次操作所需额度不足。",
     "suggestion": "请等待额度恢复，或检查额度设置。"
   },
@@ -85,7 +85,7 @@
   },
   {
     "code": "NETWORK_UNAVAILABLE",
-    "pattern": "Failed to fetch|fetch failed|NetworkError|Load failed|network.*error",
+    "pattern": "Failed to fetch|fetch failed|NetworkError|Load failed|network.*error|workspace routing discovery failed|error sending request|Connection failed",
     "message": "暂时无法连接{subject}。",
     "suggestion": "请检查网络或服务运行情况后重试。"
   },

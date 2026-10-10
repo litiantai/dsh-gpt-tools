@@ -1,0 +1,154 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "blocked"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "signal_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "reproduction": {
+            "type": "string"
+          },
+          "impact": {
+            "type": "string"
+          },
+          "acceptance": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "classification": {
+            "type": "string",
+            "enum": [
+              "development",
+              "investigation",
+              "environment"
+            ]
+          },
+          "in_scope": {
+            "type": "boolean"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "resolution_probes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "pointer": {
+                  "type": "string"
+                },
+                "operator": {
+                  "type": "string",
+                  "enum": [
+                    "equals",
+                    "not_equals",
+                    "not_empty",
+                    "not_contains"
+                  ]
+                },
+                "expected": {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "pointer",
+                "operator",
+                "expected"
+              ]
+            }
+          }
+        },
+        "required": [
+          "title",
+          "signal_ids",
+          "evidence",
+          "reproduction",
+          "impact",
+          "acceptance",
+          "classification",
+          "in_scope",
+          "priority",
+          "resolution_probes"
+        ]
+      }
+    },
+    "attributions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "signal_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "requirement",
+              "duplicate",
+              "no_issue",
+              "investigation",
+              "environment"
+            ]
+          }
+        },
+        "required": [
+          "signal_id",
+          "reason",
+          "outcome"
+        ]
+      }
+    }
+  },
+  "required": [
+    "status",
+    "reason",
+    "summary",
+    "requirements",
+    "attributions"
+  ]
+}
