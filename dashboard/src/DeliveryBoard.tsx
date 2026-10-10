@@ -1,6 +1,7 @@
 import { errorText, ErrorNotice } from './errors';
 import { Alert, Button, Input, Modal, Select, Space, Table, Tag } from 'antd';
 import { useState } from 'react';
+import { recordLabel } from './RecordDetails';
 import { time } from './components';
 import DeliveryTasks from './DeliveryTasks';
 import RecordInspector, {type LinkedRecord} from './RecordInspector';
@@ -13,6 +14,7 @@ export interface PullRequest {
   delivery_id?:string;
 }
 export interface RepairIssue {
+  requirement?:{id:string;title:string;status:string;updated?:number};
   delivery_id?:string;
   id:string; pr_url:string; title:string; path:string; start_line?:number; severity:string;
   status:string; created:number; updated:number; reason?:string; evidence?:string; batch_title:string;
@@ -55,15 +57,15 @@ export default function DeliveryBoard({data,kind,loading}:{data?:DeliveryBoardDa
       {title:'更新时间',width:150,render:(_,r)=>time(r.updated)},
       {title:'关联详情',width:120,render:(_,r)=>r.requirement_id || r.delivery_id?<Button size="small" onClick={()=>setSelected({kind:r.requirement_id?'requirements':'deliveries',record:{id:r.requirement_id || r.delivery_id,title:r.requirement_title || r.title}})}>查看证据</Button>:'—'},
     ]}/>:<>
-      <p className="muted">仅显示尚未修复完成的问题；同一 PR 可有多条。修复成功后移出，复审再次发现的问题重新登记。</p>
+      <p className="muted">仅显示尚未修复完成的问题；同一 PR 可有多条。转入需求池的问题显示关联需求进度，完成后移出；PR 合并不代表缺陷已修复。</p>
       <Table<RepairIssue> rowKey="id" dataSource={issues} loading={loading} pagination={{pageSize:10,showSizeChanger:false}} scroll={{x:950}} columns={[
         {title:'问题',render:(_,r)=><><div>{r.title}</div>{r.path && <small className="muted">{r.path}{r.start_line?`:${r.start_line}`:''}</small>}</>},
         {title:'关联 PR',width:150,render:(_,r)=>safeLink(r.pr_url)?<a href={r.pr_url} target="_blank" rel="noreferrer">PR #{r.pr_url.split('/').pop()}</a>:<span title={r.batch_title}>尚未创建 PR</span>},
-        {title:'修复状态',width:130,render:(_,r)=><Tag color={r.status==='repairing'?'processing':r.status==='blocked'?'error':'default'}>{issueLabels[r.status] || r.status}</Tag>},
+        {title:'修复状态',width:200,render:(_,r)=><Tag color={r.status==='repairing'?'processing':r.status==='blocked'?'error':'default'}>{r.requirement?`已转需求 · ${recordLabel(r.requirement.status)}`:issueLabels[r.status] || r.status}</Tag>},
         {title:'严重程度',width:110,render:(_,r)=>({critical:'严重',high:'高',medium:'中',low:'低'}[r.severity] || '—')},
-        {title:'最近进展',width:200,render:(_,r)=>r.reason?<ErrorNotice value={r.reason}/>:'—'},
+        {title:'最近进展',width:200,render:(_,r)=>r.requirement?r.reason:r.reason?<ErrorNotice value={r.reason}/>:'—'},
         {title:'更新时间',width:150,render:(_,r)=>time(r.updated)},
-        {title:'关联详情',width:120,render:(_,r)=>r.delivery_id?<Button size="small" onClick={()=>setSelected({kind:'deliveries',record:{id:r.delivery_id,title:r.batch_title}})}>查看证据</Button>:'—'},
+        {title:'关联详情',width:120,render:(_,r)=>r.delivery_id?<Space direction="vertical">{r.requirement && <Button size="small" onClick={()=>setSelected({kind:'requirements',record:r.requirement!})}>查看关联需求</Button>}<Button size="small" onClick={()=>setSelected({kind:'deliveries',record:{id:r.delivery_id,title:r.batch_title}})}>查看证据</Button></Space>:'—'},
       ]}/>
     </>}
     <Modal title={String(selected?.record.title || '关联证据')} open={!!selected} onCancel={()=>setSelected(undefined)} footer={null} width={900} destroyOnHidden>

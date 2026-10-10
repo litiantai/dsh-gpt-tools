@@ -14,7 +14,7 @@ def pr_url(value):
     return str(value or '').split('#')[0].rstrip('/')
 
 
-def pending_issues(deliveries, rounds):
+def pending_issues(deliveries, rounds, dispatch=None, requirements=()):
     """修复成功仅关闭启动前的问题；失败、运行异常和未完成轮次保留问题。"""
     batches = {b['id']: b for b in deliveries}
     opened = {}
@@ -26,7 +26,10 @@ def pending_issues(deliveries, rounds):
             if action.startswith(('review', 'repair')):
                 continue
             result = receipt.get('result', {})
-            if result.get('status') == 'fail':
+            deferred = action.startswith('validate') and any(
+                check.get('status') == 'fail' and check.get('disposition') == 'backlog'
+                for check in result.get('checks', []))
+            if result.get('status') == 'fail' or deferred:
                 events.append({'id': receipt['call_id'], 'delivery_id': b['id'], 'phase': action,
                     'pr_url': b.get('feature_pr_url') if action in ('prepare', 'sync_feature') else b.get('pr_url'),
                     'created': receipt['at'], 'finished_at': receipt['at'], 'updated': receipt['at'],
@@ -43,22 +46,58 @@ def pending_issues(deliveries, rounds):
             opened = {k: v for k, v in opened.items() if v['target'] != target or v['created'] > before}
         if status == 'fail' and not is_repair:
             result = row.get('result') or {}
-            issues = result.get('issues') or [{'content': result.get('reason') or row.get('reason') or result.get('summary') or '检查未通过'}]
+            issues = result.get('issues')
+            if not issues and phase.startswith('validate'):
+                issues = []
+                for check in result.get('checks', []):
+                    if check.get('status') != 'fail' or not (check.get('required', True) or check.get('disposition') == 'backlog'):
+                        continue
+                    proof = check.get('evidence')
+                    proof = proof if isinstance(proof, dict) else {}
+                    issues.append({'content': proof.get('reason') or check.get('reason') or check.get('name') or '检查未通过',
+                                   'verification': proof})
+            issues = issues or [{'content': result.get('reason') or row.get('reason') or result.get('summary') or '检查未通过'}]
             for issue in issues:
                 if not isinstance(issue, dict):
                     issue = {'content': str(issue)}
                 key = hashlib.sha256(json.dumps([target, issue.get('path', ''), issue.get('content', '')], ensure_ascii=False).encode()).hexdigest()
                 old = opened.get(key)
+                linked = []
+                proof = issue.get('verification') or {}
+                if proof.get('status') == 'fail' and proof.get('reason') and result.get('head_sha'):
+                    for requirement in requirements:
+                        if requirement.get('source') != 'verification_finding' or requirement.get('product_id') != b.get('product_id'):
+                            continue
+                        if any(occurrence.get('delivery_id') == row['delivery_id']
+                               and occurrence.get('commit') == result['head_sha']
+                               and ' '.join((occurrence.get('verification', {}).get('reason') or '').split()) == ' '.join(proof['reason'].split())
+                               for occurrence in requirement.get('verification_occurrences', [])):
+                            linked.append(requirement)
+                requirement = max(linked, key=lambda r: r.get('created', 0), default=None)
+                if requirement and requirement['status'] in ('completed', 'online') and requirement.get('updated', 0) < row['updated']:
+                    requirement = None
+                if (requirement and requirement['status'] in ('completed', 'online')
+                        and requirement.get('updated', 0) >= row['updated']):
+                    opened.pop(key, None)
+                    continue
                 opened[key] = {'id': key, 'target': target, 'delivery_id': row['delivery_id'], 'pr_url': url,
                     'title': issue.get('content', '检查未通过'), 'path': issue.get('path', ''), 'start_line': issue.get('start_line'),
                     'severity': issue.get('severity', ''), 'status': 'pending', 'review_id': row['id'],
                     'created': old['created'] if old else row['updated'], 'updated': row['updated'],
-                    'evidence': result.get('report_url') or result.get('evidence'), 'batch_title': b.get('title', '')}
+                    'evidence': proof.get('evidence') or result.get('report_url') or result.get('evidence'), 'batch_title': b.get('title', ''),
+                    **({'requirement': {k: requirement[k] for k in ('id', 'title', 'status', 'updated') if k in requirement}}
+                       if requirement else {})}
         if is_repair and status != 'pass':
             for item in opened.values():
                 if item['target'] == target and item['created'] <= row.get('started_at', row['created']):
                     item.update(status='repairing' if status == 'running' else 'blocked', repair_id=row['id'],
                         updated=row['updated'], reason=row.get('reason', ''), selection=row.get('selection'))
+    for item in opened.values():
+        if item.get('requirement'):
+            item.update(status='backlog', call={}, retryable=False,
+                        reason='该验收缺陷已转入需求池，修复进度以关联需求为准。',
+                        retry_reason='请在关联需求中查看和处理，无需重试原交付批次',
+                        updated=max(item['updated'], item['requirement'].get('updated', 0)))
     return sorted(opened.values(), key=lambda r: r['created'], reverse=True)
 
 
@@ -195,7 +234,7 @@ class DeliveryBoard:
                     self.errors[cache_key] = 'PR 状态同步失败，保留上次结果；未确认的状态显示为未知。'
             for pr in saved['prs']:
                 known[pr['id']] = pr
-        issues = pending_issues(batches, rounds)
+        issues = pending_issues(batches, rounds, requirements=data['requirements'])
         prs = [pr | {'git_status': pr['status'], 'status': review_status(pr, rounds, issues)} for pr in known.values()]
         requirement_prs, release_prs = separate_prs(prs, batches, data['runs'], data['requirements'])
         return {'prs': requirement_prs, 'release_prs': release_prs,
