@@ -48,6 +48,9 @@ class Control:
         if len(parts)==3 and parts[0]=='runs' and parts[2]=='usage':
             from .delivery_tasks import task_usage
             return task_usage(self.ledger, self.ledger.get('runs', parts[1]))
+        if len(parts)==3 and parts[0]=='products' and parts[2]=='sync-master':
+            from .branch_sync import snapshot
+            return snapshot(self.ledger, self.ledger.get('products', parts[1]))
         if len(parts)==3 and parts[0]=='products' and parts[2]=='delivery-board':
             return self.delivery_board.get(self.ledger.get('products', parts[1]))
         if parts == ['autopilot','metrics']:
@@ -138,6 +141,9 @@ class Control:
         if len(parts)!=3:
             raise KeyError('接口不存在')
         _,ident,action=parts
+        if kind=='products' and action=='sync-master':
+            from .branch_sync import start
+            return start(self.ledger, self.ledger.get('products', ident))
         if kind=='products' and action=='today-token-limit':
             from .quota import adjust_today
             return adjust_today(self.ledger, ident, body)

@@ -134,7 +134,7 @@ def execute(action,request):
         result_schema['required'].append('collaboration_requests')
     (root/'schema.json').write_text(json.dumps(result_schema))
     workspace=record.get('workspace',product.get('inspection_workspace',product.get('repository',product['source'])))
-    if product.get('test_execution') == 'local' and action not in ('develop', 'validate'):
+    if product.get('test_execution') == 'local' and action not in ('develop', 'validate') and not record.get('conflict_resolution'):
         from .master import source_workspace
         workspace = source_workspace(request)
     ledger=Ledger(Store(Path(request['state_root']).parent))
