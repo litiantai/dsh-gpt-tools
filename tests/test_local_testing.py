@@ -133,6 +133,8 @@ class LocalTestingTests(unittest.TestCase):
             result = execute('verify', self.request)
         self.assertEqual(result['status'], 'pass', result)
         self.assert_stopped(result['instance'])
+        self.assertEqual(result['acceptance_scope']['stage'], 'pre_release')
+        self.assertEqual(result['acceptance_scope']['post_release']['status'], 'pending')
 
     def test_adapter_does_not_judge_or_package_failed_tests(self):
         from autopilot.generic_adapter import execute

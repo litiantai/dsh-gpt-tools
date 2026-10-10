@@ -643,9 +643,12 @@ class Scheduler:
         rid=str(uuid.uuid4())
         from .collaboration import context as collaboration_context
         collaboration = collaboration_context(self.ledger,run)
+        from .acceptance_scope import PRE_RELEASE_INSTRUCTION, pre_release
         packet={'request_id':rid,'session_id':run['id'],'cwd':run['workspace'],'scope':['.'],
                 'phase':'plan' if run['status']=='plan_review' else 'acceptance',
-                'summary':json.dumps(redact({'requirement':requirement,'plan':run.get('plan'),'checks':run.get('checks'),
+                'summary':json.dumps(redact({'acceptance_protocol':PRE_RELEASE_INSTRUCTION,
+                       'acceptance_scope':pre_release(requirement,run),
+                       'requirement':requirement,'plan':run.get('plan'),'checks':run.get('checks'),
                        'summary':run.get('summary'),'collaboration':collaboration,'collaboration_protocol':('需要补充信息时 decision=blocked，instruction 填写 JSON 字符串 {"collaboration_requests":[{"to_role":"verification","topic":"主题","content":"问题","evidence_ids":[]}]}，回复不能替代正式审查。' if product.get('intelligence',{}).get('collaboration_enabled') else None),'execution':'独立执行进程已退出；控制器冻结工作区等待审查'}),ensure_ascii=False)[:20000]}
         self.change('runs',run,{'review_id':rid,'review_packet':packet,'reason':'','off_peak_wait':None})
         from .usage import register

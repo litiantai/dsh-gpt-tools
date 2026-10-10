@@ -86,6 +86,8 @@ def package(request, checks, root):
              'artifact_hash': manifest_hash(artifact), 'checks': checks, 'source_digest': digest(workspace),
              'source_tree': git(workspace, 'rev-parse', record['commit']+'^{tree}'),
              'database_compatibility': product.get('project_config', {}).get('database_compatibility', 'unknown')}
+    from .acceptance_scope import pre_release
+    value['acceptance_scope'] = pre_release(request.get('requirement'), record)
     atomic(root/'manifest.json', value)
     return str(root/'manifest.json')
 
@@ -273,7 +275,9 @@ def execute(action, request):
             if judged['status'] != 'pass' and not finding:
                 return {'status': judged['status'], 'reason': judged.get('reason', '独立验证未通过'), 'checks': checks,
                         'collaboration_requests': judged.get('collaboration_requests', [])}
-            return result | {'checks': checks, 'manifest': package(request, checks, root)}
+            from .acceptance_scope import pre_release
+            return result | {'checks': checks, 'manifest': package(request, checks, root),
+                             'acceptance_scope': pre_release(request.get('requirement'), record, result.get('instance'))}
     if action == 'inspect':
         checked = probe(product)
         from review_core import Store

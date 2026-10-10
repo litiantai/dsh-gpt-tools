@@ -87,6 +87,10 @@ def execute(action,request):
               'environment':{'workspace':str(workspace),'sdk_runtime':str(runtime),
                   'project_config':product.get('project_config', {}),
                   'dependencies':'按项目配置在隔离工作区安装依赖，禁止更改固定执行运行时或正式服务。'}}
+    if action in ('plan', 'develop'):
+        from .acceptance_scope import PRE_RELEASE_INSTRUCTION, pre_release
+        specs[action] += PRE_RELEASE_INSTRUCTION
+        material['acceptance_scope'] = pre_release(request.get('requirement'), record)
     if product.get('intelligence',{}).get('collaboration_enabled'):
         from .collaboration import INSTRUCTION
         specs[action] += INSTRUCTION

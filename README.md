@@ -6,6 +6,8 @@
 
 项目可通过 `.autopilot.json` 声明版本 1 配置：`commands` 中的 `install/build/test/browser/start` 均为命令参数数组列表，启动命令支持 `{port}` 与 `{state}`。`readonly_paths` 限定正式实例只读断言，`acceptance_checks` 提供命名的隔离测试（探针路径为 `check:名称`）。`artifacts` 声明产物目录，`exclude` 排除不属于发布基线的材料。仓库内本项目配置是完整示例。
 
+验收分为发布前候选验证与发布后正式实例复验。开发、独立业务验证和方案/验收审查统一使用 `pre_release` 阶段：核对当前 feat/release 提交、功能和真实测试证据；正式实例尚未更新不作为候选验收失败原因。原需求及 `resolution_probes` 保留，候选回执与产物清单中的 `acceptance_scope.post_release` 标记为 `pending`。正常发布并核对运行版本后，控制器通过上线观察或主分支最终复验执行原始断言；候选测试通过不能代替正式实例效果验证。
+
 安装依赖禁用生命周期脚本；执行阶段禁止外部网络，测试只能访问配置的本机端口。`test-loopback` 用于需要随机端口的集成测试，并拒绝访问平台正式端口 13081/13083/13084。文件读取隔离用户目录、应用数据及其他临时工作区；运行目录、临时数据与正式状态分离。当前隔离后端为 macOS Seatbelt，其他系统明确阻塞。Python/JVM 项目会记录识别结果，未提供安全安装和启动配置时等待补充，不套用 Node 命令。
 
 ```sh
