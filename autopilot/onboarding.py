@@ -19,6 +19,47 @@ from .workspace import git, snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# 依赖安装阶段可能遇到的外部网络/镜像源抖动：有限退避重试后如实记为 blocked，
+# 交由 retry.FAULT 小时级自愈，避免把基础设施故障误判为源码缺陷而虚耗修复轮次。
+INSTALL_NETWORK_FAULT = re.compile(
+    r'EIDLETIMEOUT|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ERR_SOCKET_TIMEOUT|'
+    r'ERR_NETWORK|socket hang up|network|registry|fetch failed|MaxRetryError|'
+    r'connect(?:ion)? (?:timed out|reset)',
+    re.I)
+INSTALL_ATTEMPTS = 3
+
+
+def install_fault(log):
+    """从安装日志中提取网络故障证据；非网络错误返回 None。"""
+    text = log or ''
+    if not INSTALL_NETWORK_FAULT.search(text):
+        return None
+    code = re.search(r'npm error code ([A-Z_]+)', text)
+    host = re.search(r'host [`\'"]([^`\'"]+)[`\'"]', text)
+    parts = [match.group(1) for match in (code, host) if match]
+    return ' '.join(parts) or '网络错误'
+
+
+def install_check(argv, workspace, root, name, *, timeout=900, runtime=None):
+    """安装阶段入口：网络抖动/超时有限退避重试，复用同一隔离缓存；耗尽记 blocked 而非 fail。"""
+    entry = None
+    for attempt in range(INSTALL_ATTEMPTS):
+        entry = run(argv, workspace, root, name if attempt == 0 else '{}-retry{}'.format(name, attempt),
+                    install=True, timeout=timeout, runtime=runtime) | {'name': name, 'attempts': attempt + 1}
+        if entry['status'] == 'pass':
+            return entry
+        fault = install_fault(entry.get('log_tail'))
+        if fault is None and entry['status'] == 'fail':
+            # 真实构建/依赖错误不属于基础设施抖动，保持 fail 语义，不做无谓重试。
+            return entry
+        if attempt < INSTALL_ATTEMPTS - 1:
+            time.sleep(min(30, 5 * (2 ** attempt)))
+    if entry['status'] == 'fail':
+        detail = install_fault(entry.get('log_tail')) or '网络错误'
+        return entry | {'status': 'blocked',
+                        'reason': '依赖安装被外部网络/镜像源阻塞（{}），已重试 {} 次仍失败，等待自动恢复'.format(detail, INSTALL_ATTEMPTS)}
+    return entry
+
 
 def detect(workspace):
     root = Path(workspace)
@@ -184,11 +225,18 @@ def verify(workspace, root, config, *, runtime=None):
                     return {'status': 'blocked', 'reason': '依赖安装必须禁用生命周期脚本；请配置受支持的隔离安装器', 'checks': checks}
                 if argv[0] == 'npm' and argv[1] != 'ci' and config.get('install_policy') != 'explicit-unpinned':
                     return {'status': 'blocked', 'reason': '未固定依赖的 npm install 需在 .autopilot.json 显式声明 install_policy=explicit-unpinned', 'checks': checks}
-            entry = run(argv, workspace, root, phase+'-'+str(index), install=phase == 'install',
-                        ports=config.get('test_ports', []), timeout=config.get('command_timeout', 900), runtime=runtime)
+            if phase == 'install':
+                entry = install_check(argv, workspace, root, phase+'-'+str(index),
+                                      timeout=config.get('command_timeout', 900), runtime=runtime)
+            else:
+                entry = run(argv, workspace, root, phase+'-'+str(index),
+                            ports=config.get('test_ports', []), timeout=config.get('command_timeout', 900), runtime=runtime)
             checks.append(entry)
             if entry['status'] != 'pass':
-                return {'status': entry['status'], 'reason': phase+' 检查未通过', 'checks': checks}
+                reason = phase+' 检查未通过'
+                if entry['status'] == 'blocked':
+                    reason = phase+' 检查被外部依赖/基础设施阻塞：'+(entry.get('reason') or '未知原因')
+                return {'status': entry['status'], 'reason': reason, 'checks': checks}
     checks.append(startup(workspace, root, config, runtime=runtime))
     return {'status': checks[-1]['status'], 'reason': checks[-1].get('reason', ''), 'checks': checks,
             'startup_passed': checks[-1]['status'] == 'pass', 'business_acceptance': 'pending'}

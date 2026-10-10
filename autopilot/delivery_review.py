@@ -240,7 +240,20 @@ def verify(request, workspace, head, base, folder):
                 'merge_base': verification['merge_base'], 'source': verification['source']}
     result['verification'] = {key: value for key, value in verification.items() if key != 'diff'}
     atomic(folder / 'verification.json', result)
-    if proc.returncode or not result.get('checks') or any(c.get('status') != 'pass' for c in result['checks'] if c.get('required', True)):
+    required = [check for check in result.get('checks', []) if check.get('required', True)]
+    blocked = [check for check in required if check.get('status') == 'blocked']
+    failed = [check for check in required if check.get('status') == 'fail']
+    if not failed and proc.returncode == 0 and (result.get('status') == 'blocked' or blocked):
+        # 基础设施阻塞必须原样上报为 blocked：既不能伪造成 pass，也不该触发源码修复，
+        # 而应由 retry.FAULT 识别后小时级自动重试；真实检查失败优先返回 fail。
+        detail = '；'.join(check.get('reason', '') for check in blocked if check.get('reason'))
+        reason = result.get('reason') or detail or '交付必需检查被外部依赖或基础设施阻塞'
+        if blocked and detail:
+            reason = '交付必需检查被外部依赖或基础设施阻塞：' + detail
+        return {'status': 'blocked', 'reason': reason, 'checks': result.get('checks', [])}
+    if proc.returncode or not required or failed:
+        return {'status': 'fail', 'reason': '交付必需检查未通过', 'checks': result.get('checks', [])}
+    if any(check.get('status') != 'pass' for check in required) or result.get('status') != 'pass':
         return {'status': 'fail', 'reason': '交付必需检查未通过', 'checks': result.get('checks', [])}
     return result
 

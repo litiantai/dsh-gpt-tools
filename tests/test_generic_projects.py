@@ -526,6 +526,167 @@ class GenericTests(unittest.TestCase):
         self.assertEqual(written['baseline_source_digest'],'0'*64)
         self.assertEqual(written['source_digest'],digest(self.repo))
 
+    def test_install_check_retries_network_fault_then_blocks(self):
+        """安装日志出现网络签名时有限退避重试，耗尽后记 blocked 且 reason 可被小时级重试命中。"""
+        from autopilot import onboarding
+        from autopilot.retry import FAULT
+        calls=[]
+        def fake_run(argv,workspace,root,name,**kwargs):
+            calls.append((name,kwargs.get('install')))
+            return {'name':name,'command':argv,'status':'fail','required':True,'exit_code':1,
+                'started':0,'elapsed':0,'log':str(Path(root)/(name+'.log')),
+                'log_tail':'npm error code EIDLETIMEOUT\nnpm error Idle timeout reached for host `cdn.npmmirror.com:443`\n',
+                'reason':'npm error code EIDLETIMEOUT'}
+        with patch('autopilot.onboarding.run',side_effect=fake_run), patch('autopilot.onboarding.time.sleep') as sleep:
+            entry=onboarding.install_check(['npm','ci','--ignore-scripts'],self.repo,self.root/'cache','install-0')
+        self.assertEqual(entry['status'],'blocked',entry)
+        self.assertEqual(entry['name'],'install-0')
+        self.assertEqual(entry['attempts'],onboarding.INSTALL_ATTEMPTS)
+        self.assertEqual(len(calls),onboarding.INSTALL_ATTEMPTS)
+        self.assertTrue(all(install for _,install in calls))
+        self.assertIn('EIDLETIMEOUT',entry['reason'])
+        self.assertIn('cdn.npmmirror.com',entry['reason'])
+        self.assertTrue(FAULT.search(entry['reason']))
+        self.assertTrue(sleep.called)
+
+    def test_install_check_recovers_from_transient_network_fault(self):
+        """一次性网络抖动只需重试即恢复，成功即视为安装通过。"""
+        from autopilot import onboarding
+        calls=[]
+        def fake_run(argv,workspace,root,name,**kwargs):
+            calls.append(name)
+            if len(calls)==1:
+                return {'name':name,'command':argv,'status':'fail','required':True,'exit_code':1,
+                    'started':0,'elapsed':0,'log':str(Path(root)/(name+'.log')),
+                    'log_tail':'npm error code ECONNRESET\nnpm error network request failed','reason':'ECONNRESET'}
+            return {'name':name,'command':argv,'status':'pass','required':True,'exit_code':0,
+                'started':0,'elapsed':0,'log':str(Path(root)/(name+'.log')),'log_tail':'added 10 packages','reason':''}
+        with patch('autopilot.onboarding.run',side_effect=fake_run), patch('autopilot.onboarding.time.sleep'):
+            entry=onboarding.install_check(['npm','ci','--ignore-scripts'],self.repo,self.root/'cache','install-0')
+        self.assertEqual(entry['status'],'pass',entry)
+        self.assertEqual(entry['attempts'],2)
+        self.assertEqual(len(calls),2)
+
+    def test_install_check_keeps_real_failure_as_fail(self):
+        """真实构建/依赖错误不属于基础设施抖动，不得重试也不得改判 blocked。"""
+        from autopilot import onboarding
+        calls=[]
+        def fake_run(argv,workspace,root,name,**kwargs):
+            calls.append(name)
+            return {'name':name,'command':argv,'status':'fail','required':True,'exit_code':1,
+                'started':0,'elapsed':0,'log':str(Path(root)/(name+'.log')),
+                'log_tail':'npm error code ELIFECYCLE\nnpm error command failed','reason':'npm error code ELIFECYCLE'}
+        with patch('autopilot.onboarding.run',side_effect=fake_run), patch('autopilot.onboarding.time.sleep') as sleep:
+            entry=onboarding.install_check(['npm','ci','--ignore-scripts'],self.repo,self.root/'cache','install-0')
+        self.assertEqual(entry['status'],'fail',entry)
+        self.assertEqual(len(calls),1)
+        sleep.assert_not_called()
+
+    def test_install_check_retries_timeout_blocked(self):
+        """安装超时属于基础设施阻塞，需退避重试；耗尽后仍为 blocked 且 reason 可被重试命中。"""
+        from autopilot import onboarding
+        from autopilot.retry import FAULT
+        calls=[]
+        def fake_run(argv,workspace,root,name,**kwargs):
+            calls.append(name)
+            return {'name':name,'command':argv,'status':'blocked','required':True,'exit_code':None,
+                'started':0,'elapsed':0,'log':str(Path(root)/(name+'.log')),'log_tail':'',
+                'reason':"Command 'npm ci' timed out after 900 seconds"}
+        with patch('autopilot.onboarding.run',side_effect=fake_run), patch('autopilot.onboarding.time.sleep'):
+            entry=onboarding.install_check(['npm','ci','--ignore-scripts'],self.repo,self.root/'cache','install-0')
+        self.assertEqual(entry['status'],'blocked',entry)
+        self.assertEqual(len(calls),onboarding.INSTALL_ATTEMPTS)
+        self.assertTrue(FAULT.search(entry['reason']))
+
+    def test_onboarding_verify_reports_install_network_blocked(self):
+        """接入扫描的 install 网络阻塞需带证据上报 blocked，绝不冒充通过。"""
+        config={'commands':{'install':[['npm','ci','--ignore-scripts','--no-audit','--no-fund']]}}
+        blocked={'name':'install-0','command':config['commands']['install'][0],'status':'blocked','required':True,
+            'exit_code':1,'started':0,'elapsed':0,'log':str(self.root/'install-0.log'),'attempts':3,
+            'reason':'依赖安装被外部网络/镜像源阻塞（EIDLETIMEOUT cdn.npmmirror.com），已重试 3 次仍失败，等待自动恢复'}
+        with patch('autopilot.onboarding.install_check',return_value=blocked) as check:
+            result=verify(self.repo,self.root/'exec',config)
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertIn('EIDLETIMEOUT',result['reason'])
+        self.assertEqual(result['checks'][0]['status'],'blocked')
+
+    def test_delivery_verify_preserves_infrastructure_blocked(self):
+        """适配器返回基础设施 blocked 时原样上报并保留可重试 reason，绝不改写为 pass。"""
+        from autopilot.delivery_review import verify
+        from autopilot.retry import FAULT
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        base=git(self.repo,'rev-parse','HEAD')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        head=git(self.repo,'rev-parse','HEAD')
+        baseline=digest(self.repo)
+        adapter=self.root/'fake-verify-adapter-blocked'
+        adapter.write_text('#!'+sys.executable+'\nimport json\n'
+            'print(json.dumps({"status":"blocked",'
+            '"reason":"install 检查被外部依赖/基础设施阻塞：EIDLETIMEOUT cdn.npmmirror.com",'
+            '"checks":[{"name":"install-0","status":"blocked","required":True,'
+            '"reason":"依赖安装被外部网络/镜像源阻塞（EIDLETIMEOUT cdn.npmmirror.com），已重试 3 次仍失败"}]}))\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
+            'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
+        folder=self.root/'verification-blocked';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':baseline},'requirements':[]},
+                      self.repo,head,base,folder)
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertIn('EIDLETIMEOUT',result['reason'])
+        self.assertTrue(FAULT.search(result['reason']))
+        self.assertEqual(result['checks'][0]['status'],'blocked')
+        written=json.loads((folder/'verification.json').read_text())
+        self.assertEqual(written['status'],'blocked')
+
+    def test_delivery_verify_keeps_required_failure_as_fail(self):
+        """真实必需检查失败仍为 fail，不会因分类改动被放宽。"""
+        from autopilot.delivery_review import verify
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        base=git(self.repo,'rev-parse','HEAD')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        head=git(self.repo,'rev-parse','HEAD')
+        baseline=digest(self.repo)
+        adapter=self.root/'fake-verify-adapter-fail'
+        adapter.write_text('#!'+sys.executable+'\nimport json\n'
+            'print(json.dumps({"status":"fail","reason":"交付必需检查未通过",'
+            '"checks":[{"name":"install-0","status":"fail","required":True,"reason":"npm error code ELIFECYCLE"}]}))\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
+            'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
+        folder=self.root/'verification-fail';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':baseline},'requirements':[]},
+                      self.repo,head,base,folder)
+        self.assertEqual(result['status'],'fail',result)
+        self.assertEqual(result['reason'],'交付必需检查未通过')
+
+    def test_delivery_verify_failure_wins_over_required_block(self):
+        """真实必需检查失败优先于基础设施阻塞，不得用 blocked 掩盖源码问题。"""
+        from autopilot.delivery_review import verify
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        base=git(self.repo,'rev-parse','HEAD')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        head=git(self.repo,'rev-parse','HEAD')
+        baseline=digest(self.repo)
+        adapter=self.root/'fake-verify-adapter-mixed'
+        adapter.write_text('#!'+sys.executable+'\nimport json\n'
+            'print(json.dumps({"status":"blocked","reason":"install 检查被外部依赖阻塞",'
+            '"checks":[{"name":"install-0","status":"blocked","required":True,"reason":"EIDLETIMEOUT"},'
+            '{"name":"test-0","status":"fail","required":True,"reason":"ELIFECYCLE"}]}))\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
+            'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
+        folder=self.root/'verification-mixed';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':baseline},'requirements':[]},
+                      self.repo,head,base,folder)
+        self.assertEqual(result['status'],'fail',result)
+        self.assertEqual(result['reason'],'交付必需检查未通过')
+
     def test_validate_prompt_includes_truncated_diff_summary(self):
         """超大差异被截断时，提示词仍给出 merge_base/changed_files/diff_sha256 与落盘指引。"""
         from autopilot import codex_executor
