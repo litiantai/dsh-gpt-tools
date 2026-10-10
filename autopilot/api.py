@@ -355,9 +355,8 @@ class Control:
             if action=='pause' and old['status'] not in TERMINAL:
                 return self.ledger.update(kind,ident,old['version'],{'control':'pause','resume_status':old['status'],'reason':'用户暂停；等待执行器停止并核对'},'pausing')
             if action=='retry' and old['status']=='blocked':
-                if old.get('uncertain'):
-                    raise Conflict('先核对未确认的进程或发布结果，不能重复执行')
-                return self.ledger.update(kind,ident,old['version'],{'control':None,'reason':'','next_auto_retry_at':None,'auto_retry_wait_reason':None},old.get('resume_status','queued'))
+                from .retry import manual_run_retry
+                return manual_run_retry(self.ledger, ident, old['version'])
         if kind=='releases' and action=='rollback' and old['status'] in ('observing','completed','blocked'):
             newer=[r for r in self.ledger.list('releases') if r['product_id']==old['product_id'] and r['created']>old['created'] and r['status'] not in ('cancelled','rolled_back')]
             if newer:

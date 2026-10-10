@@ -5,6 +5,7 @@ import { eventLabels, labels, time } from './components';
 
 export type RecordData = Record<string, unknown>;
 const names: Record<string, string> = {
+  manual_retry_count:'人工重试次数（不占返修额度）',last_manual_retry_at:'最近人工重试',manual_retry_pending:'本轮人工重试授权',manual_retry_evidence_id:'人工重试记录',counts_toward_revisions:'是否计入返修额度',source_version:'操作前记录版本',
   missing_tools:'缺少本机运行时',install_hint:'安装提示',workflow:'角色工作流',quality:'控制器质量证据',workflow_hash:'工作流版本摘要',workflow_version:'工作流版本',step_id:'步骤',module:'模块',stack:'技术栈',source_digest:'源码摘要',config_hash:'配置摘要',receipt:'证据记录',receipt_hash:'证据摘要',
   account_snapshot:'评审启动前账户快照',auth_home:'认证目录',account_id:'账户标识',plan_type:'账户套餐',auth_mode:'认证方式',
   checked_at:'查询时间',fetched_at:'获取时间',ordinary_usage_allowed:'服务端允许使用',rate_limits:'额度窗口',
@@ -48,6 +49,7 @@ const names: Record<string, string> = {
   acceptance_review_id:'验收审查',review_packet:'审查输入',session_id:'关联会话',
 };
 const values: Record<string,string> = {
+  manual_retry:'人工阻塞重试',autopilot_manual_retry:'人工阻塞重试',recorded:'已记录',human:'人工',
   available:'当前可用',limited:'当前额度受限',unauthenticated:'尚未登录','codex-app-server':'Codex CLI 实时查询',
   pending_confirmation:'待确认',waiting_for_reply:'等待协作回复',rejected:'已拒绝',
   daily_attribution:'晚间统一归因',duplicate:'重复问题',no_issue:'无新问题',requirement:'形成需求',
@@ -74,7 +76,7 @@ const values: Record<string,string> = {
   'session/header':'会话已建立','session/title':'更新会话标题','user/message':'用户发送消息',
   'assistant/message':'助手回复','autopilot/process-completed':'执行步骤已结束',
 };
-const timeFields = new Set(['checked_at','fetched_at','resetsAt','queue_first_at','next_auto_retry_at','last_auto_retry_at','next_investigation','repair_deferred_until','cutoff','at','created','updated','started','finished','started_at','finished_at','sampledAt','last_seen']);
+const timeFields = new Set(['last_manual_retry_at','checked_at','fetched_at','resetsAt','queue_first_at','next_auto_retry_at','last_auto_retry_at','next_investigation','repair_deferred_until','cutoff','at','created','updated','started','finished','started_at','finished_at','sampledAt','last_seen']);
 const isRecord = (value: unknown): value is RecordData => !!value && typeof value === 'object' && !Array.isArray(value);
 export function unpack(value:unknown):unknown {
   if(typeof value==='string' && /^[\[{]/.test(value.trim())) {

@@ -55,6 +55,8 @@ class Scheduler:
             changes=dict(changes or {})
             changes.update(next_auto_retry_at=time.time()+INTERVAL if abnormal(item | changes) else None,
                            auto_retry_wait_reason=None)
+        if kind == 'runs' and (status == 'blocked' or status in TERMINAL):
+            changes = dict(changes or {}, manual_retry_pending=None)
         return self.ledger.update(kind,item['id'],item['version'],changes or {},status)
 
     def wait_for_off_peak(self,kind,item,product,action,selected=None,now=None):
@@ -106,6 +108,7 @@ class Scheduler:
         atomic(path,request)
         item=self.change(kind,item,{'call':{'id':call_id,'action':action,'started':time.time(),'path':str(path),
             'signal_ids':[s['id'] for s in (extra or {}).get('signals',[])]},
+            **({'manual_retry_pending':None} if kind=='runs' and action in ('plan','develop') else {}),
             **({'off_peak_wait':None,'reason':''} if item.get('off_peak_wait') else {}),
             **({'reason':''} if item.get('reason')=='每日 Token 额度已用尽，等待次日或调整额度' else {})})
         child=subprocess.Popen([sys.executable,str(Path(__file__).with_name('call.py')),str(path)],
@@ -601,12 +604,14 @@ class Scheduler:
                 self.change('requirements',req,{},'completed')
 
     def revise(self,run,product,reason,diagnostic=None):
-        if run.get('revisions',0)>=(DEFAULTS | product.get('policy',{}))['max_revisions']:
+        manual = bool(run.get('manual_retry_pending'))
+        if not manual and run.get('revisions',0)>=(DEFAULTS | product.get('policy',{}))['max_revisions']:
             run = self.change('runs', run, {'feedback': redact(reason), 'last_revision_diagnostic': redact(diagnostic), 'revision_exhausted': True})
             return self.block(run,'返修次数已用尽：'+reason)
         # Human copy must not remove compiler/tool evidence from the next repair prompt.
         feedback=reason+('\n技术诊断：'+json.dumps(diagnostic,ensure_ascii=False) if diagnostic else '')
-        return self.change('runs',run,{'revisions':run.get('revisions',0)+1,'feedback':redact(feedback),'review_id':None},
+        return self.change('runs',run,{'revisions':run.get('revisions',0)+int(not manual),'feedback':redact(feedback),
+                           'review_id':None,'review_packet':None,'revision_exhausted':False,'manual_retry_pending':None},
                            'planning' if run['status']=='plan_review' else 'developing')
 
     def review(self,run,product,requirement):
