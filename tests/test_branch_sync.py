@@ -73,8 +73,10 @@ class BranchSyncTests(unittest.TestCase):
     def test_local_only_branch_is_not_published_and_remote_only_branch_is_synced(self):
         git(self.repo,'branch','feat-local','feat-one')
         git(self.repo,'branch','-D','release-one')
+        git(self.origin,'update-ref','-d','refs/heads/feat-one')
         result,job=self.run_job(); self.assertEqual(result['status'],'pass',job)
         self.assertEqual(git(self.origin,'for-each-ref','refs/heads/feat-local'),'')
+        self.assertEqual(git(self.origin,'for-each-ref','refs/heads/feat-one'),'')
         git(self.repo,'merge-base','--is-ancestor',self.master,'feat-local')
         git(self.repo,'merge-base','--is-ancestor',self.master,'release-one')
 
