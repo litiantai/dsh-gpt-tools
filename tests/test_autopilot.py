@@ -222,7 +222,7 @@ for(const command of ['node test.js &','nohup node test.js','node test.js & node
         self.assertEqual(scoped.settings()['reviewer_unified']['model'],'fixture-model')
         self.assertEqual(self.store.settings()['reviewer_unified'],previous)
 
-    @unittest.skipUnless(sys.platform=='darwin','macOS isolation')
+    @unittest.skipUnless(sys.platform=='darwin' and not os.environ.get('DSH_PROJECT_ISOLATED'),'由外层验证运行 macOS 沙箱边界测试，系统不允许嵌套 Seatbelt')
     def test_sandbox_denies_external_writes_and_private_data_but_allows_dev_null(self):
         allowed=self.root/'allowed';allowed.mkdir()
         private=self.root/'private';private.mkdir()

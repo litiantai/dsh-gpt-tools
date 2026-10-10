@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "commands": {
+    "install": [
+      [
+        "npm",
+        "ci",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund"
+      ]
+    ],
+    "build": [
+      [
+        "npm",
+        "run",
+        "build"
+      ]
+    ],
+    "test": [
+      [
+        "npm",
+        "run",
+        "typecheck"
+      ],
+      [
+        "npm",
+        "test"
+      ]
+    ],
+    "browser": [
+      [
+        "npm",
+        "run",
+        "test:e2e"
+      ]
+    ],
+    "start": [
+      [
+        "python3",
+        "-B",
+        "dashboard_server.py",
+        "--port",
+        "{port}",
+        "--state-dir",
+        "{state}"
+      ]
+    ]
+  },
+  "web": true,
+  "test_ports": [
+    "test-loopback"
+  ],
+  "health_path": "/",
+  "identity_path": "/api/runtime-identity",
+  "readonly_paths": [
+    "/api/runtime-identity"
+  ],
+  "artifacts": [
+    "node_modules",
+    "dashboard/dist",
+    "connector/dist"
+  ],
+  "exclude": [
+    "info",
+    "thsoctop-snake.patch",
+    "thsoctop-snake-acceptance.md",
+    "dsh-bidirectional-evidence.json"
+  ],
+  "database_compatibility": "backward-compatible",
+  "acceptance_checks": {
+    "generic-projects": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-p",
+      "test_generic_projects.py",
+      "-v"
+    ]
+  },
+  "test_start": [
+    [
+      "python3",
+      "-B",
+      "tests/serve_fixture.py"
+    ]
+  ]
+}

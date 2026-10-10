@@ -2,6 +2,7 @@
 import copy
 import datetime as dt
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -362,7 +363,7 @@ class DeliveryTests(unittest.TestCase):
         folder = paths(self.request(batch))[1] / 'rounds' / batch['round_id']
         self.assertEqual(json.loads((folder / 'result.json').read_text()), result)
 
-    @unittest.skipUnless(sys.platform == 'darwin', 'requires macOS sandbox')
+    @unittest.skipUnless(sys.platform == 'darwin' and not os.environ.get('DSH_PROJECT_ISOLATED'), '由外层验证运行 macOS 沙箱执行器测试，系统不允许嵌套 Seatbelt')
     def test_harness_review_uses_private_profile_and_retains_failure_diagnostics(self):
         from autopilot.delivery_review import model
         from reviewers import command as real_command
@@ -444,6 +445,23 @@ sys.exit(1)
         self.assertGreater(reviewed['total_files'], 0)
         self.assertEqual(reviewed['model'], 'chosen-model')
         self.assertEqual(reviewed['skill_version']['cli_version'], '1.12.12')
+
+    def test_validate_passes_bare_repository_to_delivery_verify(self):
+        from autopilot.delivery_review import execute as review
+        batch, result = self.bootstrap()
+        batch = self.ledger.update('deliveries', batch['id'], batch['version'],
+            {'review_pass': {'head_sha': result['head_sha'], 'base_sha': result['base_sha']}}, 'validating')
+        captured = {}
+        def fake_verify(request, workspace, head, base, folder):
+            captured.update(request['record'])
+            return {'status': 'pass', 'checks': [{'name': 'required test', 'status': 'pass', 'required': True}]}
+        with patch('autopilot.delivery_review.verify', side_effect=fake_verify):
+            validated = review('validate', self.request(batch))
+        self.assertEqual(validated['status'], 'pass', validated)
+        repo = paths(self.request(batch))[2]
+        # checkout 元数据之外的 bare 仓库必须显式下发给验证层，供 base..commit 差异使用。
+        self.assertEqual(captured.get('repository'), str(repo))
+        self.assertEqual(captured.get('git_dir'), str(repo))
 
     def test_review_uses_saved_pr_and_resyncs_changed_remote_without_model(self):
         from autopilot.delivery_review import execute

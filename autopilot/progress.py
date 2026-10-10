@@ -13,6 +13,8 @@ def recover_review(scheduler):
         if run['status']!='blocked':
             continue
         product=scheduler.ledger.get('products',run['product_id'])
+        if product.get('automation_disabled'):
+            continue
         if recover(scheduler,'runs',run,product)['status']!='blocked':
             return True
     return False
@@ -20,7 +22,7 @@ def recover_review(scheduler):
 
 def investigate(scheduler,only_active=False):
     ledger=scheduler.ledger
-    rows=ledger.list('requirements')
+    rows=[r for r in ledger.list('requirements') if not ledger.get('products',r['product_id']).get('automation_disabled')]
     for index,row in enumerate(rows):
         if row['status']=='awaiting_external' and row.get('reason','').startswith('调查已执行，但转开发证据不足：') and not row.get('investigation_evidence_retries'):
             rows[index]=scheduler.change('requirements',row,{'investigation_evidence_retries':1,'next_investigation':row['updated']+300,
@@ -54,7 +56,8 @@ def investigate(scheduler,only_active=False):
         if result.get('status')=='pass' and result.get('checks'):
             if result.get('outcome')=='development':
                 try:
-                    validate(result.get('resolution_probes'))
+                    from .project import generic
+                    validate(result.get('resolution_probes'), product if generic(product) else None, assertions=generic(product))
                     if not result.get('resolution_probes') or not result.get('acceptance'):
                         raise ValueError('缺少可执行验收条件')
                     changes.update(classification='development',acceptance=result['acceptance'],

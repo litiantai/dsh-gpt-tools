@@ -18,9 +18,44 @@ def git(root, *args):
     return subprocess.check_output(['git','-C',str(root),*args], text=True, stderr=subprocess.PIPE).strip()
 
 
+def metadata(workspace):
+    """返回 (git_dir, common_dir) 的绝对只读元数据路径。
+
+    链接式 worktree 把 HEAD/index/commondir 放在 git_dir，把 objects/refs
+    放在 common_dir；两者都可能位于 checkout 之外。`--git-common-dir` 在部分
+    git 版本里可能是相对路径，因此同时按 workspace 与 git_dir 解析并取存在者。
+    """
+    git_dir=Path(git(workspace,'rev-parse','--absolute-git-dir'))
+    common=Path(git(workspace,'rev-parse','--git-common-dir'))
+    if not common.is_absolute():
+        candidates=[(Path(workspace)/common).resolve(),(git_dir/common).resolve()]
+        common=next((path for path in candidates if path.exists()), candidates[0])
+    else:
+        common=common.resolve()
+    return git_dir.resolve(), common
+
+
+def metadata_paths(workspace):
+    """只读暴露 HEAD/index/commondir/objects/refs 及裸仓库 config/info/logs；绝不加入可写集合。
+
+    `git --git-dir=<bare> --work-tree=<workspace>` 必须能读取裸仓库的 config，
+    否则 checkout 元数据不可读时的差异回退会被沙箱拒绝。config 只进入只读集合，
+    绝不进入可写集合。
+    """
+    git_dir, common_dir = metadata(workspace)
+    paths=[git_dir, common_dir]
+    paths += [git_dir/name for name in ('HEAD','commondir','index','config','config.worktree','info','logs')]
+    paths += [common_dir/name for name in ('objects','refs','packed-refs','config','info','logs')]
+    return paths
+
+
 def source_files(root):
     """尊重 Git ignore，并排除运行数据、秘密文件和越界符号链接。"""
     root = Path(root).resolve()
+    config = root/'.autopilot.json'
+    if config.is_symlink():
+        raise ValueError('项目配置不能是符号链接')
+    excluded_paths = json.loads(config.read_text()).get('exclude', []) if config.is_file() else []
     result = subprocess.check_output(['git','-C',str(root),'ls-files','-z','--cached','--others','--exclude-standard'])
     names=result.decode().split('\0')
     # Offline vendor bundles are source dependencies even when a global dist/ ignore matches them.
@@ -32,6 +67,8 @@ def source_files(root):
         rel = Path(name)
         excluded=EXCLUDED-{'dist','lib'} if rel.parts and rel.parts[0]=='vendor' else EXCLUDED
         if not name or rel.is_absolute() or '..' in rel.parts or any(p in excluded for p in rel.parts) or SENSITIVE.search(name):
+            continue
+        if any(str(rel) == p or str(rel).startswith(p.rstrip('/')+'/') for p in excluded_paths):
             continue
         path = root / rel
         if not path.exists():
@@ -50,12 +87,14 @@ def digest(root):
                                       for p in sorted(source_files(root))]).encode()).hexdigest()
 
 
-def snapshot(source, destination):
+def snapshot(source, destination, tracked_only=False, exclude=()):
     """在新仓库记录当前工作树；不修改来源索引、分支及未提交文件。"""
     source, destination = Path(source).resolve(), Path(destination).resolve()
     if destination.exists():
         raise ValueError('基线目录已存在，禁止覆盖')
-    files = list(source_files(source))
+    tracked = set(git(source, "ls-files").splitlines()) if tracked_only else None
+    files = [p for p in source_files(source) if (tracked is None or str(p) in tracked)
+             and not any(str(p) == x or str(p).startswith(x.rstrip("/")+"/") for x in exclude)]
     destination.mkdir(parents=True, mode=0o700)
     try:
         for rel in files:

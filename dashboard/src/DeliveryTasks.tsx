@@ -13,24 +13,28 @@ const title = (task:Task)=>task.run.title || task.run.name || task.requirement.t
 
 function TaskUsage({runId}:{runId:string}) {
   const query=useQuery<Usage>({queryKey:['task-usage',runId],queryFn:()=>api(`/runs/${runId}/usage`),refetchInterval:5000});
-  if(query.error)return <Alert type="error" message={<ErrorNotice value={query.error}/>}/>;
-  if(!query.data)return <Spin/>;
+  // 内层页签显式受控；加载与错误状态内联展示，刷新查询不再卸载 Tabs 导致页签回退。
+  const [tab,setTab]=useState('usage');
   const data=query.data;
-  const recorded=data.sources.some(s=>s.collected);
+  const recorded=!!data?.sources?.some(s=>s.collected);
   return <>
-    <Descriptions column={2} items={[
-      {key:'tokens',label:'任务已记录消耗',children:recorded?`${data.tokens.toLocaleString()} Token`:'尚无可归属的用量记录'},
-      {key:'duration',label:'累计执行耗时',children:data.execution_seconds==null?'未记录':`${Math.round(data.execution_seconds)} 秒`},
-      {key:'budget',label:`项目开发额度 · ${data.day}（北京时间）`,span:2,children:`${data.project_tokens_used.toLocaleString()} / ${data.project_tokens_limit?data.project_tokens_limit.toLocaleString():'不限'} Token`},
-    ]}/>
-    <p className="muted">任务消耗包含已归属的执行与审查用量；共享巡检、发现及整批交付消耗不分摊。数据以用量账本采集结果为准，缺失记录不代表零消耗。</p>
-    <Tabs items={[
-      {key:'usage',label:'消耗明细',children:<Table rowKey="id" size="small" pagination={false} dataSource={data.sources} columns={[
+    {query.error && <Alert type="error" message={<ErrorNotice value={query.error}/>}/>}
+    {!data && <Spin/>}
+    {data && <>
+      <Descriptions column={2} items={[
+        {key:'tokens',label:'任务已记录消耗',children:recorded?`${data.tokens.toLocaleString()} Token`:'尚无可归属的用量记录'},
+        {key:'duration',label:'累计执行耗时',children:data.execution_seconds==null?'未记录':`${Math.round(data.execution_seconds)} 秒`},
+        {key:'budget',label:`项目开发额度 · ${data.day}（北京时间）`,span:2,children:`${data.project_tokens_used.toLocaleString()} / ${data.project_tokens_limit?data.project_tokens_limit.toLocaleString():'不限'} Token`},
+      ]}/>
+      <p className="muted">任务消耗包含已归属的执行与审查用量；共享巡检、发现及整批交付消耗不分摊。数据以用量账本采集结果为准，缺失记录不代表零消耗。</p>
+    </>}
+    <Tabs activeKey={tab} onChange={setTab} items={[
+      {key:'usage',label:'消耗明细',children:data?<Table rowKey="id" size="small" pagination={false} dataSource={data.sources} columns={[
         {title:'执行阶段',dataIndex:'action',render:recordLabel},
         {title:'额度分类',dataIndex:'budget_kind',render:(value:string)=>({tokens:'开发额度',code_delivery_tokens:'代码交付额度',daily_report_tokens:'日报独立额度'}[value] || value)},
         {title:'已采集 Token',render:(_,row)=>row.collected?row.tokens.toLocaleString():'等待采集'},
-      ]}/>},
-      {key:'process',label:'过程数据',children:<><ReceiptList value={data.receipts}/><RecordValue value={data.evidence}/><RecordValue value={data.reviews}/></>},
+      ]}/>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在读取用量明细"/>},
+      {key:'process',label:'过程数据',children:<><ReceiptList value={data?.receipts ?? []}/><RecordValue value={data?.evidence ?? []}/><RecordValue value={data?.reviews ?? []}/></>},
     ]}/>
   </>;
 }

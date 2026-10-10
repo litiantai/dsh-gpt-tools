@@ -199,14 +199,23 @@ def execute(action, request):
             proof = b.get('review_pass') or {}
             if proof.get('head_sha') != pr['head']['sha'] or proof.get('base_sha') != pr['base']['sha']:
                 return {'status': 'stale', 'stale': True, 'reason': '统一验证前 PR 版本变化'}
-            _, folder, _, workspace = paths(request)
+            _, folder, repo, workspace = paths(request)
             before = digest(workspace)
             if git(workspace, 'rev-parse', 'HEAD') != pr['head']['sha']:
                 raise ValueError('验证工作区与 release 不一致')
             evidence = folder / 'validations' / b['validation_id']
             evidence.mkdir(parents=True, exist_ok=True)
             gh.status(pr['head']['sha'], 'pending', 'release 已封板，统一运行验证中')
-            checked = verify(request | {'budget_kind': 'code_delivery_tokens'}, workspace, pr['head']['sha'], pr['base']['sha'], evidence)
+            # 基线导入时登记的源码摘要与 bootstrap 标记随验证请求下发，作为
+            # 无业务需求批次的可追溯验收来源（不是虚构的业务需求）。
+            state = journal(folder / 'staged.json')
+            baseline_digest = state.get('source_digest')
+            # 交付层显式下发 bare 仓库，checkout 元数据不可读时仍能生成差异证据。
+            verified = request | {'budget_kind': 'code_delivery_tokens',
+                'record': b | {'repository': str(repo), 'git_dir': str(repo),
+                    'baseline_source_digest': baseline_digest,
+                    'baseline': bool(b.get('bootstrap') or state.get('snapshot_done'))}}
+            checked = verify(verified, workspace, pr['head']['sha'], pr['base']['sha'], evidence)
             _, after = load_pull_request(b)
             if before != digest(workspace) or after['head']['sha'] != pr['head']['sha'] or after['base']['sha'] != pr['base']['sha']:
                 return {'status': 'stale', 'stale': True, 'reason': '统一验证期间源码变化，证据失效'}

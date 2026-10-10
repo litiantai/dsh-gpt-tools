@@ -65,7 +65,8 @@ class UsageScopeTests(unittest.TestCase):
             self.assertEqual(start.call_args.args[3], 'discover')
         req = self.ledger.create('requirements', {'product_id': self.product['id'],
             'classification': 'investigation', 'in_scope': True}, 'pending')
-        with patch('autopilot.scheduler.subprocess.Popen'):
+        with patch('autopilot.scheduler.subprocess.Popen') as launch:
+            launch.return_value.pid = 99999999
             self.assertTrue(investigate(self.scheduler))
         req = self.ledger.get('requirements', req['id'])
         self.assertEqual(req['status'], 'investigating')
@@ -92,6 +93,7 @@ class UsageScopeTests(unittest.TestCase):
         run = self.ledger.create('runs', {'product_id': product['id'],
             'reason': '每日 Token 额度已用尽，等待次日或调整额度'}, 'verifying')
         with patch('autopilot.scheduler.subprocess.Popen') as launch:
+            launch.return_value.pid = 99999999
             self.scheduler.start_call('runs', run, product, 'verify', ['fake'])
             launch.assert_called_once()
         self.assertEqual(self.ledger.get('runs', run['id'])['reason'], '')

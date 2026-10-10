@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from review_core import Conflict
 
-KINDS = ('products', 'signals', 'requirements', 'runs', 'releases', 'workers', 'inspections', 'evidence', 'evaluations', 'daily_reports', 'deliveries', 'code_reviews')
+KINDS = ('products', 'signals', 'requirements', 'runs', 'releases', 'workers', 'inspections', 'evidence', 'evaluations', 'daily_reports', 'deliveries', 'code_reviews', 'scans')
 TERMINAL = {'completed', 'accepted', 'cancelled', 'rolled_back', 'delivered', 'online'}
 DEFAULTS = dict(probe_seconds=60,inspection_seconds=21600, discovery_per_day=4, runs_per_day=2,
                 tokens_per_day=0, deepseek_off_peak_only=True,
@@ -99,8 +99,8 @@ class Ledger:
         if old['version'] != version:
             raise Conflict('记录已更新，请刷新后重试')
         data = {k:v for k,v in (old | changes).items() if k not in ('id','status','version','created','updated')}
-        db.execute(f'UPDATE {self._table(kind)} SET data=?,status=?,version=version+1,updated=? WHERE id=?',
-                   (json.dumps(data, ensure_ascii=False), status or old['status'], time.time(), ident))
+        db.execute(f'UPDATE {self._table(kind)} SET data=?,product_id=?,status=?,version=version+1,updated=? WHERE id=?',
+                   (json.dumps(data, ensure_ascii=False), data.get('product_id', old['product_id']), status or old['status'], time.time(), ident))
         if status and status != old['status']:
             self.store.event('autopilot_transition', detail={'kind':kind,'id':ident,'from':old['status'],'to':status}, db=db)
         return self.get(kind, ident, db)

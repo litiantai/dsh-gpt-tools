@@ -214,7 +214,7 @@ test("native blocked gate requires a reason and records a single explicit releas
   const gateId = randomUUID();
   const owner = randomUUID();
   const native = async (body: Record<string, unknown>) => {
-    const r = await fetch("http://127.0.0.1:13085/api/connector/native", {
+    const r = await fetch(`${config.origin}/api/connector/native`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${key}`,

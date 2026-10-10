@@ -1,17 +1,21 @@
 import { defineConfig } from "@playwright/test";
+import { execFileSync } from "node:child_process";
+const port = process.env.DSH_E2E_PORT || execFileSync("python3", ["-c", "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()"], { encoding: "utf8" }).trim();
+process.env.DSH_E2E_PORT = port;
+const origin = process.env.DSH_E2E_EXTERNAL_ORIGIN || `http://127.0.0.1:${port}`;
 export default defineConfig({
   testDir: "./tests/browser",
   workers: 1,
   timeout: 30000,
   use: {
-    baseURL: "http://127.0.0.1:13085",
+    baseURL: origin,
     headless: true,
     viewport: { width: 1440, height: 1050 },
     screenshot: "only-on-failure",
   },
-  webServer: {
+  webServer: process.env.DSH_E2E_EXTERNAL_ORIGIN ? undefined : {
     command: "python3 -B tests/serve_fixture.py",
-    url: "http://127.0.0.1:13085",
+    url: origin,
     reuseExistingServer: false,
     gracefulShutdown: { signal: "SIGTERM", timeout: 10000 },
     timeout: 20000,
