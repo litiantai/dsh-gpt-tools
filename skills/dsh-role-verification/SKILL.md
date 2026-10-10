@@ -29,3 +29,7 @@ metadata:
 
 - [控制器差异证据](references/controller-diff.md)：使用已核实的 Git 差异完成候选验收。
 - [差异证据复核](references/controller-diff-retry.md)：相同证据的单次纠正性复核。
+
+## 角色工作流
+
+- [有序工作流](workflow.yaml)：平台加载并保存快照；命令检查必须使用控制器生成的当前源码回执。

@@ -14,3 +14,7 @@ metadata:
 ## 场景规则
 
 - [acceptance_scope-acceptance-1](references/acceptance_scope-acceptance-1.md)：由平台按对应阶段选择加载。
+
+## 角色工作流
+
+- [有序工作流](workflow.yaml)：平台加载并保存快照；命令检查必须使用控制器生成的当前源码回执。

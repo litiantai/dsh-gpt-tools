@@ -76,3 +76,27 @@ test('a failed context request keeps local evidence and reports loading failure'
   await expect(dialog.getByText('已有检查结果',{exact:true})).toBeVisible();
   await expect(dialog.getByRole('button',{name:'重试',exact:true})).toBeVisible();
 });
+
+test('role workflow details show compile failure and pending tests without changing overview', async ({page}) => {
+  const product={id:'role-workflow',name:'Java 工作流证据',status:'active',version:1};
+  const workflow={version:1,role:'verification',status:'fail',steps:[
+    {step_id:'backend:compile:0',phase:'compile',module:'backend',stack:'java',status:'fail',reason:'编译错误：缺少返回值'},
+    {step_id:'backend:test:0',phase:'test',module:'backend',stack:'java',status:'pending'},
+  ]};
+  const result={status:'fail',reason:'编译未通过',workflow,checks:[{name:'backend-compile-0',status:'fail',required:true}]};
+  const run={id:'workflow-run',product_id:product.id,title:'核对 Java 编译门禁',status:'blocked',receipts:[{action:'verify',call_id:'workflow-call',at:1791515514,result}]};
+  await page.route('**/api/products', r=>r.fulfill({json:[product]}));
+  await page.route('**/api/runs', r=>r.fulfill({json:[run]}));
+  await page.route('**/api/runs/workflow-run/context', r=>r.fulfill({json:{record:run,related:[],missing:[]}}));
+  await page.goto(`/autopilot?project=${product.id}&view=tasks&tab=runs`);
+  await page.getByRole('button',{name:'详情',exact:true}).click();
+  const dialog=page.getByRole('dialog');
+  await dialog.getByRole('tab',{name:'执行回执'}).click();
+  await dialog.getByText('查看步骤详情').click();
+  const steps=dialog.getByRole('list',{name:'角色工作流步骤'});
+  await expect(steps.getByRole('listitem')).toHaveCount(2);
+  await expect(steps.getByText('编译错误：缺少返回值')).toBeVisible();
+  await expect(steps.getByText('待执行',{exact:true})).toBeVisible();
+  await expect(dialog.getByText('角色工作流 · 独立验证',{exact:true})).toBeVisible();
+  await page.screenshot({path:'.playwright/role-workflow.png'});
+});

@@ -1,9 +1,11 @@
+import RoleWorkflow from './RoleWorkflow';
 import { ErrorNotice, TechnicalDetails, errorText } from './errors';
 import { Card, Descriptions, Empty, Space, Tag } from 'antd';
 import { eventLabels, labels, time } from './components';
 
 export type RecordData = Record<string, unknown>;
 const names: Record<string, string> = {
+  missing_tools:'缺少本机运行时',install_hint:'安装提示',workflow:'角色工作流',quality:'控制器质量证据',workflow_hash:'工作流版本摘要',workflow_version:'工作流版本',step_id:'步骤',module:'模块',stack:'技术栈',source_digest:'源码摘要',config_hash:'配置摘要',receipt:'证据记录',receipt_hash:'证据摘要',
   account_snapshot:'评审启动前账户快照',auth_home:'认证目录',account_id:'账户标识',plan_type:'账户套餐',auth_mode:'认证方式',
   checked_at:'查询时间',fetched_at:'获取时间',ordinary_usage_allowed:'服务端允许使用',rate_limits:'额度窗口',
   primary:'主要额度窗口',secondary:'次要额度窗口',usedPercent:'已用百分比',windowDurationMins:'窗口时长（分钟）',resetsAt:'额度恢复时间',
@@ -102,6 +104,7 @@ export function RecordValue({value,field='',depth=0}:{value:unknown;field?:strin
   if(depth>7)return <RawRecord value={parsed}/>;
   if(field==='error')return <ErrorNotice value={parsed}/>;
   if(field==='diagnostic')return <TechnicalDetails value={parsed}/>;
+  if(field==='workflow')return <RoleWorkflow value={parsed}/>;
   if(field==='checks')return <CheckList value={parsed} depth={depth+1}/>;
   if(field==='receipts')return <ReceiptList value={parsed}/>;
   if(Array.isArray(parsed))return parsed.length?<div className="record-items">{parsed.map((item,index)=><div key={index} className="record-item"><RecordValue value={item} depth={depth+1}/></div>)}</div>:<span className="muted">暂无记录</span>;
@@ -146,7 +149,7 @@ export function CheckList({value,depth=0}:{value:unknown;depth?:number}) {
   return <div className="record-checks">{checks.length>0 && <p className="muted">共 {checks.length} 项检查 · {passed} 项通过 · {failed} 项未通过或阻塞 · {checks.length-passed-failed} 项未确认通过</p>}{parsed.map((item,index)=>{
     if(!isRecord(item))return <div className="record-item" key={index}><RecordValue value={item} depth={depth+1}/></div>;
     const summary=item.reason || item.summary || item.actual;
-    return <Card size="small" key={index} className="record-check"><Space wrap><strong>{checkName(item.name || item.title)}</strong><ResultTag status={item.status}/><Tag>{item.required===false?'非必需项':item.required===true?'必需项':'未标注是否必需'}</Tag></Space>{summary!=null && <div className="record-note">{['fail','failed','blocked'].includes(String(item.status))?<ErrorNotice value={item}/>:<RecordValue value={summary} depth={depth+1}/>}</div>}<RawRecord value={item}/></Card>;
+    return <Card size="small" key={index} className="record-check"><Space wrap><strong>{checkName(item.name || item.title)}</strong>{item.stack!=null && <Tag>{String(item.module || 'root')} · {String(item.stack)}</Tag>}<ResultTag status={item.status}/><Tag>{item.required===false?'非必需项':item.required===true?'必需项':'未标注是否必需'}</Tag></Space>{summary!=null && <div className="record-note">{['fail','failed','blocked'].includes(String(item.status))?<ErrorNotice value={item}/>:<RecordValue value={summary} depth={depth+1}/>}</div>}<RawRecord value={item}/></Card>;
   })}</div>;
 }
 export function ResultDetails({value}:{value:unknown}) {

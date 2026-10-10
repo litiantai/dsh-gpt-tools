@@ -1,0 +1,15 @@
+version: 1
+stack: react
+phases:
+  - command: install
+    required: configured
+  - command: compile
+    required: configured
+  - command: typecheck
+    required: configured
+  - command: build
+    required: always
+  - command: test
+    required: always
+  - command: browser
+    required: configured

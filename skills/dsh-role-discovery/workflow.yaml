@@ -1,0 +1,15 @@
+version: 1
+role: discovery
+steps:
+  - id: identity
+    title: 核对运行实例身份与巡检证据
+    kind: runtime
+  - id: signals
+    title: 检查健康与只读业务信号；缺失证据进入调查
+    kind: runtime
+  - id: evidence
+    title: 整理异常事实，区分环境故障和代码缺陷
+    kind: instruction
+  - id: triage
+    title: 对照已有需求去重，形成可验收需求或调查任务
+    kind: instruction

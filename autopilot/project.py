@@ -52,7 +52,29 @@ def validate(config):
     settings = config.get('project_config', {})
     if settings.get('version', VERSION) != VERSION:
         raise ValueError('不支持的项目配置版本')
-    for key in ('install', 'build', 'test', 'start', 'browser'):
+    if 'workflow_version' in settings and (type(settings['workflow_version']) is not int or settings['workflow_version'] != 1):
+        raise ValueError('不支持的角色工作流协议版本')
+    from .role_workflows import STACKS
+    if settings.get('stack', 'generic') not in STACKS:
+        raise ValueError('未知项目技术栈')
+    modules = settings.get('modules', [])
+    if not isinstance(modules, list):
+        raise ValueError('模块配置必须为数组')
+    ids = {'root'}
+    import re
+    for module in modules:
+        if not isinstance(module, dict) or not re.fullmatch(r'[a-zA-Z0-9_-]+', str(module.get('id', ''))) or module['id'] in ids:
+            raise ValueError('模块标识无效或重复')
+        ids.add(module['id'])
+        path = module.get('path')
+        if not isinstance(path, str) or not path or Path(path).is_absolute() or '..' in Path(path).parts:
+            raise ValueError('模块目录必须位于项目内')
+        if 'modules' in module:
+            raise ValueError('不支持嵌套模块配置')
+        validate({'adapter_spec': spec, 'project_config': module})
+    if not isinstance(settings.get('commands', {}), dict):
+        raise ValueError('项目命令必须为对象')
+    for key in ('install', 'compile', 'typecheck', 'build', 'test', 'start', 'browser'):
         commands = settings.get('commands', {}).get(key, [])
         if not isinstance(commands, list):
             raise ValueError('项目命令必须为参数数组列表')

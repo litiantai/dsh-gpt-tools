@@ -33,6 +33,10 @@ class Control:
         if len(parts) >= 3 and parts[0] == 'products' and parts[2] == 'coordinator':
             from .coordinator import api
             return api(self, parts)
+        if len(parts)==3 and parts[0] in ('products', 'scans') and parts[2]=='environment':
+            from .project_environment import context, describe
+            workspace, config = context(self.ledger, parts[0], parts[1])
+            return describe(workspace, config)
         if len(parts)==3 and parts[0]=='scans' and parts[2]=='screenshot':
             scan=self.ledger.get('scans',parts[1])
             check=next((c for c in scan.get('result',{}).get('checks',[]) if c.get('screenshot')),None)
@@ -136,6 +140,10 @@ class Control:
             from .coordinator import api
             return api(self, parts, body)
         kind = parts[0]
+        if len(parts)==3 and kind in ('products', 'scans') and parts[2]=='runtime-check':
+            from .project_environment import context, check
+            workspace, config = context(self.ledger, kind, parts[1])
+            return check(workspace, config)
         if len(parts) == 3 and kind == 'requirements' and parts[2] in ('edit','confirm','reject','amend'):
             from .intake import mutate
             return mutate(self, parts[1], parts[2], body)

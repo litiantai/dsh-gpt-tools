@@ -1,3 +1,4 @@
+import ProjectEnvironment from './ProjectEnvironment';
 import { ErrorNotice, errorText, serializeError } from './errors';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, App, Button, ConfigProvider, Descriptions, Form, Input, InputNumber, Select, Space, Switch, Table, Tabs, Tag } from 'antd';
@@ -122,6 +123,7 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
         </>},
         {key:'notifications',label:'通知',forceRender:true,children:<NotificationSettings productId={project.id} reload={reload}/>},
         {key:'environment',label:'接入环境',children:<>
+          <ProjectEnvironment key={project.id} path={`/products/${project.id}`}/>
           <Descriptions column={1} items={['source','repository','application','worker_runtime'].map(key=>({key,label:({source:'原始源码',repository:'受管源码快照',application:'正式应用',worker_runtime:'固定执行运行时'} as Record<string,string>)[key],children:String(project[key] || '尚未配置')}))}/>
           <Alert type="info" message={project.test_environment?'独立测试环境已登记':'尚未登记独立测试环境'} description="巡检与合入后的最终复验共用 master 主实例；开发和业务验收共用一个独立测试实例。主实例只执行只读检查，登录、发送会话与生成报告在测试实例完成。"/>
           {!!(project.git as {enabled?:boolean})?.enabled && <Descriptions column={1} items={[

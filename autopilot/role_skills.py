@@ -41,11 +41,43 @@ def output_schema(action):
     return json.loads(read(f'dsh-role-{ROLES[action]}/schemas/{action}.json'))
 
 
-def bind(action, folder, selection, instruction, schema=None):
+def bind(action, folder, selection, instruction, schema=None, *, config=None, workspace=None):
     """保存实际规则正文和契约；历史调用不受后续发布影响。"""
     role = ROLES.get(action)
     if role is None:
         raise ValueError('执行阶段没有角色技能：' + action)
+    from .role_workflows import load, instruction as workflow_instruction, sha
+    snapshot = Path(folder) / 'role-skill'
+    binding_hash = sha({'instruction': instruction, 'schema': schema,
+                        'selection': {k: selection.get(k) for k in ('provider', 'model', 'reasoning_effort')},
+                        'config': config})
+    if (snapshot / 'manifest.json').exists():
+        existing = json.loads((snapshot / 'manifest.json').read_text())
+        if 'binding_hash' not in existing:
+            # Pre-workflow calls retain their original entrypoint and contract.
+            # Do not inject new workflow rules into an already frozen call.
+            saved_entry = (snapshot / f'dsh-role-{role}/SKILL.md').read_text()
+            legacy_prompt = saved_entry + '\n\n本次阶段规则：\n' + instruction
+            matches = (hashlib.sha256(legacy_prompt.encode()).hexdigest() == existing['instruction_sha256']
+                       and hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest() == existing['schema_sha256']
+                       and existing['selection'] == {k: selection.get(k) for k in ('provider', 'model', 'reasoning_effort')})
+        else:
+            matches = existing['binding_hash'] == binding_hash
+        if existing:
+            if not matches:
+                raise ValueError('调用已有不同的角色技能快照，请建立新调用')
+            for resource in existing['files'] + existing.get('resources', []):
+                path = (snapshot / resource['path']).resolve()
+                if not path.is_relative_to(snapshot.resolve()) or hashlib.sha256(path.read_bytes()).hexdigest() != resource['sha256']:
+                    raise ValueError('角色技能快照已被修改')
+            prompt = (snapshot / 'instructions.md').read_text()
+            if hashlib.sha256(prompt.encode()).hexdigest() != existing['instruction_sha256']:
+                raise ValueError('角色指令快照已被修改')
+            READS.set(())
+            return prompt + '\n技能支持文件快照目录：' + str(snapshot / f'dsh-role-{role}'), existing
+    workflow = load(role, action)
+    if workflow:
+        instruction += '\n\n' + workflow_instruction(workflow, config, workspace)
     entry = read(f'dsh-role-{role}/SKILL.md')
     if not entry.startswith('---\n') or 'name: dsh-role-' + role not in entry:
         raise ValueError('角色技能元数据无效')
@@ -95,8 +127,11 @@ def bind(action, folder, selection, instruction, schema=None):
         (snapshot / 'output.schema.json').write_text(json.dumps(schema, ensure_ascii=False, indent=2))
     version = re.search(r'^\s+version:\s*["\']?([\w.-]+)', entry.split('---', 2)[1], re.M)
     manifest = {'role': role, 'action': action, 'version': version[1] if version else 'unversioned', 'files': entries, 'resources': resources,
+                'binding_hash': binding_hash,
                 'selection': {k: selection.get(k) for k in ('provider', 'model', 'reasoning_effort')},
                 'instruction_sha256': instruction_hash, 'schema_sha256': schema_hash}
+    if workflow:
+        manifest['workflow'] = {key: workflow[key] for key in ('version', 'role', 'action', 'workflow_hash', 'steps')}
     (snapshot / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     return prompt + '\n技能支持文件快照目录：' + str(snapshot / f'dsh-role-{role}'), manifest
 

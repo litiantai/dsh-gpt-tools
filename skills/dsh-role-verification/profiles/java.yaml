@@ -1,0 +1,17 @@
+version: 1
+stack: java
+phases:
+  - command: install
+    required: configured
+  - command: compile
+    required: always
+  - command: typecheck
+    required: configured
+  - command: build
+    required: configured
+  - command: test
+    required: always
+  - command: browser
+    required: configured
+rules:
+  - dsh-role-verification/references/java-quality.md

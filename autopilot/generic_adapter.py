@@ -233,7 +233,7 @@ def execute(action, request):
                 from .failures import verification_failure
                 return verification_failure(result)
             if digest(record['workspace']) != before:
-                return {'status': 'fail', 'reason': '验证期间源码发生变化', 'checks': result['checks']}
+                return result | {'status': 'fail', 'reason': '验证期间源码发生变化', 'checks': result['checks']}
             from .test_chain_worker import verification_checks
             ui_checks = verification_checks(request, result.get('instance'))
             result['checks'].extend(ui_checks)
@@ -258,8 +258,11 @@ def execute(action, request):
                         material['baseline_digest_verified'] = True
                     payload = request | {'verification': material}
                 except RuntimeError as exc:
-                    return {'status': 'blocked', 'reason': str(exc), 'checks': result['checks']}
-            judged = evaluate('validate', payload | {'checks': result['checks'], 'test_instance': result.get('instance')})
+                    return result | {'status': 'blocked', 'reason': str(exc), 'checks': result['checks']}
+            from .quality import validate as validate_quality
+            if result.get('quality') or product['project_config'].get('workflow_version') == 1:
+                validate_quality(result.get('quality'), record['workspace'], product['project_config'], trusted_root=request['state_root'])
+            judged = evaluate('validate', payload | {'checks': result['checks'], 'quality': result.get('quality'), 'test_instance': result.get('instance')})
             # 失败/阻塞回执必须可离线核对：把控制器落盘的自包含差异事实并入
             # 「独立业务验证」的 evidence，与 delivery_review.verify 的字段保持一致。
             # 保留 judged 的 status/reason/summary/provider/model，字段缺失用空值占位。
@@ -274,25 +277,55 @@ def execute(action, request):
             checks = result['checks'] + [{'name': '独立业务验证', 'status': judged['status'], 'required': True,
                                           'evidence': judged | enrichment}]
             if digest(record['workspace']) != before:
-                return {'status': 'fail', 'reason': '业务验收期间源码发生变化', 'checks': result['checks']}
+                return result | {'status': 'fail', 'reason': '业务验收期间源码发生变化', 'checks': result['checks']}
             from .verification_findings import defer
             finding = defer(request, judged)
             if finding:
                 checks[-1].update(required=False, disposition='backlog', requirement_id=finding['id'])
                 result.update(reason='必需测试通过；功能缺陷已进入高优先级需求池', findings=[finding['id']])
             if judged['status'] != 'pass' and not finding:
-                return {'status': judged['status'], 'reason': judged.get('reason', '独立验证未通过'), 'checks': checks,
+                return result | {'status': judged['status'], 'reason': judged.get('reason', '独立验证未通过'), 'checks': checks,
                         'collaboration_requests': judged.get('collaboration_requests', [])}
             from .acceptance_scope import pre_release
             return result | {'checks': checks, 'manifest': package(request, checks, root),
                              'acceptance_scope': pre_release(request.get('requirement'), record, result.get('instance'))}
     if action == 'inspect':
+        import uuid
+        from .role_skills import bind
+        from .onboarding import health
+        folder = Path(request['state_root'])/'watch'/uuid.uuid4().hex
+        folder.mkdir(parents=True)
+        _, snapshot = bind('discover', folder, {}, '只读运行巡检；不执行编译、测试或源码体检。')
         checked = probe(product)
+        checks = [{'name': '运行身份', 'step_id': 'identity', 'status': checked['status'], 'reason': checked.get('reason', '')}]
+        if checked['status'] == 'pass':
+            try:
+                origin = product['deployment']['origin']
+                path = product.get('project_config', {}).get('health_path', '/')
+                healthy = health(origin, path)
+                checks.append({'name': '运行健康', 'step_id': 'signals', 'status': 'pass' if healthy else 'fail'})
+                for path in product.get('project_config', {}).get('readonly_paths', []):
+                    checks.append({'name': path, 'step_id': 'signals', 'status': 'pass', 'evidence': http(product, path)})
+            except (OSError, ValueError) as exc:
+                checks.append({'name': '运行信号', 'step_id': 'signals', 'status': 'blocked', 'reason': str(exc)})
+        failed = next((c for c in checks if c['status'] != 'pass'), None)
+        if failed:
+            checked.update(status=failed['status'], reason=failed.get('reason') or '运行巡检未通过')
+        checked['checks'] = checks
+        if snapshot.get('workflow'):
+            checked['workflow'] = snapshot['workflow'] | {'status': checked['status'], 'steps': [
+                step | {'status': checks[0]['status'] if step['id'] == 'identity' else
+                        ('pass' if not failed else 'blocked') if step['id'] == 'signals' else
+                        'pass' if step['id'] == 'evidence' else 'pending'}
+                for step in snapshot['workflow']['steps']]}
+        checked['role_skill'] = snapshot
         from review_core import Store
         from .evidence import Recorder
-        recorder = Recorder(Store(Path(request['state_root']).parent), product['id'], '项目运行巡检', '核对运行实例版本', environment='master')
-        recorder.step('版本身份', '读取登记的只读接口', '身份与项目一致', checked.get('reason', ''), status=checked['status'], details=checked)
+        recorder = Recorder(Store(Path(request['state_root']).parent), product['id'], '项目运行巡检', '核对运行实例和业务信号', environment='master')
+        for check in checks:
+            recorder.step(check['name'], '读取登记的只读接口', '取得真实运行证据', check.get('reason', ''), status=check['status'], details=check)
         recorder.finish(checked['status'], checked.get('reason', ''))
+        atomic(folder/'result.json', checked)
         return checked | {'inspection_id': recorder.inspection['id'], 'signals': [{'source': 'inspection', 'code': 'PROJECT_HEALTH',
             'component': 'runtime', 'version': str(int(time.time()//3600)), 'summary': '项目运行巡检', 'evidence': checked}]}
     if action == 'master_sync':

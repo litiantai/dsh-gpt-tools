@@ -1,0 +1,15 @@
+version: 1
+stack: node
+phases:
+  - command: install
+    required: configured
+  - command: compile
+    required: configured
+  - command: typecheck
+    required: configured
+  - command: build
+    required: configured
+  - command: test
+    required: configured
+  - command: browser
+    required: configured

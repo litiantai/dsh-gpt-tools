@@ -1,0 +1,23 @@
+version: 1
+role: implementation
+steps:
+  - id: requirements
+    title: 读取项目规范、已批准方案与验收条件
+    kind: instruction
+  - id: implement
+    title: 按阶段制定方案或实现修改，不扩大任务范围
+    kind: instruction
+  - id: quality
+    title: 实现或修复后交控制器执行技术栈自检；自报通过无效
+    kind: quality
+    actions: [develop, repair]
+  - id: evidence
+    title: 提交修改摘要与真实证据引用，未执行的检查明确待执行
+    kind: instruction
+profiles:
+  generic: dsh-role-verification/profiles/generic.yaml
+  node: dsh-role-verification/profiles/node.yaml
+  python: dsh-role-verification/profiles/python.yaml
+  java: dsh-role-verification/profiles/java.yaml
+  react: dsh-role-verification/profiles/react.yaml
+  vue: dsh-role-verification/profiles/vue.yaml

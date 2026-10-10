@@ -560,12 +560,18 @@ class Scheduler:
             commit_id=commit(run['workspace'])
             return self.change('runs',run,{'commit':commit_id,'source_digest':digest(run['workspace']),'summary':redact(result.get('summary',''))},'verifying')
         if action=='verify':
+            if product.get('project_config', {}).get('workflow_version') == 1 or result.get('quality'):
+                try:
+                    from .quality import validate as validate_quality
+                    validate_quality(result.get('quality'), run['workspace'], product.get('project_config', {}), trusted_root=self.root)
+                except (OSError, ValueError) as exc:
+                    return self.block(run, str(exc))
             checks=result.get('checks',[])
             if not checks or any(c.get('status')!='pass' for c in checks if c.get('required',True)) or not result.get('manifest'):
                 return self.block(run,'必需验收未全部通过或缺少产物清单')
             if digest(run['workspace'])!=run['source_digest']:
                 return self.block(run,'验证期间源码发生变化，需要重新开发及验收')
-            return self.change('runs',run,{'checks':checks,'manifest':result['manifest']},'acceptance_review')
+            return self.change('runs',run,{'checks':checks,'manifest':result['manifest'], **{k:result[k] for k in ('quality','workflow') if k in result}},'acceptance_review')
         if action=='idle':
             now=time.time()
             continuous=now-run.get('last_idle_check',0)<=2*policy['probe_seconds']
@@ -604,6 +610,12 @@ class Scheduler:
                            'planning' if run['status']=='plan_review' else 'developing')
 
     def review(self,run,product,requirement):
+        if run['status'] == 'acceptance_review' and (run.get('quality') or product.get('project_config', {}).get('workflow_version') == 1):
+            try:
+                from .quality import validate as validate_quality
+                validate_quality(run.get('quality'), run['workspace'], product.get('project_config', {}), trusted_root=self.root)
+            except (OSError, ValueError) as exc:
+                return self.block(run, str(exc))
         home=Path(run['worker_home'])
         scoped=WorkerStore(self.store.state,home,product.get('agents',{}).get('acceptance'))
         engine=self.engines.setdefault(run['id'],Engine(scoped))
@@ -706,7 +718,7 @@ class Scheduler:
         from .role_skills import bind, rule
         from review_core import SCHEMA
         instructions = PRE_RELEASE_INSTRUCTION + (rule('local-testing') if product.get('test_execution') == 'local' else '')
-        rules, skills = bind(run['status'], self.store.state/'reviews'/rid, selected, instructions, SCHEMA)
+        rules, skills = bind(run['status'], self.store.state/'reviews'/rid, selected, instructions, SCHEMA, config=product.get('project_config', {}), workspace=run['workspace'])
         packet.update(role_skill=skills)
         self.change('runs',run,{'review_id':rid,'review_packet':packet,'reason':'','off_peak_wait':None})
         from .usage import register

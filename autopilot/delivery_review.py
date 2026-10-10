@@ -62,7 +62,7 @@ def model(request, folder, prompt, review=False, write=False, workspace=None):
     explicit_workspace = workspace is not None
     workspace = Path(workspace) if explicit_workspace else paths(request)[3]
     from .role_skills import bind
-    prompt, skill_snapshot = bind('review' if review else 'repair' if write else 'plan', folder, actual, prompt, schema(review))
+    prompt, skill_snapshot = bind('review' if review else 'repair' if write else 'plan', folder, actual, prompt, schema(review), config=request['product'].get('project_config', {}), workspace=workspace)
     atomic(folder / 'schema.json', schema(review))
     atomic(folder / 'selection.json', {k: v for k, v in actual.items() if k not in ('home', 'harness_home')})
     account = None
@@ -112,7 +112,7 @@ def model(request, folder, prompt, review=False, write=False, workspace=None):
         if write:
             allowed.append(workspace)
         # Git object/index writes are reserved for the controller; model edits only source.
-        argv = restrict(argv, allowed, folder / 'agent.sb', private_roots=[credential_file().parent], deny_local=True, readonly_roots=[folder/'role-skill'])
+        argv = restrict(argv, allowed, folder / 'agent.sb', private_roots=[credential_file().parent], deny_local=True, readonly_roots=[folder/'role-skill', folder.parent/'quality'])
         env = (env or os.environ.copy()) | {'GIT_OPTIONAL_LOCKS': '0'}
         with (folder / 'trace.jsonl').open('w') as out, (folder / 'stderr.log').open('w') as err:
             proc = subprocess.run(argv, input=prompt + '\n输出必须符合此 JSON schema：\n' + json.dumps(schema(review)),
@@ -248,6 +248,12 @@ def verify(request, workspace, head, base, folder):
         result = json.loads(proc.stdout)
     except ValueError:
         return {'status': 'blocked', 'reason': '验证适配器未返回结构化结果'}
+    if product.get('project_config', {}).get('workflow_version') == 1 and result.get('status') == 'pass':
+        from .quality import validate as validate_quality
+        try:
+            validate_quality(result.get('quality'), workspace, product['project_config'], trusted_root=request['state_root'])
+        except (OSError, ValueError) as exc:
+            result.update(status='blocked', reason=str(exc))
     diff_path = Path(verification['diff_file'])
     diff_hash = hashlib.sha256(diff_path.read_bytes()).hexdigest() if diff_path.is_file() else ''
     for check in result.get('checks', []):
@@ -348,6 +354,13 @@ def execute(action, request):
             return {'status': 'stale', 'stale': True, 'reason': '运行验证期间源码或 PR 变化，结论失效'}
         gh.status(head, 'success', '独立代码评审及合并前验证均通过')
         return checked | {'head_sha': head, 'base_sha': base, 'pr_url': record['pr_url']}
+    quality_result = None
+    if request['product'].get('project_config'):
+        from .quality import run as quality_run
+        quality_result = quality_run(workspace, request['product']['project_config'], folder/'quality',
+            local=request['product'].get('test_execution') == 'local', runtime=request['product'].get('worker_runtime'))
+        if quality_result['status'] != 'pass':
+            return quality_result | {'head_sha': head, 'base_sha': base, 'pr_url': record['pr_url']}
     lock = json.loads((ROOT / 'vendor/open-code-review/lock.json').read_text())
     skill = (ROOT / 'vendor/open-code-review/SKILL.md').read_bytes()
     if hashlib.sha256(skill).hexdigest() != lock['skill_sha256']:
@@ -370,11 +383,16 @@ def execute(action, request):
     atomic(folder / 'ocr-rules.json', rules)
     context = {'pull_request': pr_context, 'requirements': request.get('requirements'), 'goal': request['product']['goal'],
                'base_sha': base, 'head_sha': head, 'diff_base_sha': diff_base, 'files': files, 'rules_file': str(folder / 'ocr-rules.json'),
-               'verification': {'status': 'pending', 'reason': '本轮只执行代码评审；通过后由控制器执行运行验证，不启动客户端'}}
+               'quality': quality_result, 'verification': {'status': 'pending', 'reason': '代码质量门禁由控制器执行；评审通过后进行完整业务运行验证'}}
     prompt = skill_rule('delivery_review-code-review-1')
     prompt += skill.decode() + '\n本轮确定的范围和证据：\n' + json.dumps(context, ensure_ascii=False)
     gh.status(head, 'pending', '独立模型正在评审 PR 全部增量，尚未启动运行验证')
     result = model(request, folder / 'review', prompt, review=True)
+    if quality_result:
+        result.update({k: quality_result[k] for k in ('quality', 'workflow', 'checks') if k in quality_result})
+        if quality_result.get('quality'):
+            from .quality import validate as validate_quality, PHASES
+            validate_quality(quality_result['quality'], workspace, request['product']['project_config'], trusted_root=folder, phases=PHASES[:-1])
     if result.get('status') == 'blocked':
         result |= {'head_sha': head, 'base_sha': base, 'pr_url': record['pr_url'], 'total_files': len(expected)}
         return publish_result(gh, pr_context['number'], record.get('round_id') or folder.name, folder, result,

@@ -431,7 +431,10 @@ sys.exit(1)
         batch, _ = self.bootstrap()
         batch['selection'] = {'provider': 'codex', 'model': 'fixture'}
         folder = self.root / 'codex-error'
+        real_run = subprocess.run
         def failed(argv, **kwargs):
+            if len(argv) > 1 and str(argv[1]).endswith('read-workflow.mjs'):
+                return real_run(argv, **kwargs)
             kwargs['stdout'].write(json.dumps({'type': 'turn.failed', 'error': {
                 'message': 'You’ve hit your usage limit. Try again later.'}}) + '\n')
             kwargs['stderr'].write('model list request timed out')

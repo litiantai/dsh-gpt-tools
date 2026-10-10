@@ -1,0 +1,20 @@
+version: 1
+role: acceptance
+steps:
+  - id: scope
+    title: 区分方案审查、发布前候选验收与发布后复验
+    kind: instruction
+  - id: quality
+    title: 成果验收核对控制器质量回执；方案审查不要求尚未实施的测试
+    kind: quality
+    actions: [acceptance, acceptance_review]
+  - id: acceptance
+    title: 逐项核对原需求与实际效果，不能以健康检查代替业务验收
+    kind: instruction
+profiles:
+  generic: dsh-role-verification/profiles/generic.yaml
+  node: dsh-role-verification/profiles/node.yaml
+  python: dsh-role-verification/profiles/python.yaml
+  java: dsh-role-verification/profiles/java.yaml
+  react: dsh-role-verification/profiles/react.yaml
+  vue: dsh-role-verification/profiles/vue.yaml

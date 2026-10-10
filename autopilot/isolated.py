@@ -28,6 +28,11 @@ def environment(root, port=0, runtime=None):
             'DSH_HOME': str(root/'home/dsh'), 'DSH_SUPERVISOR_STATE': str(root/'state'),
             'PLAYWRIGHT_BROWSERS_PATH': str(Path.home()/'Library/Caches/ms-playwright'),
             'GIT_TERMINAL_PROMPT': '0', 'LANG': 'en_US.UTF-8'}
+    try:
+        from .jvm import environment as jvm_environment
+        env.update(jvm_environment(root))
+    except ValueError:
+        pass
     runtime=_resolve_runtime(runtime)
     if runtime:
         env['DSH_RUNTIME_NODE_MODULES']=str(runtime/'node_modules')
@@ -72,6 +77,22 @@ def command(argv, root, workspace, *, install=False, ports=(), runtime=None):
             Path('/Library'), Path('/opt'), Path('/private/var/db'), Path('/dev'),
             Path.home()/'.nvm/versions', Path.home()/'Library/Caches/ms-playwright']
     read += [Path('/private/etc')]
+    from .jvm import kind
+    if kind(argv):
+        executable = Path(argv[0]) if '/' in argv[0] else Path(shutil.which(argv[0]) or '/nonexistent')
+        if not executable.is_absolute():
+            executable = workspace/executable
+        distribution = executable.resolve().parent.parent
+        if not executable.resolve().is_relative_to(workspace):
+            markers = list((distribution/'lib').glob('gradle-launcher-*.jar')) + list((distribution/'boot').glob('plexus-classworlds-*.jar'))
+            if not markers:
+                raise ValueError('无法核对 JVM 构建工具分发目录，禁止扩大文件读取范围')
+            read.append(distribution)
+    try:
+        from .jvm import java_home
+        read.append(Path(java_home()))
+    except ValueError:
+        pass
     runtime=_resolve_runtime(runtime)
     if runtime:
         read.append(runtime)
@@ -90,6 +111,14 @@ def command(argv, root, workspace, *, install=False, ports=(), runtime=None):
                       '(allow network-bind (local tcp '+json.dumps(address)+'))']
         for blocked in (13081,13083,13084):
             rules.append(f'(deny network-outbound (remote tcp "localhost:{blocked}"))')
+    if kind(argv) == 'gradle':
+        # Gradle's file locks and single-use daemon communicate over loopback,
+        # including when --no-daemon is set. Never expose platform endpoints.
+        for protocol in ('tcp', 'udp'):
+            rules += [f'(allow network-bind (local {protocol} "localhost:*"))',
+                      f'(allow network-outbound (remote {protocol} "localhost:*"))']
+            for blocked in (13081, 13083, 13084):
+                rules.append(f'(deny network-outbound (remote {protocol} "localhost:{blocked}"))')
     profile = root/('install.sb' if install else 'execute.sb')
     profile.write_text('\n'.join(rules)+'\n')
     return ['/usr/bin/sandbox-exec', '-f', str(profile), *argv]

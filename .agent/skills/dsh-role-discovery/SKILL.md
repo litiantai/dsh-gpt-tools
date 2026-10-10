@@ -16,3 +16,7 @@ metadata:
 - [codex_executor-discovery-3](references/codex_executor-discovery-3.md)：由平台按对应阶段选择加载。
 - [codex_executor-discovery-2](references/codex_executor-discovery-2.md)：由平台按对应阶段选择加载。
 - [codex_executor-discovery-1](references/codex_executor-discovery-1.md)：由平台按对应阶段选择加载。
+
+## 角色工作流
+
+- [有序工作流](workflow.yaml)：平台加载并保存快照；命令检查必须使用控制器生成的当前源码回执。

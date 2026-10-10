@@ -17,3 +17,7 @@ metadata:
 - [plan](references/plan.md)：对应阶段或环境必读规则。
 - [develop](references/develop.md)：对应阶段或环境必读规则。
 - [repair 输出契约](schemas/repair.json)：交付评审或修复专用输出字段。
+
+## 角色工作流
+
+- [有序工作流](workflow.yaml)：平台加载并保存快照；命令检查必须使用控制器生成的当前源码回执。

@@ -67,6 +67,50 @@ python3 -B scripts/autopilot.py migrate-records
 `dsh-gpt-tools` 使用独立版本目录运行，稳定更新器位于状态目录的 `platform/updater`，不会随普通候选版本覆盖。首次用 `scripts/install-platform.py --state-dir … --manifest …` 准备已验证基线与用户级服务。后续更新经 Git 交付、候选校验后排队；独立更新器停止派发、等待执行进程退出、备份数据库、切换版本、检查 API 与调度心跳，并完成健康观察。只允许向后兼容的数据迁移；失败回滚代码并保留新增历史，不用旧数据库覆盖新记录。更新日志保存于 `autopilot/updates`。
 
 
+## 角色工作流与语言质量门禁
+
+需求发现、开发、独立验证、代码评审、验收五类角色在 `skills/dsh-role-*/workflow.yaml` 声明内部有序步骤。`SKILL.md` 保留角色职责；共享语言标准位于 `skills/dsh-role-verification/profiles/`。总览图、主阶段及返修机制不变，记录详情展示实际工作流和检查结果。“已提交，待核对”是模型声明，只有控制器命令回执可以表示质量检查通过。
+
+工作流版本为 1，步骤包含 `id`、`title`、`kind`（instruction / runtime / quality），可用 `actions` 与 `stacks` 限定适用范围，用 `rules` 引用 skills 根目录内的规则文件。`profiles` 将技术栈映射到共享标准；标准中的 `phases` 指定命令名称与 `required`（always / configured）。顺序固定为 install → compile → typecheck → build → test → browser。Java 必需 compile/test；React、Vue 必需 build/test；其他栈沿用项目已配置命令。平台保存规则、跨角色引用、输出契约和内容摘要；已建立的调用继续使用原快照，配置错误明确阻塞。
+
+`.autopilot.json` 新增可选的 `compile`、`typecheck` 命令及 `stack`、`modules`。命令仍为参数数组列表；模块使用独立的命令和相对目录，不继承根目录命令。存在 modules 时，根命令作为通用聚合检查；服务启动仍使用项目根目录的唯一 start/test_start（多服务项目应声明自己的组合启动入口）。支持 generic、node、python、java、react、vue；缺少 stack 时从模块源码识别。
+
+新扫描登记 `workflow_version: 1`，成果验收必须具有完整控制器回执。旧调用和未配置工作流的角色保持兼容；已有通用项目下一次运行验证会生成质量回执。回执绑定提交、源码摘要、配置、工作流、命令、退出码与日志摘要。重复核对相同回执无需重新执行；源码、配置、日志或回执变化后不可复用。代码评审先运行安装、编译、类型检查、构建和测试，完整运行验证随后执行服务和浏览器验收。
+
+单模块 Maven 示例（项目自行提供可用 JDK、Maven 和明确的依赖来源）：
+
+```json
+{
+  "version": 1,
+  "workflow_version": 1,
+  "stack": "java",
+  "install_policy": "jvm-resolve",
+  "commands": {
+    "install": [["mvn", "dependency:go-offline"]],
+    "compile": [["mvn", "compile"]],
+    "test": [["mvn", "test"]],
+    "start": [["java", "-jar", "target/app.jar", "--server.port={port}"]],
+    "build": [["mvn", "package", "-DskipTests"]]
+  }
+}
+```
+
+JVM 安装策略 `jvm-resolve` 显式允许依赖解析阶段执行 Maven 插件或 Gradle 构建脚本；隔离执行阶段强制离线，缓存保存在本次控制器执行目录。Maven 安装只接受 `dependency:go-offline`；Gradle 安装只接受项目自定义的 `autopilotResolveDependencies`，该任务应解析所有后续检查所需的可解析配置，例如：
+
+```groovy
+tasks.register('autopilotResolveDependencies') {
+    doLast {
+        allprojects.each { p ->
+            p.configurations.findAll { it.canBeResolved }.each { it.resolve() }
+        }
+    }
+}
+```
+
+Gradle 对应命令为 `["gradle", "autopilotResolveDependencies"]`、`["gradle", "classes"]`、`["gradle", "test"]`。只使用本机已安装的 Maven/Gradle；wrapper 可能下载工具链，因此提示配置本机工具路径，不自动执行下载。控制器设置独立 Maven/Gradle 缓存与 JAVA_HOME，并禁用 Gradle 自动下载 JDK；缺少 JDK 或构建工具时提示安装所需版本、设置 JAVA_HOME/PATH 或配置绝对路径，不自动下载运行时；缺少离线依赖或启动入口记录阻塞，编译与测试断言错误记录失败。隔离后端仍仅支持 macOS。
+
+混合模块可在相同配置中声明 `modules: [{"id":"backend","path":"backend","stack":"java","commands":{...},"install_policy":"jvm-resolve"},{"id":"frontend","path":"frontend","stack":"react","commands":{...}}]`。所有模块先完成编译再进入测试，任一必需步骤失败即停止。Watch 仅检查运行身份、健康、只读业务信号并生成需求线索，不执行源码编译。Spring Boot JavaDoc 标准在共享 Java 规则中定义，只审查本次新增或修改的相关代码。
+
 ## 持续研发与项目链路概览
 
 首页 `/autopilot` 以项目为单位展示巡检信号、需求池、任务规划、方案评审、开发、测试、验收、待发布及上线观察，并展示返修与异常回路。支持节点明细、项目切换、画布拖动、缩放与全屏。原有会话、审查和日志按源码目录及受管任务工作区关联到项目；原监工总览保留在 `/supervisor`。
@@ -465,3 +509,11 @@ python3 scripts/test-computer-use-smoke.py --model <可用的 Codex 模型> --ou
 项目 API：`GET /api/products/{id}/coordinator` 查询状态与最近决定；`POST .../coordinator/settings` 提交 `{version, config:{enabled, model}}`；`POST .../coordinator/evaluate` 提交 `{version}`。写操作沿用 Cookie、CSRF 与 operation_id；过期版本或暂停项目会拒绝执行。
 
 回归入口：`python3 -B -m unittest discover -s tests -p 'test_coordinator.py'`、`test_role_skills.py`，以及 `npx playwright test tests/browser/coordinator.spec.ts`。测试使用隔离状态和可控模型结果，不向真实任务派发修复。
+
+### 项目技术栈与本机安装检测
+
+仓库获取完成后，接入扫描先读取 Maven/Gradle、package.json 等清单，识别 Java、React、Vue、Node.js、Python 与混合模块，并保存识别依据。`.autopilot.json` 的 `stack` / `modules` 继续决定工作流选择；识别模块不会擅自生成 Java 构建命令。
+
+在“仓库接入与启动扫描 → 扫描详情”或“项目设置 → 接入环境”点击“检测本机运行时”，可查看 JDK（java/javac）、Maven/Gradle、Node.js 及包管理器的版本、实际路径和安装提示。检测针对管理服务所在电脑，执行固定版本命令，不运行项目构建、不自动下载工具链。安装后点击“重新检测本机运行时”；修改 PATH / JAVA_HOME 后需确保管理服务也能读取新环境（必要时重启服务）。工具可运行只代表安装检测通过，项目仍需重新扫描并通过原有编译、测试及验收。
+
+只读识别接口为 `GET /api/products/:id/environment`、`GET /api/scans/:id/environment`；手动检测为对应的 `POST .../runtime-check`，复用现有认证及 CSRF。检测不会改写项目配置或历史扫描的验收结论。

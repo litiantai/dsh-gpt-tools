@@ -16,3 +16,7 @@ metadata:
 - [delivery_review-code-review-2](references/delivery_review-code-review-2.md)：由平台按对应阶段选择加载。
 - [delivery_review-code-review-1](references/delivery_review-code-review-1.md)：由平台按对应阶段选择加载。
 - [review 输出契约](schemas/review.json)：交付评审或修复专用输出字段。
+
+## 角色工作流
+
+- [有序工作流](workflow.yaml)：平台加载并保存快照；命令检查必须使用控制器生成的当前源码回执。
