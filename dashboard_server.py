@@ -212,6 +212,9 @@ class Dashboard:
         return sorted(current + result, key=lambda r: r["created"], reverse=True)[:500]
 
     def get(self, path):
+        if path == "/platform-update":
+            from autopilot.platform_update import status
+            return status(self.store.state)
         if path == "/runtime-identity":
             marker = ROOT / "autopilot-release.json"
             return json.loads(marker.read_text()) if marker.exists() else {"product_id": None, "commit": None, "release_id": None}
@@ -367,6 +370,9 @@ class Dashboard:
         raise KeyError("接口不存在")
 
     def mutate(self, path, body):
+        if path == "/platform-update/release":
+            from autopilot.platform_update import request_release
+            return request_release(self.store.state, body)
         if self.autopilot.handles(path):
             return self.autopilot.mutate(path, body)
         if path.startswith("/reviewers/") and path.endswith("/models/refresh"):
@@ -549,7 +555,7 @@ class Dashboard:
         raise KeyError("接口不存在")
 
     def operation(self, path, body):
-        if (self.store.state/'autopilot/update-drain.json').exists() and path not in ('/service/stop',) and not path.endswith(('/cancel','/pause','/stop')):
+        if (self.store.state/'autopilot/update-drain.json').exists() and path not in ('/service/stop', '/platform-update/release') and not path.endswith(('/cancel','/pause','/stop')):
             raise Conflict('平台正在更新，暂缓新写入与任务派发')
         oid = body.get("operation_id", "")
         uuid.UUID(oid)

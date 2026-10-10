@@ -158,8 +158,17 @@ def step(config, path):
         if job['status'] == 'observing':
             if not healthy(config, manifest):
                 raise ValueError('新版本健康观察失败')
-            if time.time()-job['healthy_since'] >= config.get('observation_seconds', 1800):
-                save(status='completed', completed_at=time.time(), reason='版本切换与健康观察通过', resumed=True)
+            request_path = auto/'update-requests'/path.name
+            request = json.loads(request_path.read_text()) if request_path.exists() else {}
+            manual = (request.get('status') == 'queued' and request.get('job_id') == path.stem
+                      and request.get('expected_commit') == manifest['commit'])
+            if manual or time.time()-job['healthy_since'] >= config.get('observation_seconds', 1800):
+                audit = {'manual_observation_release': request | {'health_verified': True,
+                         'observed_seconds': time.time()-job['healthy_since']}} if manual else {}
+                save(status='completed', completed_at=time.time(), resumed=True, **audit,
+                     reason='服务、数据库和调度心跳健康；用户手动结束观察' if manual else '版本切换与健康观察通过')
+                if manual:
+                    atomic(request_path, request | {'status': 'completed', 'completed_at': time.time()})
                 drain.unlink(missing_ok=True)
     except Exception as exc:
         reason = str(exc)
