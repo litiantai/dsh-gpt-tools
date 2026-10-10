@@ -26,3 +26,6 @@ metadata:
 - [截图决策](schemas/computer_step.json)：computer_step 阶段的受限浏览器动作与观测契约。
 - [local-testing](references/local-testing.md)：对应阶段或环境必读规则。
 - [image-evidence](references/image-evidence.md)：对应阶段或环境必读规则。
+
+- [控制器差异证据](references/controller-diff.md)：使用已核实的 Git 差异完成候选验收。
+- [差异证据复核](references/controller-diff-retry.md)：相同证据的单次纠正性复核。

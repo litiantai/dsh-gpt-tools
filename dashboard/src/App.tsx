@@ -100,7 +100,7 @@ export default function Shell() {
           </div>
         </header>
         <main>
-          <PlatformUpdate />
+          {!pureChat && <PlatformUpdate />}
           <Routes>
             <Route path="/autopilot" element={<AutopilotPage />} />
             <Route path="/" element={<Navigate to="/autopilot" replace />} />

@@ -10,13 +10,13 @@ import unittest
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
-sys.path[:0]=[str(ROOT), str(ROOT/'dsh-gpt-supervisor/scripts')]
+sys.path[:0]=[str(ROOT), str(ROOT/'dsh-gpt-supervisor/scripts'), str(ROOT/'tests')]
 from review_core import Store, Conflict
 from autopilot.api import Control
 from autopilot.scheduler import Scheduler
 from autopilot.project import migrate, manifest_hash
 from autopilot.onboarding import detect, execute, startup, verify, onboard
-from autopilot.workspace import git, snapshot
+from autopilot.workspace import git, snapshot, digest
 from autopilot.isolated import command, environment, independent_runtime, run
 from autopilot.probes import validate
 
@@ -133,6 +133,56 @@ class GenericTests(unittest.TestCase):
         self.assertEqual(self.ledger.get('scans',scan['id'])['reason'],'missing dependencies')
         self.assertNotIn('project_config',self.ledger.get('products',self.p['id']))
 
+    def test_scan_compatible_enforces_protocol_version_kind_and_verify(self):
+        from autopilot.project import scan_compatible, SUPPORTED_ADAPTER_VERSION
+        self.assertEqual(SUPPORTED_ADAPTER_VERSION, 1)
+        compatible={'adapter_spec':{'version':1,'kind':'command','capabilities':['probe','verify']}}
+        self.assertTrue(scan_compatible(compatible))
+        for label,spec in (
+            ('future-version',{'version':2,'kind':'command','capabilities':['verify']}),
+            ('legacy-kind',{'version':1,'kind':'legacy','capabilities':['verify']}),
+            ('missing-verify',{'version':1,'kind':'command','capabilities':['probe','inspect']}),
+            ('missing-capabilities',{'version':1,'kind':'command'}),
+            ('non-list-capabilities',{'version':1,'kind':'command','capabilities':'verify'}),
+            ('missing-version',{'kind':'command','capabilities':['verify']}),
+        ):
+            self.assertFalse(scan_compatible({'adapter_spec':spec}),label)
+        self.assertFalse(scan_compatible({}))
+        self.assertFalse(scan_compatible({'adapter_spec':None}))
+
+    def test_scan_creation_rejects_incompatible_linked_project(self):
+        """服务端扫描入口必须与前端同规则拦截版本/类型/能力错配的项目。"""
+        for label,spec in (
+            ('version-2',{'version':2,'kind':'command','capabilities':['verify']}),
+            ('legacy',{'version':1,'kind':'legacy','capabilities':[]}),
+            ('no-verify',{'version':1,'kind':'command','capabilities':['probe']}),
+        ):
+            product=self.ledger.create('products',{'name':label,'source':str(self.repo),'goal':'fixture','adapter_spec':spec},'paused')
+            with self.assertRaises(ValueError) as rejected:
+                self.control.mutate('/scans',{'source':str(self.repo),'product_id':product['id']})
+            self.assertIn('协议版本必须为 1',str(rejected.exception))
+        # 不带 product_id 的首次接入不校验既有项目能力，保持可用。
+        fresh=self.control.mutate('/scans',{'source':str(self.repo)})
+        self.assertEqual(fresh['status'],'queued')
+        # 同仓库扫描完成后才允许再次接入；能力校验不绕过执行中去重。
+        self.ledger.update('scans',fresh['id'],fresh['version'],{},'pass')
+        # 未声明 adapter_spec 的旧记录与前端预检一致，不因本次收紧被误拦。
+        bare=self.ledger.create('products',{'name':'bare','source':str(self.repo),'goal':'fixture'},'paused')
+        linked=self.control.mutate('/scans',{'source':str(self.repo),'product_id':bare['id']})
+        self.assertEqual(linked['product_id'],bare['id'])
+
+    def test_apply_rejects_legacy_and_incompatible_projects(self):
+        scan=self.control.mutate('/scans',{'source':str(self.repo)})
+        scan=self.ledger.update('scans',scan['id'],scan['version'],{'result':{'configuration':detect(self.repo),'workspace':str(self.repo),'snapshot_commit':git(self.repo,'rev-parse','HEAD')}},'pass')
+        for label,spec in (
+            ('legacy',{'version':1,'kind':'legacy','capabilities':[]}),
+            ('version-2',{'version':2,'kind':'command','capabilities':['verify']}),
+            ('no-verify',{'version':1,'kind':'command','capabilities':['probe']}),
+        ):
+            product=self.ledger.create('products',{'name':label,'source':str(self.repo),'goal':'fixture','adapter_spec':spec},'paused')
+            with self.assertRaises(Conflict):
+                self.control.mutate('/scans/'+scan['id']+'/apply',{'version':scan['version'],'product_id':product['id'],'product_version':product['version']})
+
     def test_onboard_persists_project_link_and_rejects_cross_project_apply(self):
         scan=self.control.mutate('/scans',{'source':str(self.repo)})
         scan=self.ledger.update('scans',scan['id'],scan['version'],{'result':{'configuration':detect(self.repo),'workspace':str(self.repo),'snapshot_commit':git(self.repo,'rev-parse','HEAD')}},'pass')
@@ -157,17 +207,681 @@ class GenericTests(unittest.TestCase):
         result=model('plan',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
         self.assertEqual(result['provider'],'codex');self.assertEqual(result['plan'],'implement')
 
+    def worktree_fixture(self):
+        """真实 bare repo + `git worktree add`：checkout 与 git 元数据分离。"""
+        private=self.root/'private';private.mkdir()
+        bare=private/'repository.git'
+        git(private,'init','--bare',str(bare))
+        seed=self.root/'seed';seed.mkdir()
+        git(seed,'init');git(seed,'config','user.name','Test');git(seed,'config','user.email','test@localhost')
+        (seed/'app.py').write_text('base\n')
+        git(seed,'add','.');git(seed,'commit','-m','fixture')
+        base=git(seed,'rev-parse','HEAD')
+        git(seed,'remote','add','origin',str(bare));git(seed,'push','origin','HEAD:refs/heads/main')
+        workspace=private/'linked'
+        git(bare,'worktree','add','-b','release',str(workspace),base)
+        git(workspace,'config','user.name','Test');git(workspace,'config','user.email','test@localhost')
+        (workspace/'app.py').write_text('base\nchange\n')
+        git(workspace,'add','.');git(workspace,'commit','-m','change the app')
+        return workspace,bare,base,git(workspace,'rev-parse','HEAD')
+
     def test_generic_codex_uses_outer_sandbox_for_tool_execution(self):
         from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
         fake=self.root/'codex-model'
         fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\nassert sys.argv[sys.argv.index("--sandbox")+1]=="danger-full-access"\nPath(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","plan":"outer policy"}))\n')
         fake.chmod(0o700)
-        product=self.p|{'repository':str(self.repo),'agents':{'implementation':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        product=self.p|{'repository':str(workspace),'agents':{'implementation':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
         with patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv) as sandbox:
-            result=model('plan',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
+            result=model('plan',{'product':product,'record':{'workspace':str(workspace)},'state_root':str(self.store.state/'autopilot')})
         self.assertEqual(result['status'],'pass')
         self.assertTrue(sandbox.call_args.kwargs['deny_local'])
-        self.assertNotIn(str(self.repo),[str(p) for p in sandbox.call_args.args[1]])
+        self.assertNotIn(str(Path(workspace).resolve()),[str(Path(p).resolve()) for p in sandbox.call_args.args[1]])
+        # The worktree metadata (HEAD/index/commondir/objects) must be readable for
+        # base..head diffing, while staying outside the write set.
+        read_allowed=[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['read_allowed']]
+        self.assertIn(str((bare/'worktrees'/'linked').resolve()),read_allowed)
+        self.assertIn(str(bare.resolve()),read_allowed)
+        self.assertIn(str(Path(workspace).resolve()),[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['readonly_roots']])
+
+    def test_validate_sandbox_reads_worktree_git_metadata_without_write(self):
+        from autopilot.codex_executor import execute as model
+        from autopilot.workspace import metadata
+        workspace,bare,base,head=self.worktree_fixture()
+        git_dir,common=metadata(workspace)
+        # A relative `--git-common-dir` must resolve to the private bare root, while
+        # HEAD/index/commondir stay in the linked worktree git dir.
+        self.assertEqual(Path(git_dir),(bare/'worktrees'/'linked').resolve())
+        self.assertEqual(Path(common),bare.resolve())
+        fake=self.root/'codex-validate'
+        fake.write_text('#!'+sys.executable+'\nimport os,sys,json\nfrom pathlib import Path\nassert os.environ.get("GIT_CONFIG_GLOBAL")=="/dev/null"\nassert os.environ.get("GIT_CONFIG_NOSYSTEM")=="1"\nPath(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"validated"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        with patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv) as sandbox:
+            result=model('validate',{'product':product,'record':{'id':'round','workspace':str(workspace),'base_commit':base,'commit':head},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        writable=[str(Path(p).resolve()) for p in sandbox.call_args.args[1]]
+        read_allowed=[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['read_allowed']]
+        readonly=[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['readonly_roots']]
+        self.assertIn(str(Path(git_dir).resolve()),read_allowed)
+        self.assertIn(str(Path(common).resolve()),read_allowed)
+        self.assertNotIn(str(Path(workspace).resolve()),writable)
+        self.assertIn(str(Path(workspace).resolve()),readonly)
+        self.assertIn(str(Path(git_dir).resolve()),readonly)
+        # 裸仓库 config 必须可读（供 --git-dir 差异回退），且绝不进入可写集合。
+        self.assertIn(str((bare/'config').resolve()),read_allowed)
+        self.assertNotIn(str((bare/'config').resolve()),writable)
+        # The controller writes the real base..commit evidence into the readable
+        # execution directory instead of making the verifier read git metadata.
+        root=Path(result['evidence'])
+        text=(root/'verification-diff.patch').read_text()
+        facts=json.loads((root/'verification-facts.json').read_text())
+        self.assertIn('+change',text)
+        self.assertEqual((facts['base_commit'],facts['commit'],facts['merge_base']),(base,head,base))
+        self.assertEqual([line.split('\t')[-1] for line in facts['changed']],['app.py'])
+
+    def test_validate_inlines_controller_diff_without_git_metadata_access(self):
+        """验证者只读控制器内联的差异即可判断，不再依赖 checkout 外的 git 元数据。"""
+        from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
+        fake=self.root/'codex-evidence-only'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'assert "verification-diff.patch" in prompt\n'
+            'assert "+change" in prompt\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"used controller diff only"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        with patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv):
+            result=model('validate',{'product':product,'record':{'workspace':str(workspace),'base_commit':base,'commit':head},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        root=Path(result['evidence'])
+        self.assertTrue((root/'verification-diff.patch').is_file())
+        self.assertTrue((root/'verification-facts.json').is_file())
+
+    def test_validate_falls_back_to_bare_repository_when_worktree_metadata_unreadable(self):
+        """checkout 的 Git 元数据不可读时，显式下发的 bare 仓库仍能生成 base..commit 差异。"""
+        from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
+        # 移走 worktree 指针，使 `git -C workspace` 无法解析；只有 bare 仓库可用。
+        (workspace/'.git').rename(self.root/'displaced-worktree-git')
+        fake=self.root/'codex-bare-fallback'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'assert "+change" in prompt\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"bare repository diff"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        record={'id':'round','workspace':str(workspace),'base_commit':base,'commit':head,
+                'repository':str(bare),'git_dir':str(bare)}
+        with patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv):
+            result=model('validate',{'product':product,'record':record,'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        root=Path(result['evidence'])
+        facts=json.loads((root/'verification-facts.json').read_text())
+        self.assertEqual(facts['source'],'repository')
+        self.assertEqual((facts['base_commit'],facts['commit'],facts['merge_base']),(base,head,base))
+        self.assertEqual([line.split('\t')[-1] for line in facts['changed']],['app.py'])
+        self.assertIn('+change',(root/'verification-diff.patch').read_text())
+
+    def test_validate_passes_with_controller_evidence_when_git_metadata_unreadable(self):
+        """git 元数据解析失败不得阻断：以内联/落盘差异证据为准仍能 pass。"""
+        from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
+        fake=self.root/'codex-metadata-failure'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'assert "verification-diff.patch" in prompt\n'
+            'assert "+change" in prompt\n'
+            'assert "权威" in prompt and "EPERM" in prompt\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"controller evidence only"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        record={'id':'round','workspace':str(workspace),'base_commit':base,'commit':head,
+                'repository':str(bare),'git_dir':str(bare)}
+        with patch('autopilot.workspace.metadata_paths',side_effect=OSError('metadata denied')), \
+             patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv) as sandbox:
+            result=model('validate',{'product':product,'record':record,'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        root=Path(result['evidence'])
+        read_allowed=[str(Path(p).resolve()) for p in sandbox.call_args.kwargs['read_allowed']]
+        self.assertIn(str((root/'verification-diff.patch').resolve()),read_allowed)
+        self.assertIn(str((root/'verification-facts.json').resolve()),read_allowed)
+        self.assertTrue((root/'verification-diff.patch').is_file())
+        self.assertTrue((root/'verification-facts.json').is_file())
+        self.assertIn('verification_note',result)
+        self.assertEqual(result['verification_source'],'repository')
+
+    def test_delivery_verify_embeds_self_contained_diff_evidence(self):
+        """交付复验把差异事实落盘到证据目录，并写入独立验证检查与 verification.json。"""
+        import hashlib as _hashlib
+        from autopilot.delivery_review import verify
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        base=git(self.repo,'rev-parse','HEAD')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        head=git(self.repo,'rev-parse','HEAD')
+        baseline=digest(self.repo)
+        adapter=self.root/'fake-verify-adapter'
+        adapter.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'payload=json.load(sys.stdin)\n'
+            'material=payload["verification"]\n'
+            'requirement=payload["requirement"]\n'
+            'assert material["diff_file"] and material["facts_file"]\n'
+            'assert "+change" in Path(material["diff_file"]).read_text()\n'
+            'assert material["baseline_acceptance"] is True\n'
+            'assert material["acceptance_checks"]==["generic-projects"]\n'
+            'assert material["source_digest"]=='+repr(baseline)+'\n'
+            'assert material["baseline_source_digest"]=='+repr(baseline)+'\n'
+            'assert material["baseline_digest_verified"] is True\n'
+            'assert requirement["acceptance"] and '+repr(baseline)+' in requirement["acceptance"][0]\n'
+            'assert requirement["resolution_probes"]==[{"path":"check:generic-projects",'
+            '"pointer":"/status","operator":"equals","expected":"pass"}]\n'
+            'print(json.dumps({"status":"pass","checks":['
+            '{"name":"install-0","status":"pass","required":True},'
+            '{"name":"独立业务验证","status":"pass","required":True,"evidence":{"provider":"codex"}}]}))\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
+            'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
+        folder=self.root/'verification-evidence';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':baseline},'requirements':[]},
+                      self.repo,head,base,folder)
+        self.assertEqual(result['status'],'pass',result)
+        facts=json.loads((folder/'verification-facts.json').read_text())
+        self.assertEqual(facts['merge_base'],base)
+        self.assertEqual(facts['source_digest'],baseline)
+        self.assertEqual(facts['baseline_source_digest'],baseline)
+        self.assertTrue(facts['baseline_digest_verified'])
+        check=next(c for c in result['checks'] if c['name']=='独立业务验证')
+        self.assertEqual(check['evidence']['merge_base'],base)
+        self.assertEqual(check['evidence']['diff_sha256'],
+                         _hashlib.sha256((folder/'verification-diff.patch').read_bytes()).hexdigest())
+        self.assertEqual(check['evidence']['changed_files'],['M\tapp.py'])
+        written=json.loads((folder/'verification.json').read_text())
+        self.assertEqual(written['verification']['merge_base'],base)
+        self.assertTrue(written['verification']['baseline_acceptance'])
+        self.assertEqual(written['verification']['acceptance_checks'],['generic-projects'])
+        self.assertEqual(written['verification']['source_digest'],baseline)
+        self.assertEqual(written['verification']['baseline_source_digest'],baseline)
+        self.assertTrue(written['verification']['baseline_digest_verified'])
+        self.assertNotIn('diff',written['verification'])
+
+    def test_delivery_verify_rejects_empty_acceptance_without_traceable_source(self):
+        """无业务需求、无导入摘要、无已登记检查时必须 fail-fast，不伪造通过。"""
+        from autopilot.delivery_review import verify
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        base=git(self.repo,'rev-parse','HEAD')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        head=git(self.repo,'rev-parse','HEAD')
+        marker=self.root/'verify-ran-without-acceptance'
+        adapter=self.root/'fake-verify-adapter-empty'
+        adapter.write_text('#!'+sys.executable+'\nfrom pathlib import Path\n'
+            'Path('+repr(str(marker))+').write_text("ran")\nprint("{}")\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},'acceptance_checks':{}}}
+        folder=self.root/'verification-empty';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture'},'requirements':[]},
+                      self.repo,head,base,folder)
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertFalse(marker.exists())
+        written=json.loads((folder/'verification.json').read_text())
+        self.assertEqual(written['status'],'blocked')
+
+    def test_delivery_verify_derives_workspace_baseline_when_digest_absent(self):
+        """无导入基线摘要但有已登记 acceptance_checks 时，用真实工作区摘要生成基线验收。"""
+        from autopilot.delivery_review import verify
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        base=git(self.repo,'rev-parse','HEAD')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        head=git(self.repo,'rev-parse','HEAD')
+        current=digest(self.repo)
+        adapter=self.root/'fake-verify-derived-baseline'
+        adapter.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'payload=json.load(sys.stdin)\n'
+            'material=payload["verification"]\n'
+            'requirement=payload["requirement"]\n'
+            'assert material["diff_file"] and material["facts_file"]\n'
+            'assert material["baseline_acceptance"] is True\n'
+            'assert material["baseline_source_digest"]=='+repr(current)+'\n'
+            'assert material["baseline_digest_verified"] is True\n'
+            'assert material["acceptance_checks"]==["generic-projects"]\n'
+            'assert requirement["acceptance"] and '+repr(current)+' in requirement["acceptance"][0]\n'
+            'print(json.dumps({"status":"pass","checks":['
+            '{"name":"独立业务验证","status":"pass","required":True}]}))\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
+            'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
+        folder=self.root/'verification-derived';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture'},'requirements':[]},
+                      self.repo,head,base,folder)
+        self.assertEqual(result['status'],'pass',result)
+        facts=json.loads((folder/'verification-facts.json').read_text())
+        self.assertEqual(facts['baseline_source_digest'],current)
+        self.assertEqual(facts['source_digest'],current)
+        self.assertTrue(facts['baseline_digest_verified'])
+        written=json.loads((folder/'verification.json').read_text())
+        self.assertTrue(written['verification']['baseline_acceptance'])
+        self.assertEqual(written['verification']['acceptance_checks'],['generic-projects'])
+
+    def test_validate_without_base_or_commit_is_blocked(self):
+        """缺少 base..commit 且无控制器差异时，独立验证必须明确 blocked，不空转模型。"""
+        from autopilot.codex_executor import execute as model
+        product=self.p|{'repository':str(self.repo),'agents':{'verification':{'provider':'codex','model':'fixture','bin':'codex'}},'adapter_spec':{'kind':'command'}}
+        result=model('validate',{'product':product,'record':{'id':'round','workspace':str(self.repo)},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertIn('base_commit',result['reason'])
+
+    def test_delivery_verify_fails_fast_when_diff_evidence_missing(self):
+        """差异证据无法生成时不得在无证据情况下启动验证模型。"""
+        from autopilot.delivery_review import verify
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        baseline=digest(self.repo)
+        marker=self.root/'verify-ran-without-diff'
+        adapter=self.root/'fake-verify-adapter-nodiff'
+        adapter.write_text('#!'+sys.executable+'\nfrom pathlib import Path\n'
+            'Path('+repr(str(marker))+').write_text("ran")\nprint("{}")\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
+            'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
+        folder=self.root/'verification-nodiff';folder.mkdir()
+        # 摘要一致，但 base..commit 无法解析，差异证据生成失败：必须 fail-fast。
+        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':baseline},'requirements':[]},
+                      self.repo,'a'*40,'b'*40,folder)
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertIn('独立验证缺少自包含差异证据',result['reason'])
+        self.assertFalse(marker.exists())
+        written=json.loads((folder/'verification.json').read_text())
+        self.assertEqual(written['verification']['status'],'blocked')
+
+    def test_delivery_verify_blocks_baseline_digest_mismatch_without_adapter(self):
+        """工作区源码摘要与导入基线不一致时 fail-fast：不启动验证适配器。"""
+        from autopilot.delivery_review import verify
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        base=git(self.repo,'rev-parse','HEAD')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        head=git(self.repo,'rev-parse','HEAD')
+        marker=self.root/'verify-ran-with-baseline-mismatch'
+        adapter=self.root/'fake-verify-adapter-mismatch'
+        adapter.write_text('#!'+sys.executable+'\nfrom pathlib import Path\n'
+            'Path('+repr(str(marker))+').write_text("ran")\nprint("{}")\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
+            'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
+        folder=self.root/'verification-mismatch';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':'0'*64},'requirements':[]},
+                      self.repo,head,base,folder)
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertIn('摘要',result['reason'])
+        self.assertFalse(marker.exists())
+        written=json.loads((folder/'verification.json').read_text())
+        self.assertEqual(written['status'],'blocked')
+        self.assertEqual(written['baseline_source_digest'],'0'*64)
+        self.assertEqual(written['source_digest'],digest(self.repo))
+
+    def test_install_check_retries_network_fault_then_blocks(self):
+        """安装日志出现网络签名时有限退避重试，耗尽后记 blocked 且 reason 可被小时级重试命中。"""
+        from autopilot import onboarding
+        from autopilot.retry import FAULT
+        calls=[]
+        def fake_run(argv,workspace,root,name,**kwargs):
+            calls.append((name,kwargs.get('install')))
+            return {'name':name,'command':argv,'status':'fail','required':True,'exit_code':1,
+                'started':0,'elapsed':0,'log':str(Path(root)/(name+'.log')),
+                'log_tail':'npm error code EIDLETIMEOUT\nnpm error Idle timeout reached for host `cdn.npmmirror.com:443`\n',
+                'reason':'npm error code EIDLETIMEOUT'}
+        with patch('autopilot.onboarding.run',side_effect=fake_run), patch('autopilot.onboarding.time.sleep') as sleep:
+            entry=onboarding.install_check(['npm','ci','--ignore-scripts'],self.repo,self.root/'cache','install-0')
+        self.assertEqual(entry['status'],'blocked',entry)
+        self.assertEqual(entry['name'],'install-0')
+        self.assertEqual(entry['attempts'],onboarding.INSTALL_ATTEMPTS)
+        self.assertEqual(len(calls),onboarding.INSTALL_ATTEMPTS)
+        self.assertTrue(all(install for _,install in calls))
+        self.assertIn('EIDLETIMEOUT',entry['reason'])
+        self.assertIn('cdn.npmmirror.com',entry['reason'])
+        self.assertTrue(FAULT.search(entry['reason']))
+        self.assertTrue(sleep.called)
+
+    def test_install_check_recovers_from_transient_network_fault(self):
+        """一次性网络抖动只需重试即恢复，成功即视为安装通过。"""
+        from autopilot import onboarding
+        calls=[]
+        def fake_run(argv,workspace,root,name,**kwargs):
+            calls.append(name)
+            if len(calls)==1:
+                return {'name':name,'command':argv,'status':'fail','required':True,'exit_code':1,
+                    'started':0,'elapsed':0,'log':str(Path(root)/(name+'.log')),
+                    'log_tail':'npm error code ECONNRESET\nnpm error network request failed','reason':'ECONNRESET'}
+            return {'name':name,'command':argv,'status':'pass','required':True,'exit_code':0,
+                'started':0,'elapsed':0,'log':str(Path(root)/(name+'.log')),'log_tail':'added 10 packages','reason':''}
+        with patch('autopilot.onboarding.run',side_effect=fake_run), patch('autopilot.onboarding.time.sleep'):
+            entry=onboarding.install_check(['npm','ci','--ignore-scripts'],self.repo,self.root/'cache','install-0')
+        self.assertEqual(entry['status'],'pass',entry)
+        self.assertEqual(entry['attempts'],2)
+        self.assertEqual(len(calls),2)
+
+    def test_install_check_keeps_real_failure_as_fail(self):
+        """真实构建/依赖错误不属于基础设施抖动，不得重试也不得改判 blocked。"""
+        from autopilot import onboarding
+        calls=[]
+        def fake_run(argv,workspace,root,name,**kwargs):
+            calls.append(name)
+            return {'name':name,'command':argv,'status':'fail','required':True,'exit_code':1,
+                'started':0,'elapsed':0,'log':str(Path(root)/(name+'.log')),
+                'log_tail':'npm error code ELIFECYCLE\nnpm error command failed','reason':'npm error code ELIFECYCLE'}
+        with patch('autopilot.onboarding.run',side_effect=fake_run), patch('autopilot.onboarding.time.sleep') as sleep:
+            entry=onboarding.install_check(['npm','ci','--ignore-scripts'],self.repo,self.root/'cache','install-0')
+        self.assertEqual(entry['status'],'fail',entry)
+        self.assertEqual(len(calls),1)
+        sleep.assert_not_called()
+
+    def test_install_check_retries_timeout_blocked(self):
+        """安装超时属于基础设施阻塞，需退避重试；耗尽后仍为 blocked 且 reason 可被重试命中。"""
+        from autopilot import onboarding
+        from autopilot.retry import FAULT
+        calls=[]
+        def fake_run(argv,workspace,root,name,**kwargs):
+            calls.append(name)
+            return {'name':name,'command':argv,'status':'blocked','required':True,'exit_code':None,
+                'started':0,'elapsed':0,'log':str(Path(root)/(name+'.log')),'log_tail':'',
+                'reason':"Command 'npm ci' timed out after 900 seconds"}
+        with patch('autopilot.onboarding.run',side_effect=fake_run), patch('autopilot.onboarding.time.sleep'):
+            entry=onboarding.install_check(['npm','ci','--ignore-scripts'],self.repo,self.root/'cache','install-0')
+        self.assertEqual(entry['status'],'blocked',entry)
+        self.assertEqual(len(calls),onboarding.INSTALL_ATTEMPTS)
+        self.assertTrue(FAULT.search(entry['reason']))
+
+    def test_onboarding_verify_reports_install_network_blocked(self):
+        """接入扫描的 install 网络阻塞需带证据上报 blocked，绝不冒充通过。"""
+        config={'commands':{'install':[['npm','ci','--ignore-scripts','--no-audit','--no-fund']]}}
+        blocked={'name':'install-0','command':config['commands']['install'][0],'status':'blocked','required':True,
+            'exit_code':1,'started':0,'elapsed':0,'log':str(self.root/'install-0.log'),'attempts':3,
+            'reason':'依赖安装被外部网络/镜像源阻塞（EIDLETIMEOUT cdn.npmmirror.com），已重试 3 次仍失败，等待自动恢复'}
+        with patch('autopilot.onboarding.install_check',return_value=blocked) as check:
+            result=verify(self.repo,self.root/'exec',config)
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertIn('EIDLETIMEOUT',result['reason'])
+        self.assertEqual(result['checks'][0]['status'],'blocked')
+
+    def test_delivery_verify_preserves_infrastructure_blocked(self):
+        """适配器返回基础设施 blocked 时原样上报并保留可重试 reason，绝不改写为 pass。"""
+        from autopilot.delivery_review import verify
+        from autopilot.retry import FAULT
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        base=git(self.repo,'rev-parse','HEAD')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        head=git(self.repo,'rev-parse','HEAD')
+        baseline=digest(self.repo)
+        adapter=self.root/'fake-verify-adapter-blocked'
+        adapter.write_text('#!'+sys.executable+'\nimport json\n'
+            'print(json.dumps({"status":"blocked",'
+            '"reason":"install 检查被外部依赖/基础设施阻塞：EIDLETIMEOUT cdn.npmmirror.com",'
+            '"checks":[{"name":"install-0","status":"blocked","required":True,'
+            '"reason":"依赖安装被外部网络/镜像源阻塞（EIDLETIMEOUT cdn.npmmirror.com），已重试 3 次仍失败"}]}))\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
+            'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
+        folder=self.root/'verification-blocked';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':baseline},'requirements':[]},
+                      self.repo,head,base,folder)
+        self.assertEqual(result['status'],'blocked',result)
+        self.assertIn('EIDLETIMEOUT',result['reason'])
+        self.assertTrue(FAULT.search(result['reason']))
+        self.assertEqual(result['checks'][0]['status'],'blocked')
+        written=json.loads((folder/'verification.json').read_text())
+        self.assertEqual(written['status'],'blocked')
+
+    def test_delivery_verify_keeps_required_failure_as_fail(self):
+        """真实必需检查失败仍为 fail，不会因分类改动被放宽。"""
+        from autopilot.delivery_review import verify
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        base=git(self.repo,'rev-parse','HEAD')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        head=git(self.repo,'rev-parse','HEAD')
+        baseline=digest(self.repo)
+        adapter=self.root/'fake-verify-adapter-fail'
+        adapter.write_text('#!'+sys.executable+'\nimport json\n'
+            'print(json.dumps({"status":"fail","reason":"交付必需检查未通过",'
+            '"checks":[{"name":"install-0","status":"fail","required":True,"reason":"npm error code ELIFECYCLE"}]}))\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
+            'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
+        folder=self.root/'verification-fail';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':baseline},'requirements':[]},
+                      self.repo,head,base,folder)
+        self.assertEqual(result['status'],'fail',result)
+        self.assertEqual(result['reason'],'交付必需检查未通过')
+
+    def test_delivery_verify_failure_wins_over_required_block(self):
+        """真实必需检查失败优先于基础设施阻塞，不得用 blocked 掩盖源码问题。"""
+        from autopilot.delivery_review import verify
+        (self.repo/'app.py').write_text('base\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','base app')
+        base=git(self.repo,'rev-parse','HEAD')
+        (self.repo/'app.py').write_text('base\nchange\n')
+        git(self.repo,'add','.');git(self.repo,'commit','-qm','change the app')
+        head=git(self.repo,'rev-parse','HEAD')
+        baseline=digest(self.repo)
+        adapter=self.root/'fake-verify-adapter-mixed'
+        adapter.write_text('#!'+sys.executable+'\nimport json\n'
+            'print(json.dumps({"status":"blocked","reason":"install 检查被外部依赖阻塞",'
+            '"checks":[{"name":"install-0","status":"blocked","required":True,"reason":"EIDLETIMEOUT"},'
+            '{"name":"test-0","status":"fail","required":True,"reason":"ELIFECYCLE"}]}))\n')
+        adapter.chmod(0o700)
+        product=self.p|{'adapter':[str(adapter)],'project_config':{'version':1,'commands':{},
+            'acceptance_checks':{'generic-projects':[sys.executable,'-c','pass']}}}
+        folder=self.root/'verification-mixed';folder.mkdir()
+        result=verify({'product':product,'record':{'title':'fixture','baseline_source_digest':baseline},'requirements':[]},
+                      self.repo,head,base,folder)
+        self.assertEqual(result['status'],'fail',result)
+        self.assertEqual(result['reason'],'交付必需检查未通过')
+
+    def test_validate_prompt_includes_truncated_diff_summary(self):
+        """超大差异被截断时，提示词仍给出 merge_base/changed_files/diff_sha256 与落盘指引。"""
+        from autopilot import codex_executor
+        from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
+        fake=self.root/'codex-large-diff'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'assert "diff_sha256=" in prompt\n'
+            'assert "merge_base=" in prompt\n'
+            'assert "改动文件 1 个" in prompt\n'
+            'assert "verification-diff.patch" in prompt\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"large diff summary"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
+        with patch.object(codex_executor,'INLINE_DIFF_LIMIT',8), patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv):
+            result=model('validate',{'product':product,'record':{'workspace':str(workspace),'base_commit':base,'commit':head},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+
+
+    def test_validate_generates_diff_when_adapter_spec_is_missing(self):
+        """缺失 adapter_spec 的产品也必须拿到 base..commit 差异，不再静默跳过。"""
+        from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
+        fake=self.root/'codex-missing-spec'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'assert "verification-diff.patch" in prompt\n'
+            'assert "+change" in prompt\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"generated without adapter kind"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}}}
+        self.assertFalse(product.get('adapter_spec'))
+        result=model('validate',{'product':product,'record':{'id':'round','workspace':str(workspace),'base_commit':base,'commit':head},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        root=Path(result['evidence'])
+        facts=json.loads((root/'verification-facts.json').read_text())
+        self.assertEqual((facts['base_commit'],facts['commit'],facts['merge_base']),(base,head,base))
+        self.assertEqual([line.split('\t')[-1] for line in facts['changed']],['app.py'])
+        self.assertIn('+change',(root/'verification-diff.patch').read_text())
+
+    def test_validate_generates_diff_for_legacy_adapter_spec(self):
+        """显式 legacy kind 同样生成差异证据，验证者只读内联差异即可判断。"""
+        from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
+        fake=self.root/'codex-legacy-spec'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'assert "verification-diff.patch" in prompt and "+change" in prompt\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","summary":"legacy adapter diff"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},
+                        'adapter_spec':{'version':1,'kind':'legacy','capabilities':['verify']}}
+        result=model('validate',{'product':product,'record':{'id':'round','workspace':str(workspace),'base_commit':base,'commit':head},'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        self.assertIn('+change',(Path(result['evidence'])/'verification-diff.patch').read_text())
+
+    def test_generic_verify_prepares_diff_before_starting_verifier(self):
+        """command 适配器 verify 先落盘差异并透传，独立验证不再依赖 git 元数据可读。"""
+        from autopilot.generic_adapter import execute as generic_execute
+        workspace,bare,base,head=self.worktree_fixture()
+        fake=self.root/'codex-adapter-verify'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'assert "verification-diff.patch" in prompt\n'
+            'assert "+change" in prompt\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","reason":"","summary":"verified via controller diff"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},
+                        'adapter_spec':{'version':1,'kind':'legacy','capabilities':['verify']},
+                        'project_config':{'version':1,'commands':{},'web':False}}
+        record={'id':'verify-round','workspace':str(workspace),'base_commit':base,'commit':head}
+        onboarding={'status':'pass','checks':[{'name':'build-0','status':'pass','required':True}]}
+        with patch('autopilot.generic_adapter.verify', return_value=onboarding) as simulate:
+            result=generic_execute('verify',{'product':product,'record':record,'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        simulate.assert_called_once()
+        check=next(c for c in result['checks'] if c['name']=='独立业务验证')
+        self.assertEqual(check['status'],'pass')
+        root=self.store.state/'autopilot/candidates'/product['id']/record['id']
+        facts=json.loads((root/'verification-facts.json').read_text())
+        self.assertEqual((facts['base_commit'],facts['commit'],facts['merge_base']),(base,head,base))
+        self.assertIn('+change',(root/'verification-diff.patch').read_text())
+
+    def test_generic_verify_check_evidence_includes_self_contained_diff(self):
+        """「独立业务验证」的 evidence 必须带可离线核对的自包含差异事实。"""
+        import hashlib as _hashlib
+        from autopilot.generic_adapter import execute as generic_execute
+        workspace,bare,base,head=self.worktree_fixture()
+        fake=self.root/'codex-adapter-evidence'
+        fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","reason":"","summary":"verified via controller diff"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},
+                        'adapter_spec':{'version':1,'kind':'legacy','capabilities':['verify']},
+                        'project_config':{'version':1,'commands':{},'web':False}}
+        record={'id':'evidence-round','workspace':str(workspace),'base_commit':base,'commit':head}
+        onboarding={'status':'pass','checks':[{'name':'build-0','status':'pass','required':True}]}
+        with patch('autopilot.generic_adapter.verify', return_value=onboarding):
+            result=generic_execute('verify',{'product':product,'record':record,'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
+        check=next(c for c in result['checks'] if c['name']=='独立业务验证')
+        evidence=check['evidence']
+        for key in ('diff_file','facts_file','diff_sha256','changed_files','merge_base'):
+            self.assertIn(key,evidence)
+        root=self.store.state/'autopilot/candidates'/product['id']/record['id']
+        patch_file=root/'verification-diff.patch'
+        self.assertTrue(patch_file.is_file())
+        self.assertEqual(evidence['diff_file'],str(patch_file))
+        self.assertEqual(evidence['facts_file'],str(root/'verification-facts.json'))
+        self.assertEqual(evidence['diff_sha256'],_hashlib.sha256(patch_file.read_bytes()).hexdigest())
+        self.assertEqual(evidence['merge_base'],base)
+        self.assertEqual([line.split('\t')[-1] for line in evidence['changed_files']],['app.py'])
+
+    def test_validate_retries_once_when_git_metadata_blocked_with_controller_evidence(self):
+        """控制器证据完整且必需检查通过时，git 元数据 blocked 会被纠正性重试一次。"""
+        from autopilot.codex_executor import execute as model
+        workspace,bare,base,head=self.worktree_fixture()
+        retrying=self.root/'codex-retry'
+        retrying.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'out=Path(sys.argv[sys.argv.index("-o")+1])\n'
+            'if out.exists():\n'
+            '    assert "不得作为 blocked 理由" in prompt\n'
+            '    out.write_text(json.dumps({"status":"pass","reason":"","summary":"retry passed"}))\n'
+            'else:\n'
+            '    out.write_text(json.dumps({"status":"blocked","reason":"git 元数据不可读：Operation not permitted (EPERM)"}))\n')
+        retrying.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(retrying)}},'adapter_spec':{'kind':'command'}}
+        record={'id':'round','workspace':str(workspace),'base_commit':base,'commit':head}
+        checks=[{'name':'build-0','status':'pass','required':True}]
+        with patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv):
+            result=model('validate',{'product':product,'record':record,'state_root':str(self.store.state/'autopilot'),'checks':checks})
+        self.assertEqual(result['status'],'pass',result)
+        self.assertTrue((Path(result['evidence'])/'trace-retry.jsonl').is_file())
+        # 两次都 blocked 时保留 blocked 并记录重试说明，绝不改写成 pass。
+        always=self.root/'codex-always-blocked'
+        always.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"blocked","reason":"git 元数据不可读：Operation not permitted (EPERM)"}))\n')
+        always.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(always)}},'adapter_spec':{'kind':'command'}}
+        with patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv):
+            blocked=model('validate',{'product':product,'record':record,'state_root':str(self.store.state/'autopilot'),'checks':checks})
+        self.assertEqual(blocked['status'],'blocked',blocked)
+        self.assertIn('verification_note',blocked)
+        self.assertIn('重试',blocked['verification_note'])
+        self.assertTrue((Path(blocked['evidence'])/'trace-retry.jsonl').is_file())
+
+    def test_generic_verify_uses_controller_diff_when_worktree_metadata_unreadable(self):
+        """真实沙箱内 git 元数据不可读时，验证者仍能读取控制器落盘差异并 pass。"""
+        if sys.platform!='darwin' or os.environ.get('DSH_PROJECT_ISOLATED'):
+            self.skipTest('实际 Seatbelt 边界测试由外层验证运行，macOS 不允许嵌套沙箱')
+        from autopilot.generic_adapter import execute as generic_execute
+        from autopilot.sandbox import restrict
+        probe=restrict([sys.executable,'-c','pass'],[str(self.root)],self.root/'sandbox-probe.sb',
+                       private_roots=[str(Path.home())],deny_local=True)
+        if subprocess.run(probe,capture_output=True).returncode!=0:
+            self.skipTest('当前宿主不允许嵌套 Seatbelt，真实沙箱回归交由外层运行')
+        # 裸仓库放在 $HOME（沙箱私有根）下，checkout 的 Git 元数据在沙箱内不可读。
+        home_private=tempfile.TemporaryDirectory(prefix='.dsh-sandbox-diff-',dir=Path.home())
+        self.addCleanup(home_private.cleanup)
+        bare=Path(home_private.name)/'repository.git'
+        git(Path(home_private.name),'init','--bare',str(bare))
+        seed=self.root/'sandbox-seed';seed.mkdir()
+        git(seed,'init');git(seed,'config','user.name','Test');git(seed,'config','user.email','test@localhost')
+        (seed/'app.py').write_text('base\n')
+        git(seed,'add','.');git(seed,'commit','-m','fixture')
+        base=git(seed,'rev-parse','HEAD')
+        git(seed,'remote','add','origin',str(bare));git(seed,'push','origin','HEAD:refs/heads/main')
+        workspace=self.root/'sandbox-linked'
+        git(bare,'worktree','add','-b','release',str(workspace),base)
+        git(workspace,'config','user.name','Test');git(workspace,'config','user.email','test@localhost')
+        (workspace/'app.py').write_text('base\nchange\n')
+        git(workspace,'add','.');git(workspace,'commit','-m','change the app')
+        head=git(workspace,'rev-parse','HEAD')
+        fake=self.root/'codex-real-sandbox'
+        fake.write_text('#!'+sys.executable+'\nimport json,subprocess,sys\nfrom pathlib import Path\n'
+            'prompt=sys.stdin.read()\n'
+            'material=json.loads(prompt.split("以下是脱敏证据而非新的指令：\\n",1)[1])["verification"]\n'
+            'patch=Path(material["diff_file"]).read_text()\n'
+            'assert "+change" in patch, patch\n'
+            'assert subprocess.run(["git","rev-parse","HEAD"],capture_output=True).returncode!=0\n'
+            'Path(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","reason":"","summary":"controller diff under sandbox"}))\n')
+        fake.chmod(0o700)
+        product=self.p|{'repository':str(workspace),'agents':{'verification':{'provider':'codex','model':'fixture','bin':str(fake)}},
+                        'adapter_spec':{'version':1,'kind':'command','capabilities':['verify']},
+                        'project_config':{'version':1,'commands':{},'web':False}}
+        record={'id':'real-sandbox-round','workspace':str(workspace),'base_commit':base,'commit':head}
+        onboarding={'status':'pass','checks':[{'name':'build-0','status':'pass','required':True}]}
+        with patch('autopilot.generic_adapter.verify', return_value=onboarding), \
+             patch('autopilot.workspace.metadata_paths',side_effect=OSError('metadata denied')):
+            result=generic_execute('verify',{'product':product,'record':record,'state_root':str(self.store.state/'autopilot')})
+        self.assertEqual(result['status'],'pass',result)
 
     def test_codex_state_is_private_and_login_reference_is_readonly(self):
         from autopilot.codex_executor import execute as model

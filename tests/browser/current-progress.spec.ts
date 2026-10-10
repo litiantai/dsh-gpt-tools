@@ -57,11 +57,12 @@ test('monitoring and open record detail show the active call instead of old fail
   await expect(drawer.getByText('旧失败原因',{exact:true})).toHaveCount(0);
   await drawer.getByRole('button',{name:'详情',exact:true}).click();
   const modal=page.locator('.ant-modal-content');
-  await expect(modal.getByRole('alert')).toContainText('开发实现 · 执行中');
+  const progress=modal.getByRole('tabpanel',{name:'概况与判断'}).getByRole('alert');
+  await expect(progress).toContainText('开发实现 · 执行中');
   run={...run,status:'verifying',call:{id:'verify-new',action:'verify',started:13}};
-  await expect(modal.getByRole('alert')).toContainText('独立验证 · 执行中',{timeout:12000});
+  await expect(progress).toContainText('独立验证 · 执行中',{timeout:12000});
   run={...run,status:'cancelling',reason:'等待验证进程停止'};
-  await expect(modal.getByRole('alert')).toContainText('正在取消 · 等待执行结束',{timeout:12000});
+  await expect(progress).toContainText('正在取消 · 等待执行结束',{timeout:12000});
 });
 
 

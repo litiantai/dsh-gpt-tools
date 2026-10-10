@@ -103,7 +103,8 @@ test('在对话中触发研究并从左抽屉进入设置',async({page})=>{
   await expect(page.getByText('竞品分析模型',{exact:true})).toBeVisible();
   await page.getByRole('switch',{name:'自动研究竞品'}).click();
   await page.getByRole('button',{name:'保存设置',exact:true}).click();
-  await expect(page.getByRole('button',{name:'保存设置',exact:true})).toBeDisabled();
+  await expect(page.getByText('已保存',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:/保存设置$/})).toBeDisabled();
   await page.reload();
   await expect(page.getByRole('switch',{name:'自动研究竞品'})).toBeChecked();
   await navigation.getByRole('tab',{name:'AI 对话',exact:true}).click();
@@ -112,10 +113,23 @@ test('在对话中触发研究并从左抽屉进入设置',async({page})=>{
   await page.getByRole('button',{name:'模型与运行设置',exact:true}).click();
   await page.getByRole('switch',{name:'Agent 异步协作'}).click();
   await page.getByRole('button',{name:'保存设置',exact:true}).click();
-  await expect(page.getByRole('button',{name:'保存设置',exact:true})).toBeDisabled();
+  await expect(page.getByText('已保存',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:/保存设置$/})).toBeDisabled();
   const settings=await (await page.request.get(`/api/products/${project.id}/intelligence/settings`)).json();
   expect(settings.config.research_enabled).toBe(true);
   expect(settings.config.collaboration_enabled).toBe(true);
   await page.goto(`/autopilot?project=${project.id}&view=intelligence&tab=competitors`);
   await expect(page.getByRole('heading',{name:'竞品名单'})).toBeVisible();
+});
+
+
+test('更新提示在手机对话内显示，输入框仍在视口内',async({page})=>{
+  await page.setViewportSize({width:390,height:850});
+  const project=seed('project');
+  await page.route('**/api/platform-update',route=>route.fulfill({json:{active:true,phase:'observing',label:'更新观察中',can_release:false,remaining_seconds:120,impact:'新任务暂缓'}}));
+  await page.goto(`/autopilot?project=${project.id}&view=intelligence`);
+  await expect(page.getByText('更新观察中',{exact:true})).toBeVisible();
+  const box=await page.locator('.dialogue-composer').boundingBox();
+  expect(box!.y+box!.height).toBeLessThanOrEqual(850);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1)).toBeTruthy();
 });

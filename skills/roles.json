@@ -21,5 +21,7 @@
   "plan": "dsh-role-implementation/references/plan.md",
   "develop": "dsh-role-implementation/references/develop.md",
   "local-testing": "dsh-role-verification/references/local-testing.md",
-  "image-evidence": "dsh-role-verification/references/image-evidence.md"
+  "image-evidence": "dsh-role-verification/references/image-evidence.md",
+  "controller-diff": "dsh-role-verification/references/controller-diff.md",
+  "controller-diff-retry": "dsh-role-verification/references/controller-diff-retry.md"
 }

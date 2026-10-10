@@ -75,3 +75,6 @@
  .dialogue-drawer .ant-drawer-content-wrapper{max-width:calc(100vw - 30px)}
 }
 @media(prefers-reduced-motion:reduce){.dialogue-thinking>span{animation:none}}
+
+.dialogue-update{flex-shrink:0;padding:0 12px}
+.dialogue-update:empty{display:none}

@@ -196,6 +196,21 @@ class IntelligenceTests(unittest.TestCase):
         self.assertEqual(self.ledger.get('runs',run['id'])['status'],'developing')
         self.assertEqual(self.ledger.list('agent_messages')[0]['reply'],'使用390px验收')
 
+    def test_generic_verifier_preserves_waiting_question(self):
+        from autopilot.generic_adapter import execute as generic_execute
+        product=self.product|{'adapter_spec':{'capabilities':['verify']},'project_config':{}}
+        record={'id':'verify-wait','workspace':str(self.root)}
+        request={'product':product,'record':record,'state_root':str(self.store.state/'autopilot'),
+                 'verification':{'diff_file':str(self.root/'diff.patch')}}
+        judged=self.question('implementation')
+        with patch('autopilot.generic_adapter.digest',return_value='same'), \
+             patch('autopilot.generic_adapter.verify',return_value={'status':'pass','checks':[]}), \
+             patch('autopilot.isolated.independent_runtime',return_value=None), \
+             patch('autopilot.codex_executor.execute',return_value=judged):
+            result=generic_execute('verify',request)
+        self.assertEqual(result['status'],'waiting_for_reply')
+        self.assertEqual(result['collaboration_requests'],judged['collaboration_requests'])
+
     def test_pdf_text_extraction_when_dependency_installed(self):
         try:
             from pypdf import PdfWriter

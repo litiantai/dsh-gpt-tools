@@ -28,6 +28,12 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
   const scans=useQuery<Scan[]>({queryKey:['/scans'],queryFn:()=>api('/scans'),enabled:supported,refetchInterval:3000,retry:false});
   const current=scans.data?.find(s=>s.id===selected);
   const groups=repositories(scans.data || []);
+  // 只读能力预检：项目必须声明通用命令适配器且具备 verify 能力，且协议版本必须为 1，
+  // 否则扫描/验收无法在隔离工作区执行；不匹配时只禁用入口并给出中文原因，不削弱任何校验门槛。
+  const capability=useQuery<{adapter_spec?:{version?:number;kind?:string;capabilities?:string[]}}>({queryKey:['scan-capability',productId],queryFn:()=>api(`/products/${productId}`),enabled:!!productId && supported,retry:false});
+  const spec=capability.data?.adapter_spec;
+  const mismatch=!!spec && (spec.version!==1 || spec.kind!=='command' || !(spec.capabilities || []).includes('verify'));
+  const mismatchReason='当前项目接入能力不是通用命令适配器（adapter_spec.kind 必须为 command 且包含 verify 能力），且协议版本必须为 1，无法用隔离工作区执行扫描与验收；请先在项目设置中修正接入能力。';
   const screenshot=useQuery<{data_url:string}>({queryKey:['scan-screenshot',selected],queryFn:()=>api(`/scans/${selected}/screenshot`),enabled:supported && !!current?.result?.checks?.some(c=>c.screenshot),retry:false});
   async function act(path:string,body:Record<string,unknown>){
     if(!supported){message.error('请先核对管理服务的仓库扫描能力');return;}
@@ -36,7 +42,8 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
     <Space direction="vertical" style={{width:'100%'}} size="large">
       <Alert type="info" showIcon message="在独立工作区识别并验证项目" description="提供本地仓库绝对路径或 HTTPS Git URL。扫描会安装依赖、构建、测试、尝试启动并保存结果；缺少外部服务或启动配置时会记录阻塞原因。启动验证不代表业务验收通过。"/>
       {!supported && (identity.isSuccess || identity.isError) && <Alert type="warning" showIcon message={identity.isError?'无法核对管理服务':'管理服务需要升级'} description={identity.isError?'无法读取运行身份，扫描操作已暂停。请检查服务后重新核对。':'当前管理服务未声明仓库扫描能力。请升级并重启管理服务后重新核对。'} action={<Button onClick={()=>void identity.refetch()}>重新核对</Button>}/>}
-      <Space.Compact style={{width:'100%'}}><Input aria-label="代码仓库地址" value={source} onChange={e=>setSource(e.target.value)} placeholder="/绝对路径/项目 或 https://…/repo.git"/><Button type="primary" loading={busy} disabled={!source.trim() || !supported} onClick={()=>void act('/scans',{source:source.trim()})}>扫描新仓库</Button></Space.Compact>
+      {mismatch && <Alert type="warning" showIcon message="当前项目接入能力不匹配" description={mismatchReason}/>}
+      <Space.Compact style={{width:'100%'}}><Input aria-label="代码仓库地址" value={source} onChange={e=>setSource(e.target.value)} placeholder="/绝对路径/项目 或 https://…/repo.git"/><Button type="primary" loading={busy} disabled={!source.trim() || mismatch || !supported} onClick={()=>void act('/scans',{source:source.trim()})}>扫描新仓库</Button></Space.Compact>
       <span>共 {groups.length} 个仓库，{scans.data?.length || 0} 次扫描。展开仓库可查看历史记录。</span>
       {scans.error && <ErrorNotice value={scans.error}/>}
       <Table<Repository> size="small" rowKey="key" dataSource={groups} loading={scans.isLoading} pagination={{pageSize:8}} columns={[

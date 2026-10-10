@@ -7,6 +7,7 @@ const names: Record<string, string> = {
   account_snapshot:'评审启动前账户快照',auth_home:'认证目录',account_id:'账户标识',plan_type:'账户套餐',auth_mode:'认证方式',
   checked_at:'查询时间',fetched_at:'获取时间',ordinary_usage_allowed:'服务端允许使用',rate_limits:'额度窗口',
   primary:'主要额度窗口',secondary:'次要额度窗口',usedPercent:'已用百分比',windowDurationMins:'窗口时长（分钟）',resetsAt:'额度恢复时间',
+  pending_confirmation:'待确认',waiting_for_reply:'等待协作回复',rejected:'已拒绝',
   next_auto_retry_at:'下次异常重试',last_auto_retry_at:'最近自动重试',auto_retry_count:'异常自动重试次数',auto_retry_wait_reason:'重试等待原因',last_retry_reason:'上次异常原因',
   repair_deferred_until:'修复额度恢复时间',failure_kind:'异常类型',excluded_repair_rounds:'不计入修复额度的异常轮次',
   adapter_exit_code:'回执程序退出码',report_url:'GitHub 评审报告',
@@ -17,7 +18,6 @@ const names: Record<string, string> = {
   investigation_result:'调查结论',next_investigation:'下次调查时间',review_retries:'审查自动重试次数',
   outcome:'归因结论',requirement_day:'需求归属日期',attribution:'归因说明',
   status:'结果',decision:'审查结论',reason:'原因说明',summary:'结果摘要',instruction:'下一步指令',
-  pending_confirmation:'待确认',waiting_for_reply:'等待协作回复',rejected:'已拒绝',
   title:'名称',name:'名称',message:'说明',error:'错误说明',detail:'详细说明',details:'详细记录',
   action:'执行步骤',phase:'阶段',expected:'预期结果',actual:'实际结果',judgement:'判断依据',
   evidence:'依据',reproduction:'复现步骤',impact:'用户影响',acceptance:'验收条件',
@@ -47,6 +47,7 @@ const names: Record<string, string> = {
 };
 const values: Record<string,string> = {
   available:'当前可用',limited:'当前额度受限',unauthenticated:'尚未登录','codex-app-server':'Codex CLI 实时查询',
+  pending_confirmation:'待确认',waiting_for_reply:'等待协作回复',rejected:'已拒绝',
   daily_attribution:'晚间统一归因',duplicate:'重复问题',no_issue:'无新问题',requirement:'形成需求',
   daily_acceptance:'晚间逐项复验',daily_retrospective:'日报与复盘',
   products:'项目',runs:'研发任务',requirements:'需求',daily_reports:'日报',
@@ -61,7 +62,6 @@ const values: Record<string,string> = {
   superseded:'已被后续记录替代',planning:'制定方案',plan_review:'方案审查',verifying:'验证中',
   acceptance_review:'最终验收',awaiting_release:'等待发布条件',deploying:'正在发布',observing:'上线观察中',
   rolled_back:'已回滚',rollback_pending:'等待回滚',pausing:'正在暂停',cancelling:'正在取消',
-  pending_confirmation:'待确认',waiting_for_reply:'等待协作回复',rejected:'已拒绝',
   'recover-runtime':'应用自动恢复',acceptance_infrastructure:'验收环境异常',
   master_sync:'master 实例更新',final_acceptance:'master 最终验收',probe:'运行监测',inspect:'体验巡检',discover:'需求发现',plan:'制定方案',develop:'开发实现',
   verify:'独立验证',idle:'空闲检查',publish:'发布上线',observe:'上线观察',rollback:'回滚恢复',

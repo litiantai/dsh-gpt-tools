@@ -7,6 +7,7 @@ import {api} from './api';
 import {errorText} from './errors';
 import {time} from './components';
 import {ReviewerSelect} from './ReviewerSelect';
+import PlatformUpdate from './PlatformUpdate';
 import './intelligence.css';
 
 type Row = {id:string;product_id:string;version:number;status:string;created:number;updated:number;[key:string]:unknown};
@@ -134,6 +135,7 @@ export default function ProjectIntelligence({pid,projects=[]}:{pid?:string;tab?:
   const selectConversation=(id?:string)=>{setParams(previous=>{const next=new URLSearchParams(previous);next.set('view','intelligence');next.set('tab','chat');if(id)next.set('conversation',id);else next.delete('conversation');return next;});setRight(false);};
   return <section className="pure-dialogue" style={viewportHeight?{height:viewportHeight-56}:undefined}>
     <header className="dialogue-header"><button className="dialogue-header-button" aria-label="项目简介" onClick={()=>setLeft(true)}><ProjectOutlined/><span>{selected?label(selected):'项目'}</span></button><span className="dialogue-header-title">研发助手</span><button className="dialogue-header-button" aria-label="历史对话" onClick={()=>setRight(true)}><HistoryOutlined/><span>历史</span></button></header>
+    <div className="dialogue-update"><PlatformUpdate/></div>
     {pid?<Dialogue key={`${pid}:${params.get('conversation') || 'new'}`} pid={pid} conversation={params.get('conversation') || undefined} onCreate={selectConversation}/>:<div className="dialogue-welcome"><h1>先选择一个项目</h1><p>在左侧项目简介中选择项目，开始对话。</p></div>}
     <Drawer title="项目简介" placement="left" width={340} open={left} onClose={()=>setLeft(false)} rootClassName="dialogue-drawer">
       <Select aria-label="选择项目" className="full-width" placeholder="选择项目" value={pid} options={projects.map(row=>({value:row.id,label:label(row)}))} onChange={id=>{setParams(previous=>{const next=new URLSearchParams(previous);next.set('project',id);next.delete('conversation');return next;});setLeft(false);}}/>

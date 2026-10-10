@@ -1,4 +1,5 @@
 """通用命令项目适配器：隔离验证、版本产物及独立更新器交接。"""
+import hashlib
 import json
 from contextlib import nullcontext
 from pathlib import Path
@@ -121,7 +122,7 @@ def acceptance(request):
                     try:
                         if product.get('test_execution') == 'local':
                             from .local_testing import environment, run as local_run
-                            env = environment(root/'execution', runtime=runtime)
+                            env = environment(root/'execution', runtime=product.get('worker_runtime'))
                             for index, argv in enumerate(config['commands'].get('install', [])):
                                 installed = local_run(argv, workspace, root/'execution', 'install-'+str(index), env=env)
                                 if installed['status'] != 'pass':
@@ -213,13 +214,20 @@ def execute(action, request):
         root = Path(request['state_root'])/'candidates'/product['id']/record['id']
         root.mkdir(parents=True, exist_ok=True)
         before = digest(record['workspace'])
+        # 与 delivery_review 对齐：存在导入基线摘要时，控制器先自算工作区摘要并核对；
+        # 不一致立即 blocked，绝不启动验证模型，也不用字符串匹配伪造通过。
+        baseline_digest = record.get('baseline_source_digest')
+        if baseline_digest and before != baseline_digest:
+            return {'status': 'blocked',
+                'reason': '工作区源码摘要与导入基线不一致，不能以基线验收条件启动独立验证',
+                'source_digest': before, 'baseline_source_digest': baseline_digest, 'checks': []}
         from .test_chains import settings as computer_settings
         if product.get('test_execution') == 'local' or computer_settings(product)['enabled']:
             from .local_testing import verification
             session = verification(request, root/'checks')
         else:
             session = nullcontext(verify(record['workspace'], root/'checks', product['project_config'],
-                                         runtime=independent_runtime(request.get('state_root'))))
+                        runtime=independent_runtime(request.get('state_root'))))
         with session as result:
             if result['status'] != 'pass':
                 from .failures import verification_failure
@@ -232,19 +240,49 @@ def execute(action, request):
             if any(c['status'] != 'pass' for c in ui_checks):
                 failed = next(c for c in ui_checks if c['status'] != 'pass')
                 return result | {'status':failed['status'], 'reason':failed['reason'], 'failure_kind':failed['failure_kind'], 'retryable':False}
-            from .codex_executor import execute as evaluate
-            judged = evaluate('validate', request | {'checks': result['checks'], 'test_instance': result.get('instance')})
+            from .codex_executor import execute as evaluate, verification_material
+            payload = request
+            supplied = request.get('verification')
+            if not (isinstance(supplied, dict) and supplied.get('diff_file')):
+                # 独立验证必须以控制器侧预生成的 base..commit 差异为自包含事实证据。
+                # 不再依赖下游按 adapter_spec.kind 决定是否生成；缺差异时直接阻断，
+                # 绝不让验证模型在无差异证据的情况下空转。
+                try:
+                    facts_record = record
+                    if baseline_digest:
+                        facts_record = record | {'source_digest': before, 'baseline_source_digest': baseline_digest}
+                    material = verification_material(record['workspace'], facts_record, root)
+                    if baseline_digest:
+                        material['source_digest'] = before
+                        material['baseline_source_digest'] = baseline_digest
+                        material['baseline_digest_verified'] = True
+                    payload = request | {'verification': material}
+                except RuntimeError as exc:
+                    return {'status': 'blocked', 'reason': str(exc), 'checks': result['checks']}
+            judged = evaluate('validate', payload | {'checks': result['checks'], 'test_instance': result.get('instance')})
+            # 失败/阻塞回执必须可离线核对：把控制器落盘的自包含差异事实并入
+            # 「独立业务验证」的 evidence，与 delivery_review.verify 的字段保持一致。
+            # 保留 judged 的 status/reason/summary/provider/model，字段缺失用空值占位。
+            material = payload.get('verification') if isinstance(payload.get('verification'), dict) else {}
+            diff_path = Path(material.get('diff_file') or '')
+            diff_hash = hashlib.sha256(diff_path.read_bytes()).hexdigest() if diff_path.is_file() else ''
+            enrichment = {'diff_file': material.get('diff_file', ''), 'facts_file': material.get('facts_file', ''),
+                          'diff_sha256': diff_hash, 'changed_files': material.get('changed_files') or [],
+                          'merge_base': material.get('merge_base'), 'source': material.get('source'),
+                          'source_digest': material.get('source_digest'),
+                          'baseline_source_digest': material.get('baseline_source_digest')}
+            checks = result['checks'] + [{'name': '独立业务验证', 'status': judged['status'], 'required': True,
+                                          'evidence': judged | enrichment}]
             if digest(record['workspace']) != before:
                 return {'status': 'fail', 'reason': '业务验收期间源码发生变化', 'checks': result['checks']}
             from .verification_findings import defer
             finding = defer(request, judged)
-            checks = result['checks'] + [{'name': '独立业务验证', 'status': judged['status'], 'required': not bool(finding), 'evidence': judged,
-                **({'disposition': 'backlog', 'requirement_id': finding['id']} if finding else {})}]
+            if finding:
+                checks[-1].update(required=False, disposition='backlog', requirement_id=finding['id'])
+                result.update(reason='必需测试通过；功能缺陷已进入高优先级需求池', findings=[finding['id']])
             if judged['status'] != 'pass' and not finding:
                 return {'status': judged['status'], 'reason': judged.get('reason', '独立验证未通过'), 'checks': checks,
                         'collaboration_requests': judged.get('collaboration_requests', [])}
-            if finding:
-                result.update(reason='必需测试通过；功能缺陷已进入高优先级需求池', findings=[finding['id']])
             from .acceptance_scope import pre_release
             return result | {'checks': checks, 'manifest': package(request, checks, root),
                              'acceptance_scope': pre_release(request.get('requirement'), record, result.get('instance'))}

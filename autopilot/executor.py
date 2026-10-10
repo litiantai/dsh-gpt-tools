@@ -76,6 +76,8 @@ def execute(action,request):
                    check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
     if action not in ('discover','plan','develop'):
         raise ValueError('执行阶段无效')
+    if product.get('test_execution') == 'local':
+        specs['develop'] = '在隔离工作区实现已审批方案及返修要求，保留基线功能。禁止在模型进程内启动测试、安装依赖或启动服务；开发完成后由本机控制器从 feat 分支运行开发测试，release 分支运行待合并验收。输出 status=pass 仅表示代码修改完成，summary 明确测试待控制器执行，不得宣称测试通过。'
     material={'goal':product['goal'],'requirement':request.get('requirement'),'signals':request.get('signals'),
               'plan':record.get('plan'),'feedback':record.get('feedback'),
               'environment':{'workspace':str(workspace),'sdk_runtime':str(runtime),
@@ -107,13 +109,15 @@ def execute(action,request):
     if action=='develop':
         allowed += [workspace]
     # The fixed worker runtime may be read but not modified by the model.
-    from .workspace import git
-    metadata=Path(git(workspace,'rev-parse','--git-common-dir'))
-    if not metadata.is_absolute():
-        metadata=workspace/metadata
+    from .workspace import metadata_paths
+    metadata=[]
+    try:
+        metadata=[Path(path).resolve() for path in metadata_paths(workspace)]
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        metadata=[]
     argv=restrict(argv,allowed,root/'worker.sb',private_roots=([str(Path.home()),'/Users'] if generic(product) else [])+[product.get('app_support','/nonexistent'),
-                  str(Path(request['state_root']).parent)],read_allowed=[runtime,workspace,metadata.resolve(),ROOT/'scripts',ROOT/'node_modules',ROOT/'package.json',Path.home()/'.nvm/versions'],deny_local=True,
-                  readonly_roots=[root/'role-skill'] + ([] if action=='develop' else [workspace]))
+                  str(Path(request['state_root']).parent)],read_allowed=[runtime,workspace,*metadata,ROOT/'scripts',ROOT/'node_modules',ROOT/'package.json',Path.home()/'.nvm/versions'],deny_local=True,
+                  readonly_roots=[root/'role-skill'] + ([] if action=='develop' else [workspace,*metadata]))
     env=(model_environment() if generic(product) else dict(os.environ)) | {'DSH_HOME':str(home),'DSH_AUTOPILOT_WORKER':record['id'],'DSH_AUTOPILOT_PHASE':action,'TMPDIR':str(root),
                       'DSH_PROJECT_ISOLATED':'1',
                       'DSH_AUTOPILOT_TEST_EXECUTION':product.get('test_execution', 'isolated'),

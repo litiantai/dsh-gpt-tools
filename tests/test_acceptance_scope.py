@@ -24,8 +24,11 @@ class AcceptanceScopeTests(unittest.TestCase):
         git(self.repo, 'init', '-b', 'feat-candidate')
         git(self.repo, 'config', 'user.name', 'Test')
         git(self.repo, 'config', 'user.email', 'test@localhost')
+        (self.repo/'feature.py').write_text('CAPABILITY = 0\n')
+        git(self.repo, 'add', '.'); git(self.repo, 'commit', '-m', 'baseline')
+        self.base = git(self.repo, 'rev-parse', 'HEAD')
         (self.repo/'feature.py').write_text('CAPABILITY = 1\n')
-        git(self.repo, 'add', '.'); git(self.repo, 'commit', '-m', 'candidate')
+        git(self.repo, 'commit', '-am', 'candidate')
         self.head = git(self.repo, 'rev-parse', 'HEAD')
         self.store = Store(self.root/'state')
         self.product = {'id': 'fixture', 'goal': '能力预检', 'source': str(self.repo),
@@ -35,7 +38,8 @@ class AcceptanceScopeTests(unittest.TestCase):
             'acceptance': ['旧后端不发送扫描请求', '正式实例的 repository_scans 等于 1'],
             'resolution_probes': [{'path': '/api/runtime-identity', 'pointer': '/capabilities/repository_scans',
                                    'operator': 'equals', 'expected': 1}]}
-        self.record = {'id': 'candidate', 'workspace': str(self.repo), 'branch': 'feat-candidate', 'commit': self.head}
+        self.record = {'id': 'candidate', 'workspace': str(self.repo), 'branch': 'feat-candidate',
+                       'base_commit': self.base, 'commit': self.head}
         self.request = {'product': self.product, 'record': self.record, 'requirement': self.requirement,
             'requirements': [self.requirement], 'state_root': str(self.store.state/'autopilot')}
 

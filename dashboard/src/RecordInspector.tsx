@@ -1,6 +1,6 @@
 import {CollaborationPanel, RequirementCard} from './ProjectIntelligence';
 import { ErrorNotice, errorText, serializeError } from './errors';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Alert, Button, Card, Empty, Image, Space, Spin, Tabs } from 'antd';
@@ -108,12 +108,16 @@ export default function RecordInspector({record,kind,receipt,statusLabel}:{recor
     try {setImageError('');setImage((await api<{data_url:string}>(`/evidence/${encodeURIComponent(String(selected.id))}/screenshot`)).data_url);}
     catch(error){setImageError(serializeError(error));}
   };
+  // 页签由组件显式控制：数据刷新不再重挂 Tabs，只在查看的记录真正变化时回到概况页。
+  const [tab,setTab]=useState('summary');
+  const identity=`${current.kind}:${String(current.record.id ?? '')}`;
+  useEffect(()=>{setTab('summary');},[identity]);
   return <>
     {linked && <Space wrap><Button onClick={()=>setLinked(undefined)}>返回原记录</Button><strong>{sourceName(current)}</strong></Space>}
     {query.isLoading && <Spin size="small"/>}
     {query.error && <Alert type="warning" showIcon message="关联记录加载失败，当前仅展示已取得的内容" description={<ErrorNotice value={query.error}/>} action={<Button onClick={()=>void query.refetch()}>重试</Button>}/>}
     {current.kind==='runs' && <Alert type="info" message={`基础返修 ${Math.max(0,Number(selected.revisions||0)-Number(selected.extra_revisions||0))} 次 · 额外返修 ${Number(selected.extra_revisions||0)} 次 · 连续无进展 ${Number(selected.coordination_no_progress||0)} 轮`} description={String(selected.coordination_wait || selected.coordination_reason || '协调 Agent 将依据新证据判断是否需要帮助')}/>}
-    <Tabs key={`${current.kind}:${String(selected.id || '')}`} defaultActiveKey="summary" items={[
+    <Tabs key={`${current.kind}:${String(selected.id || '')}`} activeKey={tab} onChange={setTab} items={[
       {key:'summary',label:'概况与判断',children:<>{progress.running?<Alert type="info" showIcon message={progress.label} description="本轮执行尚未结束，等待回执。"/>:!linked && statusLabel && <p>{statusLabel}</p>}<RecordValue value={summary}/>{previous && (previous.reason || previous.result)?<details><summary>上次结果</summary><RecordValue value={previous}/></details>:null}<Space wrap>
         {['sessions','reviews'].includes(current.kind) && !!selected.id && <Link to={`/${current.kind}?id=${encodeURIComponent(String(selected.id))}`}>打开完整{current.kind==='sessions'?'会话':'审查'}</Link>}
         {current.kind!=='reviews' && [selected.review_id,selected.acceptance_review_id].filter((id,index,all)=>typeof id==='string' && all.indexOf(id)===index).map(id=><Link key={String(id)} to={`/reviews?id=${encodeURIComponent(String(id))}`}>查看关联审查 {String(id).slice(0,8)}</Link>)}
