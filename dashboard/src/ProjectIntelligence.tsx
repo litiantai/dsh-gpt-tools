@@ -25,19 +25,21 @@ function More({query}:{query:{hasNextPage:boolean;isFetchingNextPage:boolean;fet
   return query.hasNextPage?<Button type="text" loading={query.isFetchingNextPage} onClick={()=>void query.fetchNextPage()}>更多历史</Button>:null;
 }
 
-function Settings({pid}:{pid:string}) {
+export function IntelligenceSettings({pid,research=false}:{pid:string;research?:boolean}) {
   type Config={enabled?:boolean;research_enabled?:boolean;collaboration_enabled?:boolean;chat?:unknown;research?:unknown};
   const query=useQuery<{config:Config;version:number;capabilities:Record<string,{reason:string}>}>({queryKey:['intelligence-settings',pid],queryFn:()=>api(`${base(pid)}/settings`),retry:false});
   const [form]=Form.useForm();const [dirty,setDirty]=useState(false),[busy,setBusy]=useState(false);const {message}=App.useApp();
   useEffect(()=>{if(query.data&&!dirty)form.setFieldsValue({enabled:true,research_enabled:false,collaboration_enabled:false,...query.data.config});},[query.data,dirty,form]);
   return <Form form={form} layout="vertical" onValuesChange={()=>setDirty(true)} onFinish={async values=>{
-    setBusy(true);try{await api(`${base(pid)}/settings`,{version:query.data?.version,config:values});setDirty(false);await query.refetch();message.success('已保存');}catch(e){message.error(errorText(e));}finally{setBusy(false);}
+    const keys=research?['research','research_enabled']:['chat','enabled','collaboration_enabled'];
+    const changes=Object.fromEntries(keys.filter(key=>key in values).map(key=>[key,values[key]]));
+    setBusy(true);try{await api(`${base(pid)}/settings`,{version:query.data?.version,config:{...query.data?.config,...changes}});setDirty(false);await query.refetch();message.success('已保存');}catch(e){message.error(errorText(e));}finally{setBusy(false);}
   }}>
     {query.error && <p role="alert">{errorText(query.error)}</p>}
-    {[['enabled','启用对话助手'],['research_enabled','自动研究竞品'],['collaboration_enabled','Agent 异步协作']].map(([key,text])=><Form.Item key={key} name={key} label={text} valuePropName="checked"><Switch/></Form.Item>)}
-    {(['chat','research'] as const).map(role=><div key={role}><Form.Item name={role} label={role==='chat'?'对话模型':'研究模型'}><ReviewerSelect connection={()=>({})}/></Form.Item><Button type="link" onClick={()=>{form.setFieldValue(role,null);setDirty(true);}}>继承项目需求发现模型</Button><p className="dialogue-muted">{query.data?.capabilities[role]?.reason}</p></div>)}
-    <p className="dialogue-muted">自动研究：每日 02:00 分析竞品，每周一 01:00 寻找新竞品，北京时间。</p>
-    <Button type="primary" htmlType="submit" loading={busy} disabled={!dirty}>保存设置</Button>
+    {(research?[['research_enabled','自动研究竞品']]:[['enabled','启用对话助手'],['collaboration_enabled','Agent 异步协作']]).map(([key,text])=><Form.Item key={key} name={key} label={text} valuePropName="checked"><Switch/></Form.Item>)}
+    {(research?['research'] as const:['chat'] as const).map(role=><div key={role}><Form.Item name={role} label={role==='chat'?'对话模型':'竞品分析模型'}><ReviewerSelect connection={()=>({})}/></Form.Item><Button type="link" onClick={()=>{form.setFieldValue(role,null);setDirty(true);}}>继承项目需求发现模型</Button><p className="dialogue-muted">{query.data?.capabilities[role]?.reason}</p></div>)}
+    {research && <p className="dialogue-muted">自动研究：每日 02:00 分析竞品，每周一 01:00 寻找新竞品，北京时间。</p>}
+    <Button type="primary" htmlType="submit" loading={busy} disabled={!dirty||!query.data}>保存设置</Button>
   </Form>;
 }
 
@@ -131,7 +133,7 @@ export default function ProjectIntelligence({pid,projects=[]}:{pid?:string;tab?:
   useEffect(()=>{const viewport=window.visualViewport;const resize=()=>setViewportHeight(viewport?.height);resize();viewport?.addEventListener('resize',resize);return()=>viewport?.removeEventListener('resize',resize);},[]);
   const selected=projects.find(row=>row.id===pid);
   const selectConversation=(id?:string)=>{setParams(previous=>{const next=new URLSearchParams(previous);next.set('view','intelligence');next.set('tab','chat');if(id)next.set('conversation',id);else next.delete('conversation');return next;});setRight(false);};
-  return <section className="pure-dialogue" style={viewportHeight?{height:viewportHeight}:undefined}>
+  return <section className="pure-dialogue" style={viewportHeight?{height:viewportHeight-56}:undefined}>
     <header className="dialogue-header"><button className="dialogue-header-button" aria-label="项目简介" onClick={()=>setLeft(true)}><ProjectOutlined/><span>{selected?label(selected):'项目'}</span></button><span className="dialogue-header-title">研发助手</span><button className="dialogue-header-button" aria-label="历史对话" onClick={()=>setRight(true)}><HistoryOutlined/><span>历史</span></button></header>
     <div className="dialogue-update"><PlatformUpdate/></div>
     {pid?<Dialogue key={`${pid}:${params.get('conversation') || 'new'}`} pid={pid} conversation={params.get('conversation') || undefined} onCreate={selectConversation}/>:<div className="dialogue-welcome"><h1>先选择一个项目</h1><p>在左侧项目简介中选择项目，开始对话。</p></div>}
@@ -144,7 +146,7 @@ export default function ProjectIntelligence({pid,projects=[]}:{pid?:string;tab?:
     <Drawer title="历史对话" placement="right" width={340} open={right} onClose={()=>setRight(false)} rootClassName="dialogue-drawer">
       {pid && <History pid={pid} selected={params.get('conversation') || undefined} onSelect={selectConversation}/>}
     </Drawer>
-    <Drawer title="模型与运行设置" placement="left" width={400} open={settings} onClose={()=>setSettings(false)} rootClassName="dialogue-drawer">{pid&&settings&&<Settings pid={pid}/>}</Drawer>
+    <Drawer title="模型与运行设置" placement="left" width={400} open={settings} onClose={()=>setSettings(false)} rootClassName="dialogue-drawer">{pid&&settings&&<IntelligenceSettings pid={pid}/>}</Drawer>
   </section>;
 }
 function History({pid,selected,onSelect}:{pid:string;selected?:string;onSelect:(id?:string)=>void}) {

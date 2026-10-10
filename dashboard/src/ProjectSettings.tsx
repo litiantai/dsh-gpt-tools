@@ -4,6 +4,7 @@ import { Alert, App, Button, ConfigProvider, Descriptions, Form, Input, InputNum
 import { api } from './api';
 import { useData, time } from './components';
 import { ReviewerSelect } from './ReviewerSelect';
+import { IntelligenceSettings } from './ProjectIntelligence';
 
 interface Project {id:string;version:number;name?:string;goal?:string;source?:string;status:string;[key:string]:unknown}
 const policyFields = [
@@ -77,6 +78,7 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
     {saveError && <Alert type="error" showIcon message="保存失败，当前修改已保留" description={<ErrorNotice value={saveError}/>}/>}
     <Form form={form} layout="vertical" disabled={busy} onValuesChange={()=>setDirty(true)}>
       <Tabs activeKey={tab} onChange={onTabChange} items={[
+        {key:'research',label:'竞品分析配置',children:null},
         {key:'git',label:'Git 与代码评审',forceRender:true,children:<>
           <Alert type="info" showIcon message="合入 master 才标记已上线" description="release 每天从 master 创建。feat → release MR 必须先通过 Code Review；23:30 封板并停止新评审，统一验证后再合入 master。合入后等待主实例空闲更新，再在 master 实例进行最终复验。"/>
           <div className="project-settings-grid">
@@ -131,8 +133,9 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
           ]}/>}
         </>},
       ]}/>
-      <div className="project-settings-actions"><Space wrap><Button aria-label="保存项目设置" type="primary" onClick={()=>void save()} loading={busy} disabled={!dirty}>保存项目设置</Button><Button disabled={!dirty || busy} onClick={()=>setDirty(false)}>放弃修改</Button><span className="muted">{dirty?'有未保存的修改，切换上方配置标签会保留草稿':'修改后保存，仅对当前项目生效'}</span></Space></div>
+      {tab!=='research' && <div className="project-settings-actions"><Space wrap><Button aria-label="保存项目设置" type="primary" onClick={()=>void save()} loading={busy} disabled={!dirty}>保存项目设置</Button><Button disabled={!dirty || busy} onClick={()=>setDirty(false)}>放弃修改</Button><span className="muted">{dirty?'有未保存的修改，切换上方配置标签会保留草稿':'修改后保存，仅对当前项目生效'}</span></Space></div>}
     </Form>
+    {tab==='research' && <IntelligenceSettings key={project.id} pid={project.id} research/>}
   </>;
 }
 

@@ -3,7 +3,13 @@
 .pure-chat-workspace>.sidebar,.pure-chat-workspace>.main>.topbar,.pure-chat-workspace>.main>.page-footer{display:none}
 .pure-chat-workspace>.main{margin:0;width:100%;min-width:0}
 .pure-chat-workspace>.main>main{padding:0;max-width:none}
-.pure-dialogue{height:100dvh;display:flex;flex-direction:column;background:var(--surface);color:var(--text)}
+.pure-dialogue{height:calc(100dvh - 56px);display:flex;flex-direction:column;background:var(--surface);color:var(--text)}
+.dialogue-primary-tabs{height:56px;padding:0 20px}
+.dialogue-primary-tabs>.ant-tabs-nav{height:56px;margin:0}
+.dialogue-primary-tabs>.ant-tabs-content-holder{display:none}
+.competitor-actions{display:flex;gap:12px;flex-wrap:wrap}
+.competitor-analysis{overflow-wrap:anywhere}
+.competitor-analysis h2{margin-top:28px;font-size:18px}
 .dialogue-header{height:64px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 28px}
 .dialogue-header-button{display:flex;align-items:center;gap:9px;background:transparent;border:0;color:var(--secondary);padding:10px 8px;border-radius:8px;font-size:14px;max-width:36%}
 .dialogue-header-button span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

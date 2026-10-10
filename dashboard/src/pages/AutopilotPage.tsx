@@ -14,6 +14,7 @@ import DeliveryBoard, {type DeliveryBoardData} from '../DeliveryBoard';
 import DeliveryTasks from '../DeliveryTasks';
 import ProjectSettings from '../ProjectSettings';
 import ProjectIntelligence from '../ProjectIntelligence';
+import CompetitorAnalysis from '../CompetitorAnalysis';
 import RepositoryScans from '../RepositoryScans';
 import TodayQuota from '../TodayQuota';
 import MasterSyncTerminal from '../MasterSyncTerminal';
@@ -162,7 +163,8 @@ export default function AutopilotPage() {
   const nodeStatuses:Partial<Record<FlowNodeId,string[]>>={review:['plan_review'],planning:['queued','planning'],development:['developing'],testing:['verifying'],acceptance:['acceptance_review','accepted'],delivery:['delivered'],blocked:['blocked','pausing'],cancelled:['cancelled','rolled_back']};
   const selectedKind=node==='signals'?'signals':node==='requirements'?'requirements':node==='online'?'online_requirements':node==='merge'?'deliveries':'runs';
   const selectedData=node==='product'?projectRuns:node==='design'?designRuns:node==='signals'?scoped(signals.data).filter(s=>s.status==='pending'):node==='requirements'?projectRequirements.filter(r=>['pending','investigating','awaiting_external'].includes(r.status)):node==='online'?onlineRequirements:node==='merge'?stageDeliveries(node):projectRuns.filter(r=>nodeStatuses[node ?? 'product']?.includes(r.status));
-  if(section==='intelligence')return <ProjectIntelligence pid={project?.id} projects={products.data}/>;
+  const primaryTabs=<Tabs className={`project-primary-tabs${section==='intelligence'?' dialogue-primary-tabs':''}`} activeKey={section} items={Object.entries(sections).map(([key,value])=>({key,label:value.label}))} onChange={key=>navigate(key as ProjectSection)}/>;
+  if(section==='intelligence')return <>{primaryTabs}<ProjectIntelligence pid={project?.id} projects={products.data}/></>;
   return <>
     {scanning && <RepositoryScans onClose={()=>setScanning(false)} productId={project?.id} onChanged={reload}/>}
     <div className="project-page-heading">
@@ -172,7 +174,7 @@ export default function AutopilotPage() {
     {project?.runtime_recovery_state && <Alert type="info" showIcon message={String((project.runtime_recovery_state as Record<string,unknown>).message || '应用恢复状态已更新')} description={<>尝试次数：{Number((project.runtime_recovery_state as Record<string,unknown>).attempts || 0)} · 下次检查：{time(Number((project.runtime_recovery_state as Record<string,unknown>).next_check_at || 0))}</>}/>}
     {error && <Alert type="error" showIcon message={<ErrorNotice value={error}/>}/>}
     {project && <TodayQuota key={project.id} productId={project.id} reload={reload}/>}
-    <Tabs className="project-primary-tabs" activeKey={section} items={Object.entries(sections).map(([key,value])=>({key,label:value.label}))} onChange={key=>navigate(key as ProjectSection)}/>
+    {primaryTabs}
     {section==='overview' && <>
     {gitIssue && <Alert id="project-git-issue" className="project-git-alert" type="error" showIcon message={<Tooltip title={gitIssue}><span tabIndex={0}>{gitIssueSummary}</span></Tooltip>} action={<Space size={4}><Button type="link" size="small" onClick={()=>navigate('settings','git')}>配置 Token</Button>{blockedDelivery?<Button type="link" size="small" disabled={busy} onClick={()=>void act('deliveries',blockedDelivery,'retry')}>继续处理</Button>:<Button type="text" size="small" aria-label="重新检查" title="重新检查" icon={<ReloadOutlined/>} loading={gitStatus.isFetching} onClick={()=>void gitStatus.refetch()}/>}</Space>}/>}
     <ProjectFlow counts={counts} selected={node} onSelect={setNode} projectName={project?.name || '未接入项目'}/>
@@ -184,7 +186,7 @@ export default function AutopilotPage() {
     </div>
     <div className="project-live-note"><span><i/>{project?.last_probe?`最近巡检 ${time(Number(project.last_probe))}`:'尚无巡检回执'}</span><span>节点数字来自当前项目台账 · 点击节点查看证据</span></div>
     </>}
-    <Card className="panel project-records" id="project-records">{section==='evidence'?<ProjectEvidence key={project?.id} productId={project?.id} tab={tab} onTabChange={setTab}/>:section==='settings'?<ProjectSettings key={project?.id} project={project} reload={reload} tab={tab} onTabChange={setTab} hasRunningTasks={projectRuns.some(r=>!['accepted','delivered','online','completed','cancelled','rolled_back','queued','blocked'].includes(r.status))}/>:<Tabs activeKey={sections[section]?.tabs.includes(tab)?tab:sections[section]?.tabs[0]} onChange={setTab} items={[
+    <Card className="panel project-records" id="project-records">{section==='competitors'?(project?<CompetitorAnalysis key={project.id} pid={project.id}/>:<Alert type="info" message="请先接入项目"/>):section==='evidence'?<ProjectEvidence key={project?.id} productId={project?.id} tab={tab} onTabChange={setTab}/>:section==='settings'?<ProjectSettings key={project?.id} project={project} reload={reload} tab={tab} onTabChange={setTab} hasRunningTasks={projectRuns.some(r=>!['accepted','delivered','online','completed','cancelled','rolled_back','queued','blocked'].includes(r.status))}/>:<Tabs activeKey={sections[section]?.tabs.includes(tab)?tab:sections[section]?.tabs[0]} onChange={setTab} items={[
       {key:'monitoring',label:`运行状态${issues.length?` · ${issues.length} 项需关注`:''}`,children:<Space direction="vertical" style={{width:'100%'}}>{observations.map(o=><Alert key={o.action} showIcon type={!o.result?'info':o.result.monitor_mode==='basic'?'warning':o.result.status==='pass'?'success':o.result.status==='blocked'?'warning':o.result.status==='busy'?'info':'error'} message={`${o.title} · ${o.result?(o.result.monitor_mode==='basic'?'基础健康正常 · 发布监测未接入':o.result.status==='busy'?'等待执行':labels[o.result.status] || o.result.status):'尚未执行'}`} description={<><div>{o.result && o.result.status!=='pass'?<ErrorNotice value={o.result} subject="应用服务"/>:String(o.result?.reason || (o.result?.status==='pass'?'本次检查已通过':'等待执行回执'))}</div>{o.at>0 && <small>{time(o.at)}</small>}{o.result && <Button type="link" size="small" onClick={()=>setSelection({record:o.result!,kind:'monitoring',receipt:o.receipt && JSON.stringify(o.receipt.result)===JSON.stringify(o.result)?o.receipt:{action:o.action,at:o.at,result:o.result}})}>查看回执</Button>}</>}/>)}</Space>},
       {key:'requirements',label:`需求台账 ${projectRequirements.length}`,children:table('requirements',projectRequirements)},
       {key:'signals',label:`监测信号 ${scoped(signals.data).length}`,children:table('signals',scoped(signals.data))},
