@@ -184,7 +184,7 @@ def verify(request, workspace, head, base, folder):
                     'source_digest': actual_digest, 'baseline_source_digest': baseline_digest}}
             atomic(folder / 'verification.json', result)
             return result
-    record = batch | {'id': str(uuid.uuid4()), 'delivery_id': batch['id'], 'workspace': str(workspace), 'commit': head, 'base_commit': base,
+    record = batch | {'id': str(uuid.uuid4()), **({'delivery_id': batch['id']} if batch.get('id') else {}), 'workspace': str(workspace), 'commit': head, 'base_commit': base,
         'summary': '交付整合后完整验证；核对全部关联业务验收条件'}
     if baseline_acceptance:
         record['source_digest'] = actual_digest

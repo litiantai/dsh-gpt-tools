@@ -152,7 +152,7 @@ def execute(request):
         with (delivery_root/'delivery.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             save(status='running', reason='获取最新 master 和分支')
-            command(repo, 'fetch', 'origin', '+refs/heads/*:refs/remotes/origin/*', remote=True)
+            command(repo, 'fetch', '--prune', 'origin', '+refs/heads/*:refs/remotes/origin/*', remote=True)
             master_branch = product.get('git', {}).get('base_branch', 'master')
             master = git(repo, 'rev-parse', 'refs/remotes/origin/'+master_branch)
             save(master_commit=master)
