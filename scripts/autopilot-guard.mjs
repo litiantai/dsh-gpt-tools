@@ -19,6 +19,7 @@ export function apply(ctx) {
     },
   }));
   ctx.tools.guard(exec => {
+    if (process.env.DSH_AUTOPILOT_TEST_EXECUTION==='local' && exec.name==='bash') return '本项目由本机控制器运行命令和测试；开发 Agent 使用文件工具修改 feat/release 源码，完成后提交代码修改回执。';
     const allowed=['autopilot_result','bash','read','read_file','glob','grep','write','write_file','edit','apply_patch'];
     if (!allowed.includes(exec.name)) return '自主工作进程仅可操作隔离工作区，不启动会话、子代理或外部操作。';
     if (exec.name==='bash' && (exec.arguments?.run_in_background || Number(exec.arguments?.timeoutMs || 0)>300000)) return '工具必须前台执行，单次最多 5 分钟。';

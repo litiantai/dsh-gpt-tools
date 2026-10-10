@@ -205,8 +205,13 @@ class Control:
         if kind == 'deliveries' and action == 'migrate-review-flow':
             from .delivery_migration import migrate
             return migrate(self.ledger, old)
-        if kind == 'deliveries' and action == 'retry' and old['status'] == 'blocked' and not old.get('call'):
-            return self.ledger.update(kind, ident, old['version'], {'reason': '', 'next_attempt': 0, 'next_auto_retry_at': None, 'auto_retry_wait_reason': None}, old.get('resume_status', 'preparing'))
+        if kind == 'deliveries' and action == 'retry' and old['status'] in ('blocked', 'release_failed') and not old.get('call'):
+            if old.get('pending_result') or old.get('uncertain'):
+                raise Conflict('当前执行结果待核对，不能重复重试')
+            resume = 'syncing_release' if old['status'] == 'release_failed' else old.get('resume_status', 'preparing')
+            if old.get('flow') == 'review_before_release' and resume == 'reviewing_release':
+                resume = 'syncing_release'
+            return self.ledger.update(kind, ident, old['version'], {'reason': '', 'next_attempt': 0, 'next_auto_retry_at': None, 'auto_retry_wait_reason': None}, resume)
         if kind=='products':
             if action=='recover-runtime':
                 from .runtime_recovery import enabled, busy

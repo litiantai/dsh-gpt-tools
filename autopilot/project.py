@@ -32,6 +32,10 @@ def scan_compatible(product):
 
 
 def validate(config):
+    if config.get('functional_findings_policy', 'block') not in ('block', 'backlog'):
+        raise ValueError('功能缺陷处理策略必须为 block 或 backlog')
+    if config.get('test_execution', 'isolated') not in ('isolated', 'local'):
+        raise ValueError('测试执行方式必须为 local 或 isolated')
     spec = config.get('adapter_spec')
     if spec is None:
         return
@@ -52,6 +56,11 @@ def validate(config):
     for name, argv in settings.get('acceptance_checks', {}).items():
         if not isinstance(name, str) or not name or not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
             raise ValueError('验收检查须声明名称和命令参数数组')
+    if 'test_start' in settings:
+        starts = settings['test_start']
+        if (not isinstance(starts, list) or len(starts) != 1 or not isinstance(starts[0], list)
+                or not starts[0] or not all(isinstance(s, str) and s for s in starts[0])):
+            raise ValueError('本机测试实例必须指定唯一启动命令')
     ports=settings.get('test_ports', [])
     if not isinstance(ports, list) or any(p != 'test-loopback' and (type(p) is not int or not 1 <= p <= 65535 or p in (13081,13083,13084)) for p in ports):
         raise ValueError('测试端口配置无效或占用正式服务端口')

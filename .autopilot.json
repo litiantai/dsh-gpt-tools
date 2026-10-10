@@ -80,5 +80,12 @@
       "test_generic_projects.py",
       "-v"
     ]
-  }
+  },
+  "test_start": [
+    [
+      "python3",
+      "-B",
+      "tests/serve_fixture.py"
+    ]
+  ]
 }

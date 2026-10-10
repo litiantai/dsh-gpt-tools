@@ -60,6 +60,9 @@ def execute(action,request):
     source=product['model_source']
     runtime=Path(product['worker_runtime'])
     workspace=Path(record.get('workspace',product['repository'])).resolve()
+    if product.get('test_execution') == 'local' and action != 'develop':
+        from .master import source_workspace
+        workspace = Path(source_workspace(request))
     from .project import generic
     if action=='develop' and not generic(product):
         from .thsoctop import bind_runtime_sdk
@@ -74,6 +77,8 @@ def execute(action,request):
     }
     if action not in specs:
         raise ValueError('执行阶段无效')
+    if product.get('test_execution') == 'local':
+        specs['develop'] = '在隔离工作区实现已审批方案及返修要求，保留基线功能。禁止在模型进程内启动测试、安装依赖或启动服务；开发完成后由本机控制器从 feat 分支运行开发测试，release 分支运行待合并验收。输出 status=pass 仅表示代码修改完成，summary 明确测试待控制器执行，不得宣称测试通过。'
     material={'goal':product['goal'],'requirement':request.get('requirement'),'signals':request.get('signals'),
               'plan':record.get('plan'),'feedback':record.get('feedback'),
               'environment':{'workspace':str(workspace),'sdk_runtime':str(runtime),
@@ -106,6 +111,7 @@ def execute(action,request):
                   readonly_roots=[] if action=='develop' else [workspace,*metadata])
     env=(model_environment() if generic(product) else dict(os.environ)) | {'DSH_HOME':str(home),'DSH_AUTOPILOT_WORKER':record['id'],'DSH_AUTOPILOT_PHASE':action,'TMPDIR':str(root),
                       'DSH_PROJECT_ISOLATED':'1',
+                      'DSH_AUTOPILOT_TEST_EXECUTION':product.get('test_execution', 'isolated'),
                       'npm_config_cache':str(root/'cache/npm'),'PIP_CACHE_DIR':str(root/'cache/pip'),
                       'DSH_AUTOPILOT_RUNTIME':str(runtime),'DSH_AUTOPILOT_RESULT':str(root/'structured-result.json')}
     with (root/'trace.jsonl').open('w') as out, (root/'stderr.log').open('w') as err:

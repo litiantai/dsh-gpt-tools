@@ -417,9 +417,10 @@ class Scheduler:
                     network_git(repository, 'fetch', 'origin', 'refs/heads/'+branch+':refs/remotes/origin/'+branch)
                     destination = self.root/'workspaces'/run['id']
                     base = git(repository, 'rev-parse', 'refs/remotes/origin/'+branch)
+                    feature_branch = 'feat-'+run['id'] if product.get('test_execution') == 'local' else 'codex/auto-'+run['id']
                     if not destination.exists():
-                        git(repository, 'worktree', 'add', '-b', 'codex/auto-'+run['id'], str(destination), base)
-                    workspace = {'workspace': str(destination), 'base_commit': base}
+                        git(repository, 'worktree', 'add', '-b', feature_branch, str(destination), base)
+                    workspace = {'workspace': str(destination), 'base_commit': base, 'branch': feature_branch}
                 else:
                     workspace=checkout(product['repository'],self.root/'workspaces'/run['id'],run['id'])
                 worker_home=self.root/'workers'/run['id']

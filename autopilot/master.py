@@ -11,6 +11,20 @@ from .call import atomic
 from .workspace import git
 
 
+def source_workspace(request):
+    """需求、调查和复盘读取当前 master 提交，不复用 feat/release 候选源码。"""
+    product = request['product']
+    expected = target(product)
+    root = Path(request['state_root'])/'master-source'/product['id']/expected
+    root.parent.mkdir(parents=True, exist_ok=True)
+    with (root.parent/'checkout.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not root.exists():
+            git(product['delivery_repository'], 'worktree', 'add', '--detach', str(root), expected)
+        if git(root, 'rev-parse', 'HEAD') != expected or git(root, 'status', '--porcelain'):
+            raise ValueError('master 只读工作区提交不一致或源码发生变化')
+    return str(root)
+
 def enabled(product):
     from .project import generic
     if generic(product):

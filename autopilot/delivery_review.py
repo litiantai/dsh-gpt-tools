@@ -290,8 +290,10 @@ def execute(action, request):
             atomic(plan_file, plan)
         if plan.get('status') != 'pass':
             return plan
+        testing = ('不要在模型进程里运行测试或启动服务；修改完成后交本机控制器按当前 feat/release 分支运行测试。'
+                   if request['product'].get('test_execution') == 'local' else '完成后运行相关测试；')
         result = model(request, folder / 'fix', '按以下方案修复隔离工作区源码；禁止提交、推送、修改其他工作区或正式应用。'
-            '完成后运行相关测试；冲突文件移除冲突标记，由控制器暂存和提交。\n' + json.dumps(plan, ensure_ascii=False) + '\n' + material, write=True)
+            + testing + '冲突文件移除冲突标记，由控制器暂存和提交。\n' + json.dumps(plan, ensure_ascii=False) + '\n' + material, write=True)
         if result.get('status') != 'pass':
             return result
         state = journal(batch / 'journal.json')
