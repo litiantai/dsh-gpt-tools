@@ -271,7 +271,8 @@ def execute(action, request):
                 checks[-1].update(required=False, disposition='backlog', requirement_id=finding['id'])
                 result.update(reason='必需测试通过；功能缺陷已进入高优先级需求池', findings=[finding['id']])
             if judged['status'] != 'pass' and not finding:
-                return {'status': judged['status'], 'reason': judged.get('reason', '独立验证未通过'), 'checks': checks}
+                return {'status': judged['status'], 'reason': judged.get('reason', '独立验证未通过'), 'checks': checks,
+                        'collaboration_requests': judged.get('collaboration_requests', [])}
             return result | {'checks': checks, 'manifest': package(request, checks, root)}
     if action == 'inspect':
         checked = probe(product)

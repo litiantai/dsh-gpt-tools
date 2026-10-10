@@ -560,7 +560,7 @@ class Dashboard:
         oid = body.get("operation_id", "")
         uuid.UUID(oid)
         fingerprint = json.dumps([path, body], sort_keys=True, ensure_ascii=False)
-        if path.rstrip('/').endswith('/git-token'):
+        if path.rstrip('/').endswith(('/git-token', '/intelligence/attachments')):
             # Idempotency must never persist the credential request body.
             fingerprint = 'sha256:' + hashlib.sha256(fingerprint.encode()).hexdigest()
         with self.lock:
@@ -743,7 +743,7 @@ def handler_for(app, port, dist):
                         self.send(401, {"error": "本地会话已失效，请刷新页面"})
                         return
                     if self.command == "GET":
-                        self.send(200, app.get(path[4:]))
+                        self.send(200, app.get(path[4:] + (("?" + urlparse(self.path).query) if "/intelligence" in path and urlparse(self.path).query else "")))
                         return
                     if not hmac.compare_digest(
                         self.headers.get("X-CSRF-Token", ""), app.csrf
@@ -788,7 +788,8 @@ def handler_for(app, port, dist):
 
         def body(self):
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= 100000:
+            limit = 14 * 1024 * 1024 if urlparse(self.path).path.endswith("/intelligence/attachments") else 100000
+            if not 0 < size <= limit:
                 raise ValueError("请求内容大小无效")
             value = json.loads(self.rfile.read(size))
             if not isinstance(value, dict):

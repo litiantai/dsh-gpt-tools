@@ -1,6 +1,7 @@
 import { useSearchParams } from 'react-router-dom';
 
 export const projectSections = {
+  intelligence: { label: 'AI 对话', tabs: ['chat','drafts','competitors','collaboration','intelligence_settings'] },
   overview: { label: '工作概览', tabs: ['monitoring'] },
   requirements: { label: '需求池', tabs: ['requirements', 'signals'] },
   tasks: { label: '任务流水线', tabs: ['runs', 'sessions', 'reviews', 'events'] },

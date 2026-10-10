@@ -4,6 +4,7 @@ import { eventLabels, labels, time } from './components';
 
 export type RecordData = Record<string, unknown>;
 const names: Record<string, string> = {
+  pending_confirmation:'待确认',waiting_for_reply:'等待协作回复',rejected:'已拒绝',
   next_auto_retry_at:'下次异常重试',last_auto_retry_at:'最近自动重试',auto_retry_count:'异常自动重试次数',auto_retry_wait_reason:'重试等待原因',last_retry_reason:'上次异常原因',
   repair_deferred_until:'修复额度恢复时间',failure_kind:'异常类型',excluded_repair_rounds:'不计入修复额度的异常轮次',
   adapter_exit_code:'回执程序退出码',report_url:'GitHub 评审报告',
@@ -42,6 +43,7 @@ const names: Record<string, string> = {
   acceptance_review_id:'验收审查',review_packet:'审查输入',session_id:'关联会话',
 };
 const values: Record<string,string> = {
+  pending_confirmation:'待确认',waiting_for_reply:'等待协作回复',rejected:'已拒绝',
   daily_attribution:'晚间统一归因',duplicate:'重复问题',no_issue:'无新问题',requirement:'形成需求',
   daily_acceptance:'晚间逐项复验',daily_retrospective:'日报与复盘',
   products:'项目',runs:'研发任务',requirements:'需求',daily_reports:'日报',

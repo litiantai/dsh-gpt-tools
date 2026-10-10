@@ -22,6 +22,9 @@ class Control:
         return path.strip('/').split('/')[0] in (*KINDS,'autopilot')
 
     def get(self,path):
+        if '/intelligence' in path:
+            from .intelligence import get
+            return get(self, path)
         parts = path.strip('/').split('/')
         if len(parts)==3 and parts[0]=='scans' and parts[2]=='screenshot':
             scan=self.ledger.get('scans',parts[1])
@@ -89,8 +92,14 @@ class Control:
         raise KeyError('接口不存在')
 
     def mutate(self,path,body):
+        if '/intelligence' in path:
+            from .intelligence import mutate
+            return mutate(self, path, body)
         parts = path.strip('/').split('/')
         kind = parts[0]
+        if len(parts) == 3 and kind == 'requirements' and parts[2] in ('edit','confirm','reject','amend'):
+            from .intake import mutate
+            return mutate(self, parts[1], parts[2], body)
         if parts == ['scans']:
             source = body.get('source', '')
             if not isinstance(source, str) or not (Path(source).is_absolute() or source.startswith('https://')):
@@ -334,11 +343,17 @@ class Control:
                 changes['git_migration'] = {'status': 'required'}
             return self.ledger.update('products',ident,old['version'],changes,db=db)
 
-    def queue(self, requirement):
-        with self.ledger.store.transaction() as db:
+    def queue(self, requirement, db=None):
+        if db is None:
+            with self.ledger.store.transaction() as connection:
+                return self.queue(requirement, db=connection)
+        if db is not None:
             latest=self.ledger.get('requirements',requirement['id'],db)
             if latest['version']!=requirement['version'] or latest['status']!='pending':
                 raise Conflict('需求已发生变化或已进入任务队列')
+            from .intake import approved
+            if not approved(latest):
+                raise Conflict('需求必须由用户确认后才能排队')
             product=self.ledger.get('products',latest['product_id'],db)
             evaluation=self.ledger.get('evaluations',product['evaluation_id'],db) if product.get('evaluation_id') else None
             if evaluation and len(evaluation.get('run_ids',[]))>=evaluation['target_count']:

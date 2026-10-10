@@ -33,7 +33,7 @@ def trace_tokens(path):
 def register(ledger,product_id,path,budget_kind='tokens',record_id=None,action=None):
     if budget_kind == 'tokens' and action in ('discover', 'investigate'):
         budget_kind = 'discovery_tokens'
-    if budget_kind not in ('tokens','daily_report_tokens','code_delivery_tokens','discovery_tokens'):
+    if budget_kind not in ('tokens','daily_report_tokens','code_delivery_tokens','discovery_tokens','chat_tokens'):
         raise ValueError('用量分类无效')
     path=str(Path(path).resolve())
     with ledger.store.connect() as db:

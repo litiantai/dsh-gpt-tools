@@ -8,7 +8,7 @@ export function apply(ctx) {
   if (!process.env.DSH_AUTOPILOT_WORKER) throw new Error('Missing autonomous worker identity');
   if(defineTool && process.env.DSH_AUTOPILOT_RESULT) ctx.tools.register(defineTool({
     name:'autopilot_result',description:'提交本阶段的最终结构化回执。方案写入 plan，实现及测试证据写入 summary；缺前提用 blocked，检查失败用 fail。提交后结束本轮。',
-    parameters:{status:{type:'string',enum:['pass','fail','blocked'],required:true},plan:{type:'string'},summary:{type:'string'},reason:{type:'string'}},
+    parameters:{status:{type:'string',enum:['pass','fail','blocked','waiting_for_reply'],required:true},plan:{type:'string'},summary:{type:'string'},reason:{type:'string'},collaboration_requests:{type:'array',items:{type:'object',properties:{to_role:{type:'string'},topic:{type:'string'},content:{type:'string'},evidence_ids:{type:'array',items:{type:'string'}}}}}},
     output:{schema:{type:'object',additionalProperties:true},render:(_args,value)=>[{type:'text',text:JSON.stringify(value)}]},
     isConcurrencySafe:()=>false,
     async execute(args) {

@@ -13,6 +13,7 @@ import ProjectEvidence from '../ProjectEvidence';
 import DeliveryBoard, {type DeliveryBoardData} from '../DeliveryBoard';
 import DeliveryTasks from '../DeliveryTasks';
 import ProjectSettings from '../ProjectSettings';
+import ProjectIntelligence from '../ProjectIntelligence';
 import RepositoryScans from '../RepositoryScans';
 import TodayQuota from '../TodayQuota';
 import { projectSections as sections, useProjectNavigation, type ProjectSection } from '../projectNavigation';
@@ -160,6 +161,7 @@ export default function AutopilotPage() {
   const nodeStatuses:Partial<Record<FlowNodeId,string[]>>={review:['plan_review'],planning:['queued','planning'],development:['developing'],testing:['verifying'],acceptance:['acceptance_review','accepted'],delivery:['delivered'],blocked:['blocked','pausing'],cancelled:['cancelled','rolled_back']};
   const selectedKind=node==='signals'?'signals':node==='requirements'?'requirements':node==='online'?'online_requirements':node==='merge'?'deliveries':'runs';
   const selectedData=node==='product'?projectRuns:node==='design'?designRuns:node==='signals'?scoped(signals.data).filter(s=>s.status==='pending'):node==='requirements'?projectRequirements.filter(r=>['pending','investigating','awaiting_external'].includes(r.status)):node==='online'?onlineRequirements:node==='merge'?stageDeliveries(node):projectRuns.filter(r=>nodeStatuses[node ?? 'product']?.includes(r.status));
+  if(section==='intelligence')return <ProjectIntelligence pid={project?.id} projects={products.data}/>;
   return <>
     {scanning && <RepositoryScans onClose={()=>setScanning(false)} productId={project?.id} onChanged={reload}/>}
     <div className="project-page-heading">

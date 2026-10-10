@@ -91,6 +91,9 @@ class Scheduler:
         cwd=item.get('workspace',product['source'])
         if action=='prepare' and not Path(cwd).is_dir():
             cwd=product['source']  # The delivery adapter creates its isolated worktree.
+        from .collaboration import context as collaboration_context
+        if kind == 'runs':
+            extra = dict(extra or {}, collaboration_context=collaboration_context(self.ledger,item))
         request={'command':command+[action],'timeout':timeout,'cwd':cwd,
                  'input':{'product':product,'record':item,'state_root':str(self.root)} | (extra or {})}
         path=directory/'request.json'
@@ -168,6 +171,11 @@ class Scheduler:
         self.children=[child for child in self.children if child.poll() is None]
         from .usage import collect
         collect(self.ledger)
+        from .intelligence_scheduler import tick as intelligence_tick
+        try:
+            intelligence_tick(self)
+        except (OSError, ValueError, KeyError, Conflict) as exc:
+            self.store.event('autopilot_intelligence_error', detail={'reason':str(exc)})
         self.reconcile_evaluations()
         from .delivery import tick as delivery_tick
         try:
@@ -205,7 +213,7 @@ class Scheduler:
         if investigate(self,only_active=True):
             return
         runs=[r for r in reversed(self.ledger.list('runs')) if r['status'] in ('cancelling','pausing') or not self.ledger.get('products',r['product_id']).get('automation_disabled')]
-        current=next((r for r in runs if r['status'] not in TERMINAL | {'queued','blocked'}),None)
+        current=next((r for r in runs if r['status'] not in TERMINAL | {'queued','blocked','waiting_for_reply'}),None)
         if current:
             product=self.ledger.get('products',current['product_id'])
             if (product.get('call') or {}).get('action')=='discover':
@@ -278,7 +286,7 @@ class Scheduler:
             self.start_call('products',product,product,'inspect',product['adapter'],timeout=600)
         elif allow_discovery and product['status']=='active' and product.get('executor') and not product.get('nightly_attribution'):
             signals=[s for s in self.ledger.list('signals') if s['product_id']==product['id'] and s['status']=='pending']
-            executing=any(r['product_id']==product['id'] and r['status'] not in TERMINAL | {'queued','blocked'} for r in self.ledger.list('runs'))
+            executing=any(r['product_id']==product['id'] and r['status'] not in TERMINAL | {'queued','blocked','waiting_for_reply'} for r in self.ledger.list('runs'))
             retry_due=time.time()-product.get('last_discover',0)>=policy['inspection_seconds']
             if signals and retry_due and not executing and not self.wait_for_off_peak('products',product,product,'discover') and self.ledger.budget(product['id'],'discovery',policy['discovery_per_day']):
                 self.start_call('products',product,product,'discover',product['executor'],{'signals':signals[:20]},timeout=300)
@@ -341,6 +349,9 @@ class Scheduler:
                 continue
             title=candidate['title'].strip().casefold()
             if title in titles:
+                if titles[title].get('confirmation_required'):
+                    items.append(titles[title])
+                    continue
                 if report_id and titles[title].get('daily_report_id')==report_id:
                     items.append(titles[title])
                 continue
@@ -353,6 +364,14 @@ class Scheduler:
                         raise ValueError('缺少原问题效果验证条件')
                 except ValueError as exc:
                     candidate.update(classification='investigation',reason='需补充验收证据后转开发：'+str(exc))
+            guarded = any(known[i].get('confirmation_required') or known[i].get('source') in ('chat','competitor') for i in ids)
+            if guarded:
+                from .intake import draft
+                candidate.setdefault('goal',candidate.get('title',''))
+                candidate.setdefault('scope',candidate.get('impact',''))
+                item = draft(self.ledger,product['id'],candidate,'competitor',','.join(sorted(ids)),db)
+                items.append(item)
+                continue
             extra={'requirement_day':day,'daily_report_id':report_id} if report_id else {}
             item=self.ledger.create('requirements',redact(candidate) | {'product_id':product['id']} | extra,'pending',db=db)
             for ident in set(ids):
@@ -379,10 +398,17 @@ class Scheduler:
             if action in ('plan','develop'):
                 run=self.change('runs',run,{'execution_seconds':run.get('execution_seconds',0)+result.get('elapsed',0)})
             try:
+                if result.get('status') == 'waiting_for_reply':
+                    from .collaboration import wait_run
+                    return wait_run(self,run,action,result,run['receipts'][-1]['call_id'])
                 return self.complete_action(run,product,action,result)
             except Exception as exc:
                 # Receipt already exists: surface the controller error instead of silently invoking the model again.
                 return self.block(run,'控制器处理 '+action+' 回执失败：'+str(exc))
+        previous = (run.get('receipts') or [{}])[-1]
+        if previous.get('result',{}).get('status') == 'waiting_for_reply' and previous.get('call_id') != run.get('collaboration_processed_call'):
+            from .collaboration import wait_run
+            return wait_run(self,run,previous['action'],previous['result'],previous['call_id'])
         requirement=self.ledger.get('requirements',run['requirement_id'])
         if run['status']=='queued':
             if self.wait_for_off_peak('runs',run,product,'plan'):
@@ -552,6 +578,14 @@ class Scheduler:
                     'actual':result.get('summary',''),'judgement':result.get('instruction',''),
                     'details':redact(result),'provider':product.get('agents',{}).get('acceptance',{}).get('provider','inherited')},
                     'pass' if result.get('decision') in ('approve','done') else 'blocked',ident=evidence_id)
+            if result.get('decision') == 'blocked' and product.get('intelligence',{}).get('collaboration_enabled'):
+                try:
+                    question = json.loads(result.get('instruction',''))
+                except (ValueError,TypeError):
+                    question = {}
+                if isinstance(question,dict) and question.get('collaboration_requests'):
+                    from .collaboration import wait_run
+                    return wait_run(self,run,'review',question,review['id'])
             expected='approve' if run['status']=='plan_review' else 'done'
             if result.get('decision')==expected and result.get('pause_proof',{}).get('pause_verified'):
                 from .delivery import configured
@@ -607,10 +641,12 @@ class Scheduler:
         with log.open('a') as stream:
             stream.write(json.dumps({'type':'autopilot/process-completed','seq':int(time.time()*1000),'data':{'receipts':run.get('receipts',[])}})+'\n')
         rid=str(uuid.uuid4())
+        from .collaboration import context as collaboration_context
+        collaboration = collaboration_context(self.ledger,run)
         packet={'request_id':rid,'session_id':run['id'],'cwd':run['workspace'],'scope':['.'],
                 'phase':'plan' if run['status']=='plan_review' else 'acceptance',
                 'summary':json.dumps(redact({'requirement':requirement,'plan':run.get('plan'),'checks':run.get('checks'),
-                       'summary':run.get('summary'),'execution':'独立执行进程已退出；控制器冻结工作区等待审查'}),ensure_ascii=False)[:20000]}
+                       'summary':run.get('summary'),'collaboration':collaboration,'collaboration_protocol':('需要补充信息时 decision=blocked，instruction 填写 JSON 字符串 {"collaboration_requests":[{"to_role":"verification","topic":"主题","content":"问题","evidence_ids":[]}]}，回复不能替代正式审查。' if product.get('intelligence',{}).get('collaboration_enabled') else None),'execution':'独立执行进程已退出；控制器冻结工作区等待审查'}),ensure_ascii=False)[:20000]}
         self.change('runs',run,{'review_id':rid,'review_packet':packet,'reason':'','off_peak_wait':None})
         from .usage import register
         register(self.ledger,product['id'],self.store.state/'reviews'/rid/'trace.jsonl',record_id=run['id'],action=run['status'])

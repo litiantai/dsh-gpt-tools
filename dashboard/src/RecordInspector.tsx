@@ -1,3 +1,4 @@
+import {CollaborationPanel, RequirementCard} from './ProjectIntelligence';
 import { ErrorNotice, errorText, serializeError } from './errors';
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -100,6 +101,8 @@ export default function RecordInspector({record,kind,receipt,statusLabel}:{recor
         {current.kind!=='reviews' && [selected.review_id,selected.acceptance_review_id].filter((id,index,all)=>typeof id==='string' && all.indexOf(id)===index).map(id=><Link key={String(id)} to={`/reviews?id=${encodeURIComponent(String(id))}`}>查看关联审查 {String(id).slice(0,8)}</Link>)}
         {current.kind==='evidence' && !!selected.screenshot && <Button onClick={()=>void screenshot()}>查看过程截图</Button>}
       </Space>{imageError && <Alert type="error" message={<ErrorNotice value={imageError}/>}/>}</>},
+      ...(current.kind==='runs' && selected.product_id && selected.id?[{key:'collaboration',label:'协作记录',children:<CollaborationPanel pid={String(selected.product_id)} runId={String(selected.id)}/>}]:[]),
+      ...(current.kind==='requirements' && selected.confirmation_required?[{key:'confirmation',label:'需求确认',children:<RequirementCard row={selected as never} onChanged={()=>window.location.reload()}/>}]:[]),
       {key:'acceptance',label:'验收与检查',children:<RecordChecks items={items}/>},
       {key:'receipts',label:'执行回执',children:<RecordReceipts items={items} receipt={!linked?receipt:undefined}/>},
       {key:'related',label:`关联记录 (${related.length})`,children:<>

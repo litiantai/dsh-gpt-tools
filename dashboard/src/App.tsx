@@ -30,6 +30,7 @@ export default function Shell() {
   const overview = useData<Overview>("/overview");
   const navigate = useNavigate();
   const location = useLocation();
+  const pureChat = location.pathname === '/autopilot' && projectSection(new URLSearchParams(location.search)) === 'intelligence';
   const projectView = location.pathname === '/autopilot' || location.pathname === '/';
   const [projectUrl,setProjectUrl]=useState(()=>sessionStorage.getItem('last-project-url') || '/autopilot');
   useEffect(()=>{
@@ -47,7 +48,7 @@ export default function Shell() {
     ["/settings", "平台设置", <SettingOutlined />],
   ] as const;
   return (
-    <div className={`workspace ${projectView ? 'project-workspace' : ''}`}>
+    <div className={`workspace ${projectView ? 'project-workspace' : ''} ${pureChat ? 'pure-chat-workspace' : ''}`}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-icon">
@@ -99,7 +100,7 @@ export default function Shell() {
           </div>
         </header>
         <main>
-          <PlatformUpdate />
+          {!pureChat && <PlatformUpdate />}
           <Routes>
             <Route path="/autopilot" element={<AutopilotPage />} />
             <Route path="/" element={<Navigate to="/autopilot" replace />} />

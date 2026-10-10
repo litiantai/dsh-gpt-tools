@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from review_core import Conflict
 
-KINDS = ('products', 'signals', 'requirements', 'runs', 'releases', 'workers', 'inspections', 'evidence', 'evaluations', 'daily_reports', 'deliveries', 'code_reviews', 'scans')
+KINDS = ('products', 'signals', 'requirements', 'runs', 'releases', 'workers', 'inspections', 'evidence', 'evaluations', 'daily_reports', 'deliveries', 'code_reviews', 'scans', 'conversations', 'chat_messages', 'attachments', 'competitors', 'research_jobs', 'source_snapshots', 'agent_messages')
 TERMINAL = {'completed', 'accepted', 'cancelled', 'rolled_back', 'delivered', 'online'}
 DEFAULTS = dict(probe_seconds=60,inspection_seconds=21600, discovery_per_day=4, runs_per_day=2,
                 tokens_per_day=0, deepseek_off_peak_only=True,
@@ -54,6 +54,8 @@ class Ledger:
                 CREATE INDEX IF NOT EXISTS auto_runs_status ON auto_runs(status,created);
             ''')
 
+            for kind in KINDS:
+                db.execute(f'CREATE INDEX IF NOT EXISTS auto_{kind}_project ON auto_{kind}(product_id,created,id)')
             if 'budget_kind' not in {r[1] for r in db.execute('PRAGMA table_info(auto_token_sources)')}:
                 db.execute("ALTER TABLE auto_token_sources ADD COLUMN budget_kind TEXT NOT NULL DEFAULT 'tokens'")
             for column in ('record_id', 'action'):
@@ -74,6 +76,33 @@ class Ledger:
     def list(self, kind):
         with self.store.connect() as db:
             return [self.decode(r) for r in db.execute(f'SELECT * FROM {self._table(kind)} ORDER BY created DESC LIMIT 1000')]
+
+    def scoped(self, kind, product_id, db=None, **filters):
+        """项目内完整查询；后台不受旧全局列表 1000 条上限影响。"""
+        if db is None:
+            with self.store.connect() as conn:
+                return self.scoped(kind, product_id, conn, **filters)
+        rows = [self.decode(row) for row in db.execute(
+            f'SELECT * FROM {self._table(kind)} WHERE product_id=? ORDER BY created,id', (product_id,))]
+        return [row for row in rows if all(row.get(k) == v for k, v in filters.items())]
+
+    def page(self, kind, product_id, cursor='', limit=50, **filters):
+        limit = max(1, min(int(limit), 100))
+        clauses, parameters = ['product_id=?'], [product_id]
+        for key,value in filters.items():
+            if key not in ('conversation_id','run_id','status'):
+                raise ValueError('分页筛选字段无效')
+            clauses.append('status=?' if key=='status' else "json_extract(data, '$."+key+"')=?")
+            parameters.append(value)
+        with self.store.connect() as db:
+            if cursor:
+                anchor = db.execute(f"SELECT created,id FROM {self._table(kind)} WHERE "+' AND '.join(clauses)+' AND id=?', (*parameters,cursor)).fetchone()
+                if anchor is None:
+                    raise ValueError('分页游标无效')
+                clauses.append('(created,id) > (?,?)')
+                parameters += [anchor['created'],anchor['id']]
+            rows = [self.decode(row) for row in db.execute(f"SELECT * FROM {self._table(kind)} WHERE "+' AND '.join(clauses)+' ORDER BY created,id LIMIT ?', (*parameters,limit+1))]
+        return {'items':rows[:limit], 'next_cursor':rows[limit-1]['id'] if len(rows)>limit else None}
 
     def get(self, kind, ident, db=None):
         if db is None:
