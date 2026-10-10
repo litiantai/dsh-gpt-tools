@@ -6,6 +6,21 @@ from .store import redact
 from error_messages import failure_fields
 
 
+def verification_failure(result):
+    """依赖下载的明确网络故障保留验证阶段，不能作为代码缺陷消耗返修次数。"""
+    if result.get('status') != 'fail':
+        return result
+    failed = [c for c in result.get('checks', []) if c.get('status') != 'pass' and c.get('required', True)]
+    if not failed or any(not c.get('name', '').startswith('install-') for c in failed):
+        return result
+    network = re.compile(r'\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|ENOTFOUND)\b')
+    for check in failed:
+        detail = '\n'.join(str(check.get(k, '')) for k in ('reason', 'log_tail', 'diagnostic'))
+        if not network.search(detail):
+            return result
+    return result | {'status': 'blocked', 'failure_kind': 'dependency_network', 'retryable': True}
+
+
 def harness_failure(root, returncode):
     """优先读取结构化终止事件；失败回执不能被空 final 掩盖。"""
     errors = []

@@ -63,6 +63,10 @@ class Control:
             from .github import credential_file
             self.ledger.get('products',parts[1])
             return {'configured': credential_file().is_file()}
+        if len(parts)==3 and parts[0]=='products' and parts[2]=='notifications':
+            from .notifications import get as notifications_get
+            self.ledger.get('products',parts[1])
+            return notifications_get(self.ledger,parts[1])
         if len(parts)==3 and parts[0]=='products' and parts[2]=='git-status':
             from .github import connection_status
             product=self.ledger.get('products',parts[1])
@@ -138,6 +142,18 @@ class Control:
             if not all(value.values()):
                 raise ValueError('需求证据与验收条件不能为空')
             return self.ledger.create(kind,value | {'priority':body.get('priority',2)},'pending')
+        if len(parts)==4 and parts[0]=='products' and parts[2]=='notifications':
+            self.ledger.get('products',parts[1])
+            if parts[3]=='configure':
+                from .notifications import configure
+                return configure(self.ledger,parts[1],body)
+            if parts[3]=='recipients':
+                from .notifications import add_recipients
+                return add_recipients(self.ledger,parts[1],body)
+            if parts[3]=='send-test':
+                from .notifications import send_test
+                return send_test(self.ledger,parts[1])
+            raise KeyError('接口不存在')
         if len(parts)!=3:
             raise KeyError('接口不存在')
         _,ident,action=parts

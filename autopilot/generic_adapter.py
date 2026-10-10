@@ -229,7 +229,8 @@ def execute(action, request):
                         runtime=independent_runtime(request.get('state_root'))))
         with session as result:
             if result['status'] != 'pass':
-                return result
+                from .failures import verification_failure
+                return verification_failure(result)
             if digest(record['workspace']) != before:
                 return {'status': 'fail', 'reason': '验证期间源码发生变化', 'checks': result['checks']}
             from .codex_executor import execute as evaluate, verification_material

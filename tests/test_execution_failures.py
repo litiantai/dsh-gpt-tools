@@ -7,7 +7,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'dsh-gpt-supervisor/scripts')]
-from autopilot.failures import harness_failure
+from autopilot.failures import verification_failure, harness_failure
 from autopilot.thsoctop import browser_failure
 from autopilot.retry import abnormal
 from autopilot.scheduler import Scheduler
@@ -21,6 +21,28 @@ class ExecutionFailureTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_install_network_failure_preserves_stage_and_revision_budget(self):
+        result = {'status': 'fail', 'reason': 'install 检查未通过：npm error code ECONNRESET',
+                  'checks': [{'name': 'install-0', 'status': 'fail', 'log_tail': 'npm error code ECONNRESET'}]}
+        classified = verification_failure(result)
+        self.assertEqual(classified['status'], 'blocked')
+        self.assertTrue(classified['retryable'])
+        scheduler = Scheduler(Store(self.root/'state'))
+        product = scheduler.ledger.create('products', {})
+        run = scheduler.ledger.create('runs', {'product_id': product['id'], 'revisions': 3,
+            'receipts': [{'result': classified}]}, 'verifying')
+        updated = scheduler.complete_action(run, product, 'verify', result)
+        self.assertEqual(updated['status'], 'blocked')
+        self.assertEqual(updated['resume_status'], 'verifying')
+        self.assertEqual(updated['revisions'], 3)
+        self.assertTrue(abnormal(updated))
+
+    def test_build_test_and_dependency_definition_errors_remain_real_failures(self):
+        for name, text in [('build-0', 'ECONNRESET in test fixture'), ('test-1', 'ECONNRESET assertion failed'),
+                           ('install-0', 'npm error code ERESOLVE')]:
+            result = {'status': 'fail', 'checks': [{'name': name, 'status': 'fail', 'log_tail': text}]}
+            self.assertEqual(verification_failure(result)['status'], 'fail')
 
     def test_quota_event_survives_empty_final_and_zero_exit(self):
         event = {'type': 'status', 'phase': 'turn_end', 'reason': {'kind': 'error',

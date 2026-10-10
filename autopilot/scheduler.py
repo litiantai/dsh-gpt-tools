@@ -167,6 +167,13 @@ class Scheduler:
                         if result and result.get('uncertain'):
                             atomic(Path(item['call']['path']).parent/'result.json', result)
             return
+        # 通知投递必须放在本函数靠前位置：后面各阶段存在大量提前 return，
+        # 若放在末尾，忙碌周期会长期跳过发送。发送本身不改变 run/release 状态。
+        from .notifications import tick as notifications_tick
+        try:
+            notifications_tick(self)
+        except (OSError, ValueError, KeyError, Conflict) as exc:
+            self.store.event('autopilot_notification_error', detail={'reason': str(exc)})
         scan_tick(self)
         self.children=[child for child in self.children if child.poll() is None]
         from .usage import collect
@@ -480,6 +487,9 @@ class Scheduler:
             return self.start_call('runs',run,product,'observe',product['adapter'],{'requirement':requirement},timeout=60)
 
     def complete_action(self,run,product,action,result):
+        if action == 'verify':
+            from .failures import verification_failure
+            result = verification_failure(result)
         policy=DEFAULTS | product.get('policy',{})
         if action=='observe' and result['status']=='busy':
             failures=run.get('observation_retries',0)+1

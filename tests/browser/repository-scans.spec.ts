@@ -1,4 +1,37 @@
 import {test,expect} from '@playwright/test';
+for(const capability of [undefined, 0, '1', true, 1.5]) {
+  test(`scan capability ${String(capability)} blocks requests until rechecked`,async({page})=>{
+    let supported=false;
+    await page.route('**/api/runtime-identity',route=>route.fulfill({json:{capabilities:{repository_scans:supported?1:capability}}}));
+    const requests:string[]=[];
+    await page.route('**/api/scans',route=>{requests.push(route.request().method());return route.fulfill({json:[]});});
+    await page.goto('/autopilot');
+    await page.getByRole('button',{name:'接入仓库',exact:true}).click();
+    const dialog=page.getByRole('dialog');
+    await expect(dialog.getByText('管理服务需要升级')).toBeVisible();
+    await dialog.getByLabel('代码仓库地址').fill('/isolated/scan-fixture');
+    await expect(dialog.getByRole('button',{name:'扫描新仓库'})).toBeDisabled();
+    expect(requests).toEqual([]);
+    supported=true;
+    await dialog.getByRole('button',{name:'重新核对'}).click();
+    await expect(dialog.getByRole('button',{name:'扫描新仓库'})).toBeEnabled();
+    await expect.poll(()=>requests.length).toBeGreaterThan(0);
+  });
+}
+
+test('identity failure blocks scan requests and explains recovery',async({page})=>{
+  await page.route('**/api/runtime-identity',route=>route.fulfill({status:503,json:{error:'unavailable'}}));
+  let requests=0;
+  await page.route('**/api/scans',route=>{requests++;return route.fulfill({json:[]});});
+  await page.goto('/autopilot');
+  await page.getByRole('button',{name:'接入仓库',exact:true}).click();
+  const dialog=page.getByRole('dialog');
+  await expect(dialog.getByText('无法核对管理服务')).toBeVisible();
+  await dialog.getByLabel('代码仓库地址').fill('/isolated/scan-fixture');
+  await expect(dialog.getByRole('button',{name:'扫描新仓库'})).toBeDisabled();
+  expect(requests).toBe(0);
+});
+
 test('repository onboarding records scan requests and distinguishes startup from acceptance',async({page})=>{
   await page.goto('/autopilot');
   await page.getByRole('button',{name:'接入仓库',exact:true}).click();
@@ -50,4 +83,20 @@ test('repository scan blocks submission when the adapter protocol version mismat
   await expect(dialog.getByText('当前项目接入能力不匹配')).toBeVisible();
   await expect(dialog.getByText('协议版本必须为 1')).toBeVisible();
   await expect(dialog.getByRole('button',{name:'扫描新仓库'})).toBeDisabled();
+});
+test('repository scan warns and sends no scan request when the backend predates the capability',async({page})=>{
+  // 隔离复现“新版前端连接旧版后端”：旧服务的运行身份没有 capabilities.repository_scans。
+  const legacyIdentity={product_id:'legacy-product',commit:'old',release_id:'old'};
+  const json=(body:unknown)=>({status:200,contentType:'application/json',body:JSON.stringify(body)});
+  await page.route('**/api/runtime-identity',route=>route.fulfill(json(legacyIdentity)));
+  const scanRequests:string[]=[];
+  page.on('request',request=>{const path=new URL(request.url()).pathname;if(path==='/api/scans'||path.startsWith('/api/scans/'))scanRequests.push(request.url());});
+  await page.goto('/autopilot');
+  await page.getByRole('button',{name:'接入仓库',exact:true}).click();
+  const dialog=page.getByRole('dialog');
+  await expect(dialog.getByText('管理服务需要升级')).toBeVisible();
+  await dialog.getByLabel('代码仓库地址').fill('/isolated/scan-fixture');
+  await expect(dialog.getByRole('button',{name:'扫描新仓库'})).toBeDisabled();
+  await page.waitForTimeout(300);
+  expect(scanRequests).toEqual([]);
 });

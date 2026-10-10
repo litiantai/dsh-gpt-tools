@@ -32,6 +32,35 @@ from autopilot.api import Control
 from error_messages import present_errors, failure_fields
 
 
+# 仓库扫描 API 契约版本。当前运行代码声明自己实现的能力；不兼容变更时递增，
+# 前端据此在调用 /api/scans 前核对，避免新版页面连接旧版服务时反复提交无效扫描。
+REPOSITORY_SCAN_API_VERSION = 1
+
+
+def runtime_identity(root=ROOT):
+    """返回运行身份，并声明当前运行代码版本的仓库扫描能力。
+
+    能力以正在提供请求的代码为准，而不是磁盘上的 release marker，因此
+    “旧后端 + 新 marker” 不可能误报支持。旧字段保持原样，只新增 capabilities。
+    """
+    marker = Path(root) / "autopilot-release.json"
+    try:
+        payload = json.loads(marker.read_text()) if marker.exists() else {}
+    except (OSError, ValueError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.setdefault("product_id", None)
+    payload.setdefault("commit", None)
+    payload.setdefault("release_id", None)
+    existing = payload.get("capabilities")
+    payload["capabilities"] = {
+        **(existing if isinstance(existing, dict) else {}),
+        "repository_scans": REPOSITORY_SCAN_API_VERSION,
+    }
+    return payload
+
+
 class Dashboard:
     def __init__(self, state):
         self.store = Store(state)
@@ -216,8 +245,7 @@ class Dashboard:
             from autopilot.platform_update import status
             return status(self.store.state)
         if path == "/runtime-identity":
-            marker = ROOT / "autopilot-release.json"
-            return json.loads(marker.read_text()) if marker.exists() else {"product_id": None, "commit": None, "release_id": None}
+            return runtime_identity()
         if path.startswith('/reviews/') and path.endswith('/context'):
             from autopilot.record_context import record_context
             ident = path.split('/')[2]
@@ -560,7 +588,7 @@ class Dashboard:
         oid = body.get("operation_id", "")
         uuid.UUID(oid)
         fingerprint = json.dumps([path, body], sort_keys=True, ensure_ascii=False)
-        if path.rstrip('/').endswith(('/git-token', '/intelligence/attachments')):
+        if path.rstrip('/').endswith(('/git-token', '/intelligence/attachments', '/notifications/configure')):
             # Idempotency must never persist the credential request body.
             fingerprint = 'sha256:' + hashlib.sha256(fingerprint.encode()).hexdigest()
         with self.lock:

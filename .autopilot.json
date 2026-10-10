@@ -79,6 +79,17 @@
       "-p",
       "test_generic_projects.py",
       "-v"
+    ],
+    "notifications": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-p",
+      "test_notifications.py",
+      "-v"
     ]
   },
   "test_start": [

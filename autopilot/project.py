@@ -36,6 +36,9 @@ def validate(config):
         raise ValueError('功能缺陷处理策略必须为 block 或 backlog')
     if config.get('test_execution', 'isolated') not in ('isolated', 'local'):
         raise ValueError('测试执行方式必须为 local 或 isolated')
+    if 'notifications' in config:
+        from .notifications import validate_structure
+        validate_structure(config['notifications'])
     spec = config.get('adapter_spec')
     if spec is None:
         return

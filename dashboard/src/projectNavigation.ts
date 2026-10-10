@@ -8,7 +8,7 @@ export const projectSections = {
   tasks: { label: '任务流水线', tabs: ['runs', 'sessions', 'reviews', 'events'] },
   evidence: { label: '巡查与证据', tabs: ['inspections', 'timeline', 'evaluations', 'daily'] },
   releases: { label: '代码交付与安装', tabs: ['deliveries', 'code_reviews', 'release_prs', 'repair_issues', 'releases'] },
-  settings: { label: '项目设置', tabs: ['roles', 'research', 'git', 'policy', 'environment'] },
+  settings: { label: '项目设置', tabs: ['roles', 'research', 'git', 'policy', 'environment', 'notifications'] },
 } satisfies Record<string, { label: string; tabs: string[] }>;
 export type ProjectSection = keyof typeof projectSections;
 
