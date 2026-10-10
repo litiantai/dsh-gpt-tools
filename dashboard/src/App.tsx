@@ -25,6 +25,7 @@ import ReviewsPage from "./pages/ReviewsPage";
 import SessionsPage from "./pages/SessionsPage";
 import SettingsPage from "./pages/SettingsPage";
 import AutopilotPage from "./pages/AutopilotPage";
+import PlatformUpdate from './PlatformUpdate';
 export default function Shell() {
   const overview = useData<Overview>("/overview");
   const navigate = useNavigate();
@@ -98,6 +99,7 @@ export default function Shell() {
           </div>
         </header>
         <main>
+          <PlatformUpdate />
           <Routes>
             <Route path="/autopilot" element={<AutopilotPage />} />
             <Route path="/" element={<Navigate to="/autopilot" replace />} />
