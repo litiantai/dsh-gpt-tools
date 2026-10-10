@@ -63,7 +63,7 @@ def execute(action,request):
     source=product['model_source']
     runtime=Path(product['worker_runtime'])
     workspace=Path(record.get('workspace',product['repository'])).resolve()
-    if product.get('test_execution') == 'local' and action != 'develop':
+    if product.get('test_execution') == 'local' and action != 'develop' and not record.get('conflict_resolution'):
         from .master import source_workspace
         workspace = Path(source_workspace(request))
     from .project import generic

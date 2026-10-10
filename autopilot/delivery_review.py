@@ -51,7 +51,7 @@ def schema(review=False):
     return {'type': 'object', 'additionalProperties': False, 'properties': fields, 'required': list(fields)}
 
 
-def model(request, folder, prompt, review=False, write=False):
+def model(request, folder, prompt, review=False, write=False, workspace=None):
     from review_core import Store
     from reviewers import normalize, snapshot, command, read_result
     from .store import Ledger
@@ -65,14 +65,15 @@ def model(request, folder, prompt, review=False, write=False):
     if selected.get('bin'):
         actual['bin'] = selected['bin']
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _, _, _, workspace = paths(request)
+    explicit_workspace = workspace is not None
+    workspace = Path(workspace) if explicit_workspace else paths(request)[3]
     atomic(folder / 'schema.json', schema(review))
     atomic(folder / 'selection.json', {k: v for k, v in actual.items() if k not in ('home', 'harness_home')})
     register(Ledger(store), request['product']['id'], folder / 'trace.jsonl', budget_kind='code_delivery_tokens')
     if actual['provider'] == 'harness' and (write or not review):
         from .executor import execute
         product = copy.deepcopy(request['product'])
-        product['repository'] = str(paths(request)[2])
+        product['repository'] = str(request['product']['delivery_repository'] if explicit_workspace else paths(request)[2])
         product.setdefault('agents', {})['implementation'] = selected
         worker = request['record'] | {'workspace': str(workspace), 'worker_home': str(folder / 'home'), 'plan': prompt}
         result = execute('develop' if write else 'plan', request | {'product': product, 'record': worker, 'requirement': {'title': '修复评审问题', 'acceptance': [prompt]}})
