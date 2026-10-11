@@ -12,6 +12,54 @@ INTERVAL = 3600
 FAULT = re.compile(r'timed?\s*out|timeout|connection|network|temporar|ECONN|ENOTFOUND|EAI_AGAIN|超时|退出码|执行失败|运行异常|回执.*(?:读取|解析)失败|网络|连接失败|连接中断|服务不可用|rate.limit|限流|429|502|503|504', re.I)
 
 
+def manual_run_retry(ledger, ident, version):
+    """人工授权单轮重试，独立留痕且不重置或消耗自动返修次数。"""
+    from review_core import Conflict, ACTIVE
+    from .store import redact
+    with ledger.store.transaction() as db:
+        run = ledger.get('runs', ident, db)
+        if run['version'] != version or run['status'] != 'blocked':
+            raise Conflict('记录已更新，请刷新后重试')
+        if run.get('uncertain') or run.get('call') or run.get('pending_result'):
+            raise Conflict('先核对未确认的进程或执行结果，不能重复执行')
+        if run.get('review_id'):
+            try:
+                review = ledger.store.get(run['review_id'])
+            except KeyError:
+                review = None
+            if review and (review['status'] in ACTIVE or review.get('execution_done') is False):
+                raise Conflict('审查仍在执行，请等待审查结束后重试')
+        phase = run.get('resume_status') or 'queued'
+        exhausted = run.get('revision_exhausted') or run.get('reason', '').startswith('返修次数已用尽：')
+        changes = {'control': None, 'reason': '', 'next_auto_retry_at': None, 'auto_retry_wait_reason': None,
+                   'coordination_pending': None, 'coordination_wait': '', 'revision_exhausted': False}
+        if exhausted and phase in ('planning', 'plan_review', 'developing', 'verifying', 'acceptance_review'):
+            phase = 'planning' if phase in ('planning', 'plan_review') else 'developing'
+            feedback = run.get('feedback') or run.get('reason', '')
+            diagnostic = run.get('last_revision_diagnostic')
+            if diagnostic:
+                feedback += '\n技术诊断：' + json.dumps(diagnostic, ensure_ascii=False)
+            changes['feedback'] = redact(feedback)
+        # 终态审查留在历史中；重试不得再次消费旧的 revise/blocked 结论。
+        changes.update(review_id=None, review_packet=None)
+        now = time.time()
+        count = run.get('manual_retry_count', 0) + 1
+        evidence = ledger.create('evidence', {'product_id': run['product_id'], 'run_id': ident,
+            'title': '人工阻塞重试', 'phase': 'manual_retry', 'at': now,
+            'details': redact({'source': 'human', 'manual_retry_count': count, 'at': now,
+                'from': run['status'], 'to': phase, 'reason': run.get('reason', ''),
+                'revisions': run.get('revisions', 0), 'extra_revisions': run.get('extra_revisions', 0),
+                'source_version': version, 'review_id': run.get('review_id'),
+                'coordination_pending': run.get('coordination_pending'), 'counts_toward_revisions': False})},
+            'recorded', db=db)
+        changes.update(manual_retry_count=count, last_manual_retry_at=now,
+                       manual_retry_pending=evidence['id'], manual_retry_evidence_id=evidence['id'])
+        updated = ledger.update('runs', ident, version, changes, phase, db)
+        ledger.store.event('autopilot_manual_retry', detail={'kind': 'runs', 'id': ident,
+            'evidence_id': evidence['id'], 'count': count, 'from': 'blocked', 'to': phase}, db=db)
+        return updated
+
+
 def abnormal(item):
     receipts = item.get('receipts') or []
     result = (receipts[-1].get('result') or {}) if receipts else {}

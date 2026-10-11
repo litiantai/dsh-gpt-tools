@@ -1,0 +1,52 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "blocked"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "competitors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "reason",
+          "urls"
+        ]
+      }
+    }
+  },
+  "required": [
+    "status",
+    "reason",
+    "summary",
+    "competitors"
+  ]
+}

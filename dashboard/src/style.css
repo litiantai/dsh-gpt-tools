@@ -944,6 +944,29 @@ summary:focus-visible {
 }
 
 .record-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.record-plans { display: grid; gap: 16px; min-width: 0; }
+.record-plans > *, .development-plan { min-width: 0; max-width: 100%; }
+.record-plans .ant-card-head-title { white-space: normal; overflow-wrap: anywhere; }
+.development-plan > .ant-segmented { margin-bottom: 20px; }
+.plan-markdown { line-height: 1.8; overflow-wrap: anywhere; }
+.plan-markdown > :first-child { margin-top: 0; }
+.plan-markdown > :last-child { margin-bottom: 0; }
+.plan-markdown h1, .plan-markdown h2 { border-bottom: 1px solid var(--divider); padding-bottom: 8px; }
+.plan-markdown h1 { font-size: 26px; }
+.plan-markdown h2 { font-size: 21px; margin-top: 28px; }
+.plan-markdown h3 { font-size: 17px; }
+.plan-markdown blockquote { margin: 16px 0; padding: 4px 16px; border-left: 3px solid var(--divider); color: var(--muted); }
+.plan-markdown blockquote > :last-child { margin-bottom: 0; }
+.plan-markdown code, .plan-source { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; }
+.plan-markdown :not(pre) > code { padding: 2px 5px; border-radius: 4px; background: var(--canvas); }
+.plan-markdown pre, .plan-source { max-width: 100%; overflow: auto; padding: 16px; border: 1px solid var(--divider); border-radius: 8px; background: var(--canvas); white-space: pre; }
+.plan-markdown img { max-width: 100%; height: auto; }
+.plan-table { max-width: 100%; overflow-x: auto; margin: 16px 0; }
+.plan-table table { border-collapse: collapse; width: 100%; }
+.plan-table th, .plan-table td { border: 1px solid var(--divider); padding: 8px 12px; text-align: left; }
+.plan-table th { background: var(--canvas); }
+.plan-markdown ul, .plan-markdown ol { padding-left: 24px; }
+.plan-markdown .contains-task-list { list-style: none; padding-left: 4px; }
 .record-value, .record-result { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .record-items, .record-receipts, .record-checks { display: grid; gap: 12px; min-width: 0; }
 .record-item { padding: 6px 0; }

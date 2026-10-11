@@ -1,0 +1,64 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "blocked",
+        "waiting_for_reply"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "collaboration_requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "to_role": {
+            "type": "string",
+            "enum": [
+              "discovery",
+              "implementation",
+              "verification",
+              "acceptance",
+              "human"
+            ]
+          },
+          "topic": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "evidence_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "to_role",
+          "topic",
+          "content",
+          "evidence_ids"
+        ]
+      }
+    }
+  },
+  "required": [
+    "status",
+    "reason",
+    "summary",
+    "collaboration_requests"
+  ]
+}

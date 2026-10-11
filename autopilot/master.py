@@ -25,6 +25,7 @@ def source_workspace(request):
             raise ValueError('master 只读工作区提交不一致或源码发生变化')
     return str(root)
 
+
 def enabled(product):
     from .project import generic
     if generic(product):

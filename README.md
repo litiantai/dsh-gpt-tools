@@ -6,6 +6,14 @@
 
 项目可通过 `.autopilot.json` 声明版本 1 配置：`commands` 中的 `install/build/test/browser/start` 均为命令参数数组列表，启动命令支持 `{port}` 与 `{state}`。`readonly_paths` 限定正式实例只读断言，`acceptance_checks` 提供命名的隔离测试（探针路径为 `check:名称`）。`artifacts` 声明产物目录，`exclude` 排除不属于发布基线的材料。仓库内本项目配置是完整示例。
 
+验收分为发布前候选验证与发布后正式实例复验。开发、独立业务验证和方案/验收审查统一使用 `pre_release` 阶段：核对当前 feat/release 提交、功能和真实测试证据；正式实例尚未更新不作为候选验收失败原因。原需求及 `resolution_probes` 保留，候选回执与产物清单中的 `acceptance_scope.post_release` 标记为 `pending`。正常发布并核对运行版本后，控制器通过上线观察或主分支最终复验执行原始断言；候选测试通过不能代替正式实例效果验证。
+
+仓库扫描页面先核对 `/api/runtime-identity` 的 `capabilities.repository_scans`。运行后端声明整数版本 1 或以上才允许查询、提交、重试和应用扫描；旧服务或身份查询失败时停止扫描请求，并提供升级提示与重新核对入口。
+
+依赖安装中明确的网络错误（如 `ECONNRESET`）保留在验证阶段等待重试，不消耗代码返修次数；依赖定义冲突、构建或测试失败仍按原返修规则处理。
+
+项目设置的「通知」支持邮件账户、收件人和五类事件配置。授权码只保存在本机凭据文件，API 不回显。投递记录逐个保存 SMTP 接受和拒收结果，部分拒收仅重试尚未接受的收件人，耗尽次数显示「部分发送失败」。纯文本与 HTML 邮件均包含事件重点。SMTP 接受不能证明收件箱已收到邮件；实际送达需在配置后由用户发送测试简报并核对收件箱。本地协议测试只连接临时回环 SMTP 服务，不使用真实账户或向外发送邮件。
+
 安装依赖禁用生命周期脚本；执行阶段禁止外部网络，测试只能访问配置的本机端口。`test-loopback` 用于需要随机端口的集成测试，并拒绝访问平台正式端口 13081/13083/13084。文件读取隔离用户目录、应用数据及其他临时工作区；运行目录、临时数据与正式状态分离。当前隔离后端为 macOS Seatbelt，其他系统明确阻塞。Python/JVM 项目会记录识别结果，未提供安全安装和启动配置时等待补充，不套用 Node 命令。
 
 ```sh
@@ -28,6 +36,80 @@ python3 -B scripts/autopilot.py migrate-records
 
 计费规则核对于 2026/10/09，来源为 [DeepSeek 官方价格说明](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)。节假日表保存在 `autopilot/off_peak.py`，已按 [2026 年国务院放假通知](https://www.gov.cn/zhengce/content/202511/content_7047090.htm) 收录全年放假日期；新增年度需更新该表。未收录年份在页面提示，并保守按普通周一至周五高峰时段排队，周末仍正常放行。
 
+## 通用仓库接入与自进化
+
+点击首页的「接入仓库」，提供本地 Git 目录或 HTTPS Git URL。平台在独立工作区记录技术栈、命令来源、依赖、源码提交、构建与测试结果、启动健康、截图及停止结果。启动验证与业务验收分开记录；缺少启动入口、隔离依赖或凭据时显示阻塞，不生成成功证据。重试建立关联的新扫描，原记录不变。通过后可登记为观察模式，或通过版本校验将配置应用到同一项目。
+
+项目可通过 `.autopilot.json` 声明版本 1 配置：`commands` 中的 `install/build/test/browser/start` 均为命令参数数组列表，启动命令支持 `{port}` 与 `{state}`。`readonly_paths` 限定正式实例只读断言，`acceptance_checks` 提供命名的隔离测试（探针路径为 `check:名称`）。`artifacts` 声明产物目录，`exclude` 排除不属于发布基线的材料。仓库内本项目配置是完整示例。
+
+验收分为发布前候选验证与发布后正式实例复验。开发、独立业务验证和方案/验收审查统一使用 `pre_release` 阶段：核对当前 feat/release 提交、功能和真实测试证据；正式实例尚未更新不作为候选验收失败原因。原需求及 `resolution_probes` 保留，候选回执与产物清单中的 `acceptance_scope.post_release` 标记为 `pending`。正常发布并核对运行版本后，控制器通过上线观察或主分支最终复验执行原始断言；候选测试通过不能代替正式实例效果验证。
+
+仓库扫描页面先核对 `/api/runtime-identity` 的 `capabilities.repository_scans`。运行后端声明整数版本 1 或以上才允许查询、提交、重试和应用扫描；旧服务或身份查询失败时停止扫描请求，并提供升级提示与重新核对入口。
+
+依赖安装中明确的网络错误（如 `ECONNRESET`）保留在验证阶段等待重试，不消耗代码返修次数；依赖定义冲突、构建或测试失败仍按原返修规则处理。
+
+项目设置的「通知」支持邮件账户、收件人和五类事件配置。授权码只保存在本机凭据文件，API 不回显。投递记录逐个保存 SMTP 接受和拒收结果，部分拒收仅重试尚未接受的收件人，耗尽次数显示「部分发送失败」。纯文本与 HTML 邮件均包含事件重点。SMTP 接受不能证明收件箱已收到邮件；实际送达需在配置后由用户发送测试简报并核对收件箱。本地协议测试只连接临时回环 SMTP 服务，不使用真实账户或向外发送邮件。
+
+安装依赖禁用生命周期脚本；执行阶段禁止外部网络，测试只能访问配置的本机端口。`test-loopback` 用于需要随机端口的集成测试，并拒绝访问平台正式端口 13081/13083/13084。文件读取隔离用户目录、应用数据及其他临时工作区；运行目录、临时数据与正式状态分离。当前隔离后端为 macOS Seatbelt，其他系统明确阻塞。Python/JVM 项目会记录识别结果，未提供安全安装和启动配置时等待补充，不套用 Node 命令。
+
+```sh
+# 扫描或登记新项目；不再默认接入旧桌面产品。
+python3 -B scripts/autopilot.py scan --source /绝对路径/仓库
+python3 -B scripts/autopilot.py onboard --source /绝对路径/仓库
+# 从固定版本的公开软件包建立独立执行运行时。
+python3 -B scripts/autopilot.py install-runtime --runtime-version 0.1.7-rc.1
+# 兼容迁移保留旧项目 ID、字段及证据；重复执行不会重复转换。
+python3 -B scripts/autopilot.py migrate-records
+```
+
+新增 `GET/POST /api/scans`、`GET /api/scans/<id>`、`POST /api/scans/<id>/retry|onboard|apply`；写入沿用 Cookie、CSRF、操作 UUID 与版本控制。应用扫描结果额外核对项目版本。项目配置包含 `schema_version`、`adapter_spec`（协议版本、类型和能力）、`project_config` 及扫描引用；不支持的能力明确阻塞。`automation_disabled` 停止该项目的后台工作，历史记录只读保留，不转入其他项目。
+
+`dsh-gpt-tools` 使用独立版本目录运行，稳定更新器位于状态目录的 `platform/updater`，不会随普通候选版本覆盖。首次用 `scripts/install-platform.py --state-dir … --manifest …` 准备已验证基线与用户级服务。后续更新经 Git 交付、候选校验后排队；独立更新器停止派发、等待执行进程退出、备份数据库、切换版本、检查 API 与调度心跳，并完成健康观察。只允许向后兼容的数据迁移；失败回滚代码并保留新增历史，不用旧数据库覆盖新记录。更新日志保存于 `autopilot/updates`。
+
+
+## 角色工作流与语言质量门禁
+
+需求发现、开发、独立验证、代码评审、验收五类角色在 `skills/dsh-role-*/workflow.yaml` 声明内部有序步骤。`SKILL.md` 保留角色职责；共享语言标准位于 `skills/dsh-role-verification/profiles/`。总览图、主阶段及返修机制不变，记录详情展示实际工作流和检查结果。“已提交，待核对”是模型声明，只有控制器命令回执可以表示质量检查通过。
+
+工作流版本为 1，步骤包含 `id`、`title`、`kind`（instruction / runtime / quality），可用 `actions` 与 `stacks` 限定适用范围，用 `rules` 引用 skills 根目录内的规则文件。`profiles` 将技术栈映射到共享标准；标准中的 `phases` 指定命令名称与 `required`（always / configured）。顺序固定为 install → compile → typecheck → build → test → browser。Java 必需 compile/test；React、Vue 必需 build/test；其他栈沿用项目已配置命令。平台保存规则、跨角色引用、输出契约和内容摘要；已建立的调用继续使用原快照，配置错误明确阻塞。
+
+`.autopilot.json` 新增可选的 `compile`、`typecheck` 命令及 `stack`、`modules`。命令仍为参数数组列表；模块使用独立的命令和相对目录，不继承根目录命令。存在 modules 时，根命令作为通用聚合检查；服务启动仍使用项目根目录的唯一 start/test_start（多服务项目应声明自己的组合启动入口）。支持 generic、node、python、java、react、vue；缺少 stack 时从模块源码识别。
+
+新扫描登记 `workflow_version: 1`，成果验收必须具有完整控制器回执。旧调用和未配置工作流的角色保持兼容；已有通用项目下一次运行验证会生成质量回执。回执绑定提交、源码摘要、配置、工作流、命令、退出码与日志摘要。重复核对相同回执无需重新执行；源码、配置、日志或回执变化后不可复用。代码评审先运行安装、编译、类型检查、构建和测试，完整运行验证随后执行服务和浏览器验收。
+
+单模块 Maven 示例（项目自行提供可用 JDK、Maven 和明确的依赖来源）：
+
+```json
+{
+  "version": 1,
+  "workflow_version": 1,
+  "stack": "java",
+  "install_policy": "jvm-resolve",
+  "commands": {
+    "install": [["mvn", "dependency:go-offline"]],
+    "compile": [["mvn", "compile"]],
+    "test": [["mvn", "test"]],
+    "start": [["java", "-jar", "target/app.jar", "--server.port={port}"]],
+    "build": [["mvn", "package", "-DskipTests"]]
+  }
+}
+```
+
+JVM 安装策略 `jvm-resolve` 显式允许依赖解析阶段执行 Maven 插件或 Gradle 构建脚本；隔离执行阶段强制离线，缓存保存在本次控制器执行目录。Maven 安装只接受 `dependency:go-offline`；Gradle 安装只接受项目自定义的 `autopilotResolveDependencies`，该任务应解析所有后续检查所需的可解析配置，例如：
+
+```groovy
+tasks.register('autopilotResolveDependencies') {
+    doLast {
+        allprojects.each { p ->
+            p.configurations.findAll { it.canBeResolved }.each { it.resolve() }
+        }
+    }
+}
+```
+
+Gradle 对应命令为 `["gradle", "autopilotResolveDependencies"]`、`["gradle", "classes"]`、`["gradle", "test"]`。只使用本机已安装的 Maven/Gradle；wrapper 可能下载工具链，因此提示配置本机工具路径，不自动执行下载。控制器设置独立 Maven/Gradle 缓存与 JAVA_HOME，并禁用 Gradle 自动下载 JDK；缺少 JDK 或构建工具时提示安装所需版本、设置 JAVA_HOME/PATH 或配置绝对路径，不自动下载运行时；缺少离线依赖或启动入口记录阻塞，编译与测试断言错误记录失败。隔离后端仍仅支持 macOS。
+
+混合模块可在相同配置中声明 `modules: [{"id":"backend","path":"backend","stack":"java","commands":{...},"install_policy":"jvm-resolve"},{"id":"frontend","path":"frontend","stack":"react","commands":{...}}]`。所有模块先完成编译再进入测试，任一必需步骤失败即停止。Watch 仅检查运行身份、健康、只读业务信号并生成需求线索，不执行源码编译。Spring Boot JavaDoc 标准在共享 Java 规则中定义，只审查本次新增或修改的相关代码。
 
 ## 持续研发与项目链路概览
 
@@ -238,6 +320,12 @@ python3 -B /绝对路径/dsh-gpt-tools/dsh-gpt-supervisor/scripts/bridge.py hand
 
 ## 代码结构与验证
 
+项目可配置 `functional_findings_policy: "backlog"`：release 的必需本机测试通过后，独立业务验收发现的功能缺陷保留原 `fail` 证据，并去重登记为 P0 高优先级需求，不再阻拦合并。回执显示需求 ID 与非阻塞处置；实际测试失败、验证执行异常或未完成验证仍阻断，开发阶段验收规则不变。
+
+本机分支测试可在已登记项目的管理配置中设置 `test_execution: "local"`。开发控制器为任务建立 `feat-<任务 ID>` 工作区；待合并验收使用对应 `release-xxx` 工作区。控制器核对分支、提交与干净工作区后，使用本机工具链安装、构建，启动一个临时实例并执行单元及浏览器测试。测试不会在模型沙箱内运行；真实 HOME 保持不变，端口、临时文件、状态和日志独立，超时或验收结束后回收进程组。日志和实例记录绑定分支及提交，失败不得当作通过。
+
+`.autopilot.json` 的 `test_start` 可指定测试实例入口；本项目使用实际看板的测试夹具入口。Playwright 收到控制器提供的 `DSH_E2E_EXTERNAL_ORIGIN` 后复用该实例，不再重复启动。独立执行 `npm run test:e2e` 时仍自行启动测试夹具。模型开发阶段只改代码，验收模型读取控制器提供的真实测试证据。需求、调查及复盘读取当前 master 的独立只读工作区，巡检与合并后复验仍指向 master 实例。其他项目保持原执行方式，仓库配置文件不能自行打开本机执行模式。
+
 ```text
 dashboard/                         React 页面与样式
 connector/                         Harness Host 连接插件
@@ -268,6 +356,8 @@ npm run sync-skills
 设置页支持“统一配置”和“按阶段配置”。每组通过下拉选择审查器（Codex/GPT、Claude CLI、DeepSeek Harness）与模型；首次切换分阶段时从统一配置初始化，之后两套选择独立保留。保存仅影响后续新审查；已经入队的请求持久化审查器、模型、路径和超时快照。
 
 模型目录直接来自本机工具：Codex app-server 的 `model/list`、连接指定 Claude CLI 的 Agent SDK `supportedModels()`、独立 Harness profile 的运行时 `listProviders()/listModels()`。列表刷新不发送用户任务、不计审查额度；5 分钟内复用缓存，失败显示错误与上一次目录时间。Claude 的别名可能映射到自定义供应商模型，以 CLI 实际返回名称为准。模型出现在目录不保证账户调用额度；执行失败保持阻塞，不自动换审查器。
+
+`GET /api/reviewers/codex/account` 通过配置的 Codex CLI 实时查询账户与额度，不发送生成请求，不消耗审查次数。返回账户标识、查询时间、全部额度窗口和服务端使用许可；空值表示未知，查询失败不复用旧快照。代码交付评审及修复在启动前使用本轮实际 CLI 和认证目录重新查询，将结果保存为 `account.json` 并附在回执中。仅服务端明确拒绝使用或未登录时提前阻塞；查询暂不可用时继续由真实执行结果判断。当前可用不保证整轮执行期间额度始终充足，历史失败记录不会被当前额度覆盖。
 
 接口：`GET /api/reviewers/{codex|claude|harness}/models`，`POST /api/reviewers/{provider}/models/refresh`；后者沿用 Cookie、CSRF、操作 UUID，可传未保存的 `codex_bin/claude_bin/harness_bin/harness_profile` 预览目录。`/settings` 新增 `reviewer_mode`（`unified/stages`）、`reviewer_unified`、`reviewer_stages`（`plan/checkpoint/acceptance`）；每个选择含 `provider/model`，Harness 另含 `model_provider`。审查详情的 `reviewer` 保存实际选择；旧记录没有模型时显示“未记录”。
 
@@ -311,9 +401,11 @@ python3 tests/live_reviewers.py --run --home /实际/Harness/home --state-dir /�
 
 在 **项目设置 → Git 与代码评审** 中配置 GitHub 仓库地址、目标分支、代码评审模型、问题修复模型及自动修复轮数。代码交付默认不限修复轮数（`max_revisions=0`）；显式设置 1–20 时限制每批次每天新启动的修复轮数，用尽后排队至北京时间次日零点自动继续；累计历史轮数不再永久阻塞批次。评审、验证和合并不消耗修复额度，修复后仍须重新评审和验证。评审和修复分别支持已有的 Codex、Claude、Harness 执行器，默认继承业务验收和实现角色；每轮启动时冻结模型与推理配置，后续修改不改写历史轮次。目录读取失败不会自动替换已选模型。
 
-业务验收通过后，每个需求的增量进入其固定 `feat-<需求标识>` 分支，并绑定唯一一个 `feat → release` 代码评审 PR；返修与重试复用原 PR，跨日延期将原 PR 的目标切换到次日 release 并重新评审，不为同一需求重复建 PR。每次只准备、评审并合入一个需求，其他需求仍排队。`release-YYYYMMDD` 每天唯一、从 `master` 创建，代码评审通过前禁止向其合入成果；评审失败记录问题，独立修复后重新评审。该阶段只使用固定 OCR 规则与用户所选模型逐文件 Code Review，不启动客户端。每个评审 MR 地址、提交和实际模型分别保存；同日可有多个已合并的评审 MR，仍共用一个 release 和一个 `release → master` 上线 PR。
+业务验收通过后，每个需求的增量进入其固定 `feat-<需求标识>` 分支，并绑定唯一一个 `feat → release` 代码评审 PR；返修与重试复用原 PR，跨日延期将原 PR 的目标切换到次日 release 并重新评审，不为同一需求重复建 PR。每次只准备、评审并合入一个需求，其他需求仍排队。`release-YYYYMMDD` 默认每天一个批次、从 `master` 创建，代码评审通过前禁止向其合入成果；评审失败记录问题，独立修复后重新评审。该阶段只使用固定 OCR 规则与用户所选模型逐文件 Code Review，不启动客户端。每个评审 MR 地址、提交和实际模型分别保存；同日可有多个已合并的评审 MR，同一批次共用一个 release 和一个 `release → master` 上线 PR。
 
-成果真正合入 release 后才标记“已交付未上线”。北京时间 **23:30 封板**，不再开启新的代码评审；未合入成果及修复补丁保留到次日重新评审。封板后的 release 只针对实际已合入成果执行必需检查和业务回归，不带入延期任务的验收条件，也不逐个成果启动客户端验证。统一验证通过后优先按日期顺序合入 master；仅因修复额度排队的批次不占住后续合格成果的上线队列。目标分支或 release 变化会使证据失效，冲突和修复需重新评审，23:30 后的复审等待次日窗口。只有 GitHub 确认上线 PR 已合并并返回 merge SHA，关联需求才显示“已上线”；客户端安装和回滚独立记录。
+成果真正合入 release 后才标记“已交付未上线”。北京时间 **23:30 封板**，不再开启新的代码评审；未合入成果及修复补丁保留到次日重新评审。封板后的 release 只针对实际已合入成果执行必需检查和业务回归，不带入延期任务的验收条件，也不逐个成果启动客户端验证。统一验证通过后优先按日期顺序合入 master；仅因修复额度排队的批次不占住后续合格成果的上线队列。目标分支或 release 变化会使验证证据失效，冲突修复后重新同步并验证；release → master 不再执行代码复审，也不等待次日评审窗口。只有 GitHub 确认上线 PR 已合并并返回 merge SHA，关联需求才显示“已上线”；客户端安装和回滚独立记录。
+
+「待合并 · Release PR」支持 **手动合并**：批次完成需求汇集后，可提前封板并异步执行同步、统一验证和合并，无需等待 23:30；仍遵守 GitHub 检查与分支保护。请求提交后立即返回，合并确认仍更新需求上线状态并继续主实例更新与最终复验。同日后续成果使用 `release-YYYYMMDD-2`、`-3` 等独立批次及工作区，不复用已封板的 PR。执行中、结果待核对或尚未完成汇集的批次不可重复提交。 已异常阻塞的 release 行显示「重试」，从上次中断阶段继续同步、验证或合并；旧版 release 复审异常重试时改走同步和验证；执行中或回执待核对时禁用，提交后立即刷新进度。
 
 首次接入先保存配置，再点击 **建立首次基线 PR**。服务检查本机 GitHub 认证的推送权限和 merge commit 支持；可在 **Git 与代码评审 → 本机 GitHub Token** 直接输入并验证保存。Token 保存在 `$DSH_HOME/supervisor/credentials/github-token`（默认 `~/.dsh/supervisor/credentials/github-token`），目录权限 0700、文件权限 0600；本机项目共用，优先于 `GH_TOKEN` / `GITHUB_TOKEN`、GitHub CLI 和 Git 凭据助手。验证失败保留旧 Token；操作幂等记录只存请求摘要，页面不回显密钥。推送、PR 和合并使用此运行时认证；缺少凭据、权限不足或认证检查失败时，**工作概览** 显示阻塞原因并计入“需要关注”，可点击“重新检查”（自动每分钟检查一次）。凭据不进入项目配置、台账或日志。原项目的 Git 历史、索引及未提交文件备份到状态目录的 `autopilot/git-delivery/<project>/<date>/source-backup.tar.gz`（排除可重建的依赖及构建缓存）。远端为空时，既有提交初始化目标分支，未提交源码通过基线 PR 进入评审；基线合入前暂停新任务派发。原工作区、历史独立快照和已回滚任务保留。
 
@@ -323,7 +415,7 @@ python3 tests/live_reviewers.py --run --home /实际/Harness/home --state-dir /�
 
 代码评审节点按需求展示其 `feat → release` PR，默认筛选未合并且未关闭，支持查看全部需求 PR。`release → master` PR 独立展示在「待合并」，不会混入需求代码评审。历史多个需求共用的真实 PR 会标注共用关系，不伪造独立 PR。状态为「未评审」「已评审 · 评审通过」「已评审 · 问题修复」「已合并」；节点数字仅统计 GitHub 仍开放且「未评审」的 PR；已关闭、已合并以及远端状态未知的 PR 不计入。已关闭但未合并的 PR 留存在列表并单独标注 GitHub 关闭状态。GitHub 状态每分钟同步并保留最近快照，失败时明确提示；评审通过必须对应当前 head/base，提交变化或修复成功后需重新评审。问题修复节点逐条展示未完成问题，同一 PR 可有多条；重复问题按 PR、文件和内容去重，修复成功后移出，复审再次发现的问题重新进入。原始轮次回执继续保存在证据台账。`GET /products/<id>/delivery-board` 返回 PR 与未完成问题视图。
 
-接口沿用现有鉴权、操作 UUID 和版本控制：`POST /products/<id>/configure` 支持 `git`、`code_review`；`POST /products/<id>/migrate-git` 建立基线批次；`GET /deliveries`、`GET /code_reviews` 查询交付与轮次；`POST /deliveries/<id>/retry` 恢复已阻塞批次。已启用的 Git 配置变更要求没有运行中的任务和未结束交付；尚未启用时可先登记仓库地址。代码评审／修复模型可在运行中调整，仅下一轮使用新配置。
+接口沿用现有鉴权、操作 UUID 和版本控制：`POST /products/<id>/configure` 支持 `git`、`code_review`；`POST /products/<id>/migrate-git` 建立基线批次；`GET /deliveries`、`GET /code_reviews` 查询交付与轮次；`POST /deliveries/<id>/retry` 恢复已阻塞批次；`POST /deliveries/<id>/manual-merge` 提交手动合并（需当前 `version`）。已启用的 Git 配置变更要求没有运行中的任务和未结束交付；尚未启用时可先登记仓库地址。代码评审／修复模型可在运行中调整，仅下一轮使用新配置。
 
 
 ### 中文异常与应用自动恢复
@@ -360,7 +452,7 @@ python3 -m pip install -r requirements.txt
 
 ### 竞品研究
 
-在左侧项目简介抽屉的「模型与运行设置」中开启周期研究。对话中发送「发现竞品」「分析竞品」「查看竞品」可手动操作；「停用竞品 名称」「启用竞品 名称」维护名单状态，研究完成后回到原对话。默认每周一北京时间 01:00 发现新竞品，每天 02:00 分析已有名单，周一优先完成竞品发现；也可手动触发。项目暂停时停止周期派发，恢复后补最近到期窗口；关闭周期研究不会清除名单或报告。对话和研究模型默认继承需求发现角色，可分别选择其他已有执行器与模型。
+「竞品分析」与「AI 对话」为同级标签，可直接查看竞品名单与研究记录、发现新竞品或开始分析。在「项目设置 → 竞品分析配置」中选择竞品分析模型并开启周期研究。对话中发送「发现竞品」「分析竞品」「查看竞品」可手动操作；「停用竞品 名称」「启用竞品 名称」维护名单状态，研究完成后回到原对话。默认每周一北京时间 01:00 发现新竞品，每天 02:00 分析已有名单，周一优先完成竞品发现；也可手动触发。项目暂停时停止周期派发，恢复后补最近到期窗口；关闭周期研究不会清除名单或报告。对话和研究模型默认继承需求发现角色，可分别选择其他已有执行器与模型；对话模型仍在项目简介抽屉的「模型与运行设置」中配置。
 
 发现阶段必须取得联网搜索工具回执并实际读取候选公开页面。名单支持人工添加、编辑、停用及合并；停用或合并的竞品不会因相同名称或来源被自动恢复。分析保存 URL、采集时间、内容指纹、正文摘录与错误；只有成功分析的快照成为下一次比较基线。无变化不调用差距分析模型、不生成需求；采集或模型失败可以重试。研究产生的需求仍需人工确认。
 
@@ -380,3 +472,50 @@ python3 -m pip install -r requirements.txt
 
 
 平台更新期间，各页面顶部显示当前阶段、受影响操作和健康观察倒计时。`GET /api/platform-update` 返回更新状态；`POST /api/platform-update/release` 携带当前 `job_id`、`commit` 和操作 UUID，允许在更新锁期间请求手动结束观察。独立更新器再次核对服务版本、数据库和调度心跳后解除锁，记录实际观察时长与手动操作；切换、启动检查及回滚阶段不可强制解除。解除更新锁不改写项目原有暂停状态或测试回执。
+
+项目页的“同步 master”按钮会打开执行终端，将远端最新主分支逐个合入 `feat-*`、`release-*`。终端持续显示命令、日志、冲突方案和各分支结果；先保存冲突方案再调用修复模型。正在执行任务或有未提交改动的分支会跳过并提示原因，失败的冲突工作区保留；可处理后重新同步。远端已有分支使用普通 push，拒绝覆盖并发提交，本地独有分支保持本地。此操作不会修改 master，也不会把同步结果当作测试或验收通过。
+
+## Computer Use 测试链路
+
+项目一级导航的「测试链路」提供链路库、运行记录和测试配置。启用后，新确认或新排队的需求自动生成一次链路；历史需求由用户选择生成。可将已有链路关联到其他需求，编辑步骤、追加预期，或选择分支任务手动运行。每次运行固定链路版本、目标提交、模型与限制；编辑不会改变在途运行。纯界面需求完成可执行链路覆盖后可以进入研发，不要求额外编造 API 探针。
+
+第一版执行器为 **Codex 图片输入与结构化动作 + Playwright Chromium**，统一 `ComputerUseDriver` 接口保留原生驱动扩展点；尚未接通桌面插件的后台调用。安装项目依赖后执行 `npx playwright install chromium`，并在本机完成 Codex 登录。在「测试配置」选择 Codex 模型，留空时继承项目的 Codex 验证模型。测试项目需配置分支启动命令及健康检查；依赖服务逐项登记 HTTP origin，需要登录时提供专用测试账号的 Playwright storageState 文件绝对路径。缺少浏览器、模型、测试实例或会话条件会显示阻塞原因。
+
+控制器持有与实际提交对应的 feat/release 测试实例，使用独立浏览器上下文；每次根据新截图判断操作位置，记录动作前后截图、实际观察、判断、用量与时间。任意步骤可启用 Loop：触发后只观测，可明确允许刷新。默认间隔 30 秒、最长 30 分钟、最多 60 轮、100 个动作，均可调整。停止运行会取消模型调用并回收会话；进程或浏览器会话丢失标记阻塞，不自动重放业务操作。
+
+链路通过即可完成本次必要 UI 验收；人工点击「确认正确并保存基准」后，才保存不可变正确结果。旧检查点保留，改变原预期需要记录替代检查点及关联变更需求。截图沿用证据台账和 SHA-256 校验；失败、缺截图或截图损坏的记录不能确认。关联链路在 feat 与 release 验证期间执行，失败进入返修，环境故障阻塞；不能通过“记录问题后继续交付”跳过，旧提交的通过也不能代替新提交。
+
+接口位于 `/api/products/<id>/test-chains`：列表、`configure`、`generate`、`<chain-id>/retry|revise|link|run`、`runs/<run-id>`、`runs/<run-id>/cancel|confirm-baseline`，沿用项目归属、操作 UUID 和版本冲突检查。生成及截图决策加载 `dsh-role-verification` 的规则、JSON Schema 与调用快照，并共用项目辅助调度槽。
+
+回归测试为 `tests/test_test_chains.py`、`tests/test_computer_browser.py`、`tests/test_local_testing.py` 和 `tests/browser/test-chains.spec.ts`。真实模型完整实测可运行以下命令，输出目录必须尚不存在，调用消耗所选 Codex 模型额度；样例仓库、基准、失败及返修截图全部保存于该目录：
+
+```sh
+python3 scripts/test-computer-use-smoke.py --model <可用的 Codex 模型> --output .dashboard/computer-use-smoke
+```
+
+
+## 项目协调与跨执行器角色 Skills
+
+自主运行的项目默认各有一个协调 Agent，入口为「任务流水线 → 项目协调」；「项目设置 → 项目协调」可关闭或选择独立模型，未指定时沿用项目验收模型。暂停项目不会自动恢复；已运行的调用先核对回执。点击「立即评估」安排一次新检查。
+
+协调器每 60 秒检查状态，任务和证据未变化时不调用模型。它可以调整本项目未开始任务的顺序、向角色请求只读协助、安排补证和逐轮追加返修。每次追加一轮，原返修计数保留；连续两轮没有真实检查或正式审查证明改善时，进入「AI 对话 → 协作记录」等待人工回复。修改行数和开发自述不算进展，新增回归不会判为改善。人工插队、暂停、副作用核对和正式验收仍由控制器约束。
+
+研发任务阻塞后，人工点击「重试」单独授权一轮，不计入基础或额外返修次数，也不受默认 3 次返修上限限制；再次阻塞后可继续人工重试。返修额度耗尽时直接回到方案修订或开发修复，不重复消费旧审查结论。原返修次数、用时和执行回执保留，人工重试次数独立展示；每次点击在关联证据和平台事件中记录时间、原阻塞原因、恢复阶段及原审查引用。自动返修仍受原规则约束，人工重试不绕过 Token、执行时间、审查额度及未确认执行结果的保护。
+
+协调调用使用 `coordination_tokens` 单独统计，不扣开发额度。协助、额外开发和验收按各自原规则计额，累计执行时限、审查额度、DeepSeek 错峰及供应商账户限制继续有效。主研发仍共用一个执行槽，聊天、研究、协助、协调及独立测试链任务共享每项目辅助槽，派发时加锁复查。
+
+角色规则位于 `skills/dsh-role-*`，包括 `SKILL.md`、场景 `references/`、输出 `schemas/` 及必要 `scripts/`。平台通过 `autopilot/role_skills.py` 显式加载，Codex、Claude 和 DeepSeek Harness 使用同一阶段规则；供应商接口仅处理工具、沙箱和结果传输差异。Computer Use 的图片能力约束继续由其适配器检查。
+
+每个执行目录下的 `role-skill/` 保存实际加载规则、支持文件、输出契约、内容哈希及模型信息。运行快照只读，后续技能更新不覆盖历史调用。`npm run sync-skills` 将技能同步到仓库分发目录，不安装或改写用户全局 Skills。技能中的脚本只读取证据、比较进展和校验结果；任务变更通过平台事务执行。
+
+项目 API：`GET /api/products/{id}/coordinator` 查询状态与最近决定；`POST .../coordinator/settings` 提交 `{version, config:{enabled, model}}`；`POST .../coordinator/evaluate` 提交 `{version}`。写操作沿用 Cookie、CSRF 与 operation_id；过期版本或暂停项目会拒绝执行。
+
+回归入口：`python3 -B -m unittest discover -s tests -p 'test_coordinator.py'`、`test_role_skills.py`，以及 `npx playwright test tests/browser/coordinator.spec.ts`。测试使用隔离状态和可控模型结果，不向真实任务派发修复。
+
+### 项目技术栈与本机安装检测
+
+仓库获取完成后，接入扫描先读取 Maven/Gradle、package.json 等清单，识别 Java、React、Vue、Node.js、Python 与混合模块，并保存识别依据。`.autopilot.json` 的 `stack` / `modules` 继续决定工作流选择；识别模块不会擅自生成 Java 构建命令。
+
+在“仓库接入与启动扫描 → 扫描详情”或“项目设置 → 接入环境”点击“检测本机运行时”，可查看 JDK（java/javac）、Maven/Gradle、Node.js 及包管理器的版本、实际路径和安装提示。检测针对管理服务所在电脑，执行固定版本命令，不运行项目构建、不自动下载工具链。安装后点击“重新检测本机运行时”；修改 PATH / JAVA_HOME 后需确保管理服务也能读取新环境（必要时重启服务）。工具可运行只代表安装检测通过，项目仍需重新扫描并通过原有编译、测试及验收。
+
+只读识别接口为 `GET /api/products/:id/environment`、`GET /api/scans/:id/environment`；手动检测为对应的 `POST .../runtime-check`，复用现有认证及 CSRF。检测不会改写项目配置或历史扫描的验收结论。

@@ -1,0 +1,20 @@
+version: 1
+role: code-review
+steps:
+  - id: source
+    title: 核对评审提交及完整变更范围
+    kind: instruction
+  - id: quality
+    title: 核对当前源码的必需质量回执；编译失败或证据缺失不得通过
+    kind: quality
+    actions: [review]
+  - id: review
+    title: 按语言规范审查全部变更文件并报告缺陷
+    kind: instruction
+profiles:
+  generic: dsh-role-verification/profiles/generic.yaml
+  node: dsh-role-verification/profiles/node.yaml
+  python: dsh-role-verification/profiles/python.yaml
+  java: dsh-role-verification/profiles/java.yaml
+  react: dsh-role-verification/profiles/react.yaml
+  vue: dsh-role-verification/profiles/vue.yaml

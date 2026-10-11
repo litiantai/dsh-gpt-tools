@@ -1,0 +1,86 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "blocked"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "act",
+        "observe",
+        "pass",
+        "fail",
+        "blocked"
+      ]
+    },
+    "actual": {
+      "type": "string"
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "click",
+            "type",
+            "key",
+            "scroll",
+            "navigate",
+            "wait",
+            "reload"
+          ]
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "dy": {
+          "type": "number"
+        },
+        "text": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "x",
+        "y",
+        "dy",
+        "text",
+        "key",
+        "url"
+      ]
+    }
+  },
+  "required": [
+    "status",
+    "reason",
+    "summary",
+    "decision",
+    "actual",
+    "action"
+  ]
+}

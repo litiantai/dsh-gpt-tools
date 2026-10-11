@@ -159,7 +159,7 @@ test('legacy health is visible without implying automatic release readiness',asy
   const result={status:'pass',monitor_mode:'basic',release_monitor_available:false,reason:'正式应用在线，基础健康检查通过；当前版本未接入自动发布监测。',health:{host:'ready',activity:{known:false},desktop:{known:false},application_version:'0.1.0'}};
   await page.route('**/api/products',route=>route.fulfill({json:[{id:'legacy',name:'旧版兼容验证',status:'active',version:1,created:1,updated:1,last_probe:1,last_probe_result:result}]}));
   await page.goto('/autopilot?project=legacy&view=overview&tab=monitoring');
-  const alert=page.getByRole('alert').filter({hasText:'运行监测 · 基础健康正常 · 发布监测未接入'});
+  const alert=page.getByRole('alert').filter({hasText:'运行监测 · 上次结果：基础健康正常 · 发布监测未接入'});
   await expect(alert).toBeVisible();
   await expect(alert).toHaveClass(/ant-alert-warning/);
   await alert.getByRole('button',{name:'查看回执'}).click();
@@ -179,12 +179,12 @@ test('investigation progress and external retry time are readable in the require
   ]}));
   await page.route('**/api/runs',r=>r.fulfill({json:[{id:'active-run',product_id:'progress',requirement_id:'develop',status:'developing',reason:'正在修复已复现问题',created:1,updated:1}]}));
   await page.goto('/autopilot?project=progress&view=requirements&tab=requirements');
-  await expect(page.getByText('调查取证中',{exact:true})).toBeVisible();
+  await expect(page.getByText('调查取证中 · 等待执行',{exact:true})).toBeVisible();
   await expect(page.getByText('等待外部条件（自动复查）',{exact:true})).toBeVisible();
   await expect(page.getByRole('columnheader',{name:'下次调查'})).toBeVisible();
   await expect(page.getByText('上游服务暂时不可用',{exact:true})).toBeVisible();
   const developing=page.getByRole('row').filter({hasText:'已取证进入开发'});
-  await expect(developing.getByText('开发中',{exact:true})).toBeVisible();
+  await expect(developing.getByText('开发中 · 等待执行',{exact:true})).toBeVisible();
   await expect(developing.getByText('正在修复已复现问题',{exact:true})).toBeVisible();
   await expect(developing.getByRole('cell').nth(4)).toHaveText('—');
 });

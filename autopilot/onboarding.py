@@ -87,7 +87,7 @@ def detect(workspace):
             commands['install'] = [['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts']]
         else:
             config['blockers'].append('Yarn 版本与脚本隔离策略需显式配置')
-        for phase, names in [('build', ['build']), ('test', ['typecheck', 'test']), ('browser', ['test:e2e'])]:
+        for phase, names in [('typecheck', ['typecheck']), ('build', ['build']), ('test', ['test']), ('browser', ['test:e2e'])]:
             commands[phase] = [[manager, 'run', n] for n in names if n in scripts]
         if 'start' in scripts:
             commands['start'] = [[manager, 'run', 'start']]
@@ -132,6 +132,18 @@ def detect(workspace):
                 config.setdefault('commands', {})['install'] = declared['install']
         elif unlocked_npm not in config['blockers']:
             config['blockers'].append(unlocked_npm)
+    if 'java' in config['stacks']:
+        from .jvm import install_allowed
+        declared = config.get('commands', {})
+        installs = declared.get('install', [])
+        if (installs and all(install_allowed(cmd, config.get('install_policy')) for cmd in installs)
+                and declared.get('compile') and declared.get('test') and declared.get('start')):
+            config['blockers'] = [b for b in config['blockers'] if b != 'JVM 项目需配置依赖下载与离线构建命令及启动入口']
+    from .role_workflows import detect_stack
+    config.setdefault('stack', 'generic' if config.get('modules') else detect_stack(root))
+    config.setdefault('workflow_version', 1)
+    from .project_environment import describe
+    config['environment'] = describe(root, config)
     if not config['commands'].get('start'):
         config['blockers'].append('未识别唯一启动命令；请补充 .autopilot.json')
     if len(config['commands'].get('start', [])) > 1:
@@ -216,30 +228,40 @@ def verify(workspace, root, config, *, runtime=None):
     checks = []
     if config.get('blockers'):
         return {'status': 'blocked', 'reason': '；'.join(config['blockers']), 'checks': checks}
-    for phase in ('install', 'build', 'test', 'browser'):
-        for index, argv in enumerate(config['commands'].get(phase, [])):
-            if phase == 'install':
-                isolated = (len(argv)>2 and argv[0] in ('npm','pnpm') and argv[1] in ('ci','install')
-                            and '--ignore-scripts' in argv and not any(x.startswith('--ignore-scripts=') for x in argv))
-                if not isolated:
-                    return {'status': 'blocked', 'reason': '依赖安装必须禁用生命周期脚本；请配置受支持的隔离安装器', 'checks': checks}
-                if argv[0] == 'npm' and argv[1] != 'ci' and config.get('install_policy') != 'explicit-unpinned':
-                    return {'status': 'blocked', 'reason': '未固定依赖的 npm install 需在 .autopilot.json 显式声明 install_policy=explicit-unpinned', 'checks': checks}
-            if phase == 'install':
-                entry = install_check(argv, workspace, root, phase+'-'+str(index),
-                                      timeout=config.get('command_timeout', 900), runtime=runtime)
-            else:
-                entry = run(argv, workspace, root, phase+'-'+str(index),
-                            ports=config.get('test_ports', []), timeout=config.get('command_timeout', 900), runtime=runtime)
-            checks.append(entry)
-            if entry['status'] != 'pass':
-                reason = phase+' 检查未通过'
-                if entry['status'] == 'blocked':
-                    reason = phase+' 检查被外部依赖/基础设施阻塞：'+(entry.get('reason') or '未知原因')
-                return {'status': entry['status'], 'reason': reason, 'checks': checks}
+    from . import quality
+    try:
+        session = quality.prepare(workspace, config, root)
+        if session is None:
+            # Unconfigured roles retain the legacy command path.
+            for phase in ('install', 'compile', 'typecheck', 'build', 'test', 'browser'):
+                for index, argv in enumerate(config.get('commands', {}).get(phase, [])):
+                    if phase == 'install':
+                        quality.installation(argv, config.get('install_policy'))
+                    entry = (install_check(argv, workspace, root, phase+'-'+str(index), runtime=runtime)
+                             if phase == 'install' else run(argv, workspace, root, phase+'-'+str(index),
+                                ports=config.get('test_ports', []), timeout=config.get('command_timeout', 900), runtime=runtime))
+                    checks.append(entry)
+                    if entry['status'] != 'pass':
+                        return {'status': entry['status'], 'reason': phase+' 检查未通过', 'checks': checks}
+            proof = None
+        else:
+            def runner(argv, cwd, folder, name, phase):
+                if phase == 'install':
+                    return install_check(argv, cwd, folder, name, timeout=config.get('command_timeout', 900), runtime=runtime)
+                return run(argv, cwd, folder, name, ports=config.get('test_ports', []),
+                           timeout=config.get('command_timeout', 900), runtime=runtime)
+            quality.execute(session, quality.PHASES, runner)
+            proof = quality.finish(session)
+            checks = proof['checks'][:]
+            if proof['status'] != 'pass':
+                return {'status': proof['status'], 'reason': proof['reason'], 'checks': checks,
+                        'quality': proof, 'workflow': quality.summary(session, proof)}
+    except (OSError, ValueError) as exc:
+        return {'status': 'blocked', 'reason': str(exc), 'checks': checks}
     checks.append(startup(workspace, root, config, runtime=runtime))
     return {'status': checks[-1]['status'], 'reason': checks[-1].get('reason', ''), 'checks': checks,
-            'startup_passed': checks[-1]['status'] == 'pass', 'business_acceptance': 'pending'}
+            'startup_passed': checks[-1]['status'] == 'pass', 'business_acceptance': 'pending',
+            **({'quality': proof, 'workflow': quality.summary(session, proof)} if proof else {})}
 
 
 def execute(action, request):
@@ -270,7 +292,17 @@ def execute(action, request):
         options=json.loads((path/'.autopilot.json').read_text()) if (path/'.autopilot.json').exists() else {}
         captured = snapshot(path, workspace, exclude=options.get('exclude', ['info']))
     config = detect(workspace)
-    result = verify(workspace, root/'execution', config, runtime=runtime)
+    from .project_environment import check
+    # 获取源码后先保存识别结果，即使后续启动扫描未完成也可查询并重新检测。
+    atomic(root/'environment.json', {'configuration': config})
+    runtime_check = check(workspace, config)
+    atomic(root/'environment.json', {'configuration': config, 'runtime_check': runtime_check})
+    if runtime_check['status'] == 'blocked':
+        result = {'status': 'blocked', 'reason': '本机运行时未就绪，请安装所需工具后重新检测并重试扫描。',
+                  'checks': [], 'business_acceptance': 'pending'}
+    else:
+        result = verify(workspace, root/'execution', config, runtime=runtime)
+    result['runtime_check'] = runtime_check
     result.update(source_commit=original, snapshot_commit=captured['commit'], workspace=str(workspace),
                   configuration=config, configuration_digest=hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest())
     atomic(root/'result.json', redact(result))

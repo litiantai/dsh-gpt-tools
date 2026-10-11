@@ -48,6 +48,13 @@
     ]
   },
   "web": true,
+  "test_start": [
+    [
+      "python3",
+      "-B",
+      "tests/serve_fixture.py"
+    ]
+  ],
   "test_ports": [
     "test-loopback"
   ],
@@ -79,13 +86,17 @@
       "-p",
       "test_generic_projects.py",
       "-v"
-    ]
-  },
-  "test_start": [
-    [
+    ],
+    "notifications": [
       "python3",
-      "-B",
-      "tests/serve_fixture.py"
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-p",
+      "test_notifications.py",
+      "-v"
     ]
-  ]
+  }
 }

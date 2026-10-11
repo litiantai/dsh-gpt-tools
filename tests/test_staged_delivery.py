@@ -237,7 +237,7 @@ class StagedDeliveryTests(unittest.TestCase):
         self.repair_rounds(early)
         f.ledger.update('deliveries', early['id'], early['version'], {'revisions': 3}, 'release_failed')
         later = create_batch(f.ledger, f.product, self.day)
-        f.ledger.update('deliveries', later['id'], later['version'], {'frozen': True}, 'merging')
+        f.ledger.update('deliveries', later['id'], later['version'], {'frozen': True, 'release_sync_pass': {'head_sha': 'head', 'base_sha': 'base'}}, 'merging')
         with patch.object(f.scheduler, 'start_call') as call:
             tick(f.scheduler, later['cutoff'] + 1)
             self.assertEqual(call.call_args.args[3], 'merge_release')
@@ -365,7 +365,7 @@ class StagedDeliveryTests(unittest.TestCase):
         self.assertEqual(f.ledger.get('deliveries', b['id'])['status'], 'cancelled')
         self.assertEqual(git(f.remote, 'rev-parse', b['branch']), f.initial)
 
-    def test_frozen_release_validation_requires_review_evidence_and_head_binding(self):
+    def test_frozen_release_validation_requires_sync_evidence_and_head_binding(self):
         f = self.f
         b = self.review_and_merge(self.bootstrap())
         with patch.object(f.scheduler, 'start_call') as start:
@@ -531,16 +531,22 @@ class StagedDeliveryTests(unittest.TestCase):
         complete(f.scheduler, b, result, 'merge_feature')
         self.assertEqual(len(f.ledger.get('deliveries', b['id'])['feature_prs']), 1)
 
-    def test_release_changed_after_cutoff_waits_until_next_review_window(self):
+    def test_legacy_release_review_queue_syncs_without_waiting_for_review_window(self):
         f = self.f
         b = self.review_and_merge(self.bootstrap())
         b = f.ledger.update('deliveries', b['id'], b['version'], {'frozen': True}, 'reviewing_release')
         with patch.object(f.scheduler, 'start_call') as start:
             tick(f.scheduler, b['cutoff'] + 1)
-            start.assert_not_called()
+            self.assertEqual(start.call_args.args[3], 'sync_release')
+        self.assertFalse(f.ledger.list('code_reviews'))
+        b = f.ledger.get('deliveries', b['id'])
+        complete(f.scheduler, b, {'status': 'pass', 'head_sha': 'changed-head', 'base_sha': 'changed-base'}, 'sync_release')
+        b = f.ledger.get('deliveries', b['id'])
+        self.assertEqual(b['status'], 'validating')
+        self.assertEqual(b['release_sync_pass'], {'head_sha': 'changed-head', 'base_sha': 'changed-base'})
         with patch.object(f.scheduler, 'start_call') as start:
-            tick(f.scheduler, self.day + 86400)
-            self.assertEqual(start.call_args.args[3], 'review_release')
+            tick(f.scheduler, b['cutoff'] + 2)
+            self.assertEqual(start.call_args.args[3], 'validate_release')
 
     def test_legacy_migration_preserves_old_branch_and_recreates_release_from_master(self):
         from autopilot.delivery_migration import migrate

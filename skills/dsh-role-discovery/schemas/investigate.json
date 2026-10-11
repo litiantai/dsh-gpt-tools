@@ -1,0 +1,87 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "blocked"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "development",
+        "resolved",
+        "waiting"
+      ]
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "acceptance": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "resolution_probes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "pointer": {
+            "type": "string"
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "equals",
+              "not_equals",
+              "not_empty",
+              "not_contains"
+            ]
+          },
+          "expected": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "pointer",
+          "operator",
+          "expected"
+        ]
+      }
+    }
+  },
+  "required": [
+    "status",
+    "reason",
+    "summary",
+    "outcome",
+    "checks",
+    "acceptance",
+    "resolution_probes"
+  ]
+}

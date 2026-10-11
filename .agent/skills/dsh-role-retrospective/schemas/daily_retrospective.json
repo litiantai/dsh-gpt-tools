@@ -1,0 +1,53 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "blocked"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "accomplishments": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "lessons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "next_actions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "status",
+    "reason",
+    "summary",
+    "accomplishments",
+    "problems",
+    "lessons",
+    "next_actions"
+  ]
+}

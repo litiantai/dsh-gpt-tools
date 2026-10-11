@@ -329,6 +329,12 @@ def verify_in_test_instance(request):
                 for step in json.loads(steps_file.read_text()):
                     recorder.step(**step)
             recorder.finish(check['status'],check['summary'])
+            from .test_chain_worker import verification_checks
+            ui_checks = verification_checks(request, environment | {'branch':run.get('branch'), 'stopped':False})
+            checks.extend(ui_checks)
+            if any(c['status'] != 'pass' for c in ui_checks):
+                failed = next(c for c in ui_checks if c['status'] != 'pass')
+                return {'status':failed['status'], 'reason':failed['reason'], 'checks':checks, 'retryable':False}
         finally:
             desktop.terminate()
             try:

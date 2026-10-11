@@ -151,7 +151,7 @@ def tick(scheduler):
                     if action=='analyze_competitors' and any(r['action']=='find_competitors' and r['status'] in ('queued','running') for r in ledger.scoped(kind,pid)):
                         continue
                 else:
-                    if not config.get('collaboration_enabled'):
+                    if not config.get('collaboration_enabled') and not item.get('from_role') == 'coordinator':
                         continue
                     action, role = 'collaborate',product.get('agents',{}).get(item['to_role'],{})
                     run = ledger.get('runs',item['run_id'])
@@ -160,7 +160,8 @@ def tick(scheduler):
                     if not scheduler.tokens_available(product):
                         continue
                 # A project has one auxiliary model call at a time. The primary development slot stays independent.
-                if any(r.get('call') for k in KINDS for r in ledger.scoped(k,pid)):
+                from .coordinator import auxiliary_busy
+                if auxiliary_busy(ledger, pid):
                     continue
                 if scheduler.wait_for_off_peak(kind,item,product,action,selected=role):
                     continue

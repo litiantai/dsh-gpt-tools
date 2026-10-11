@@ -55,6 +55,8 @@ class Scheduler:
             changes=dict(changes or {})
             changes.update(next_auto_retry_at=time.time()+INTERVAL if abnormal(item | changes) else None,
                            auto_retry_wait_reason=None)
+        if kind == 'runs' and (status == 'blocked' or status in TERMINAL):
+            changes = dict(changes or {}, manual_retry_pending=None)
         return self.ledger.update(kind,item['id'],item['version'],changes or {},status)
 
     def wait_for_off_peak(self,kind,item,product,action,selected=None,now=None):
@@ -81,10 +83,16 @@ class Scheduler:
             return item
         if product.get('automation_disabled'):
             raise Conflict('项目已停用自动运行')
+        from .coordinator import AUXILIARY, auxiliary_busy
+        if kind in AUXILIARY and auxiliary_busy(self.ledger, product['id']):
+            return item
         if (self.root/'update-drain.json').exists():
             raise Conflict('平台更新正在等待执行器退出，暂停新调用')
         if command == product.get('adapter') and product.get('adapter_spec') and action not in product['adapter_spec']['capabilities']:
             raise ValueError('项目适配器不支持 '+action)
+        if kind == 'runs' and item.get('coordination_pending'):
+            from .coordinator import consume_grant
+            item = consume_grant(self, item)
         call_id=str(uuid.uuid4())
         directory=self.root/'calls'/call_id
         directory.mkdir(parents=True,mode=0o700)
@@ -100,6 +108,7 @@ class Scheduler:
         atomic(path,request)
         item=self.change(kind,item,{'call':{'id':call_id,'action':action,'started':time.time(),'path':str(path),
             'signal_ids':[s['id'] for s in (extra or {}).get('signals',[])]},
+            **({'manual_retry_pending':None} if kind=='runs' and action in ('plan','develop') else {}),
             **({'off_peak_wait':None,'reason':''} if item.get('off_peak_wait') else {}),
             **({'reason':''} if item.get('reason')=='每日 Token 额度已用尽，等待次日或调整额度' else {})})
         child=subprocess.Popen([sys.executable,str(Path(__file__).with_name('call.py')),str(path)],
@@ -167,6 +176,13 @@ class Scheduler:
                         if result and result.get('uncertain'):
                             atomic(Path(item['call']['path']).parent/'result.json', result)
             return
+        # 通知投递必须放在本函数靠前位置：后面各阶段存在大量提前 return，
+        # 若放在末尾，忙碌周期会长期跳过发送。发送本身不改变 run/release 状态。
+        from .notifications import tick as notifications_tick
+        try:
+            notifications_tick(self)
+        except (OSError, ValueError, KeyError, Conflict) as exc:
+            self.store.event('autopilot_notification_error', detail={'reason': str(exc)})
         scan_tick(self)
         self.children=[child for child in self.children if child.poll() is None]
         from .usage import collect
@@ -176,6 +192,16 @@ class Scheduler:
             intelligence_tick(self)
         except (OSError, ValueError, KeyError, Conflict) as exc:
             self.store.event('autopilot_intelligence_error', detail={'reason':str(exc)})
+        from .coordinator import tick as coordinator_tick
+        try:
+            coordinator_tick(self)
+        except (OSError, ValueError, KeyError, Conflict) as exc:
+            self.store.event('autopilot_coordinator_error', detail={'reason': str(exc)})
+        from .test_chain_worker import tick as test_chain_tick
+        try:
+            test_chain_tick(self)
+        except (OSError, ValueError, KeyError, Conflict) as exc:
+            self.store.event('test_chain_error', detail={'reason':str(exc)})
         self.reconcile_evaluations()
         from .delivery import tick as delivery_tick
         try:
@@ -213,7 +239,8 @@ class Scheduler:
         if investigate(self,only_active=True):
             return
         runs=[r for r in reversed(self.ledger.list('runs')) if r['status'] in ('cancelling','pausing') or not self.ledger.get('products',r['product_id']).get('automation_disabled')]
-        current=next((r for r in runs if r['status'] not in TERMINAL | {'queued','blocked','waiting_for_reply'}),None)
+        from .coordinator import runnable
+        current=next((r for r in runs if r['status'] not in TERMINAL | {'queued','blocked','waiting_for_reply'} and runnable(self, r)),None)
         if current:
             product=self.ledger.get('products',current['product_id'])
             if (product.get('call') or {}).get('action')=='discover':
@@ -222,10 +249,14 @@ class Scheduler:
             if current['status']=='awaiting_release' and not self.ledger.get('runs',current['id']).get('call'):
                 investigate(self)
             return
+        from .coordinator import resume_pending
+        if resume_pending(self):
+            return
         from .progress import recover_review, investigate
         if recover_review(self):
             return
-        for run in runs:
+        # 人工插队始终先于普通排队；后一次插队排在前一次之前，不抢占正在执行的任务。
+        for run in sorted(runs,key=lambda r:(0,-r.get('queue_first_at',r['created'])) if r.get('queue_first') else (1,-r.get('coordination_priority',0),r['created'])):
             if run['status']=='queued':
                 product=self.ledger.get('products',run['product_id'])
                 if product['status']=='active' and (product.get('call') or {}).get('action')!='discover':
@@ -340,6 +371,8 @@ class Scheduler:
             return items
         known={r['id']:self.ledger.decode(r) for r in db.execute('SELECT * FROM auto_signals WHERE product_id=?',(product['id'],))}
         eligible=set(signal_ids) if signal_ids is not None else {ident for ident,r in known.items() if r['status']=='pending'}
+        # 发现/晚间归因的旧回执不能为已人工入池的信号再次创建需求。
+        eligible-={ident for ident,r in known.items() if r.get('manual_requirement_id')}
         titles={r['title'].strip().casefold():r for r in (self.ledger.decode(row) for row in db.execute('SELECT * FROM auto_requirements WHERE product_id=?',(product['id'],)))}
         items=[]
         for raw in result.get('requirements',[]):
@@ -443,12 +476,16 @@ class Scheduler:
                     network_git(repository, 'fetch', 'origin', 'refs/heads/'+branch+':refs/remotes/origin/'+branch)
                     destination = self.root/'workspaces'/run['id']
                     base = git(repository, 'rev-parse', 'refs/remotes/origin/'+branch)
-                    feature_branch = 'feat-'+run['id'] if product.get('test_execution') == 'local' else 'codex/auto-'+run['id']
+                    feature_branch = 'feat-'+run['id'] if (product.get('test_execution') == 'local' or product.get('computer_use', {}).get('enabled')) else 'codex/auto-'+run['id']
                     if not destination.exists():
                         git(repository, 'worktree', 'add', '-b', feature_branch, str(destination), base)
                     workspace = {'workspace': str(destination), 'base_commit': base, 'branch': feature_branch}
                 else:
                     workspace=checkout(product['repository'],self.root/'workspaces'/run['id'],run['id'])
+                    if product.get('computer_use', {}).get('enabled'):
+                        from .workspace import git
+                        git(workspace['workspace'], 'branch', '-m', 'feat-' + run['id'])
+                        workspace['branch'] = 'feat-' + run['id']
                 worker_home=self.root/'workers'/run['id']
                 worker_home.mkdir(parents=True,mode=0o700)
                 worker=self.ledger.create('workers',{'product_id':product['id'],'home':str(worker_home),
@@ -465,7 +502,20 @@ class Scheduler:
         if run['status'] in ('plan_review','acceptance_review'):
             return self.review(run,product,requirement)
         if run['status']=='verifying':
-            return self.start_call('runs',run,product,'verify',product['adapter'],{'requirement':requirement},timeout=3600)
+            if product.get('computer_use', {}).get('enabled'):
+                from .test_chains import linked
+                chains = linked(self.ledger, {'product':product, 'record':run, 'requirement':requirement})
+                failed = next((c for c in chains if c['status'] in ('blocked','fail','failed')), None)
+                if failed:
+                    return self.block(run, '测试链路生成受阻：' + failed.get('reason', '请查看测试链路'))
+                if any(c['status'] in ('queued','running') for c in chains):
+                    if run.get('reason') != '等待测试链路生成':
+                        self.change('runs', run, {'reason':'等待测试链路生成'})
+                    return
+            from .test_chains import settings as computer_settings
+            config = computer_settings(product)
+            timeout = max(3600, config['timeout_seconds'] + 1800) if config['enabled'] else 3600
+            return self.start_call('runs',run,product,'verify',product['adapter'],{'requirement':requirement},timeout=timeout)
         if run['status']=='awaiting_release':
             if time.time()-run.get('last_idle_check',0)<policy['probe_seconds']:
                 return
@@ -480,6 +530,9 @@ class Scheduler:
             return self.start_call('runs',run,product,'observe',product['adapter'],{'requirement':requirement},timeout=60)
 
     def complete_action(self,run,product,action,result):
+        if action == 'verify':
+            from .failures import verification_failure
+            result = verification_failure(result)
         policy=DEFAULTS | product.get('policy',{})
         if action=='observe' and result['status']=='busy':
             failures=run.get('observation_retries',0)+1
@@ -510,12 +563,18 @@ class Scheduler:
             commit_id=commit(run['workspace'])
             return self.change('runs',run,{'commit':commit_id,'source_digest':digest(run['workspace']),'summary':redact(result.get('summary',''))},'verifying')
         if action=='verify':
+            if product.get('project_config', {}).get('workflow_version') == 1 or result.get('quality'):
+                try:
+                    from .quality import validate as validate_quality
+                    validate_quality(result.get('quality'), run['workspace'], product.get('project_config', {}), trusted_root=self.root)
+                except (OSError, ValueError) as exc:
+                    return self.block(run, str(exc))
             checks=result.get('checks',[])
             if not checks or any(c.get('status')!='pass' for c in checks if c.get('required',True)) or not result.get('manifest'):
                 return self.block(run,'必需验收未全部通过或缺少产物清单')
             if digest(run['workspace'])!=run['source_digest']:
                 return self.block(run,'验证期间源码发生变化，需要重新开发及验收')
-            return self.change('runs',run,{'checks':checks,'manifest':result['manifest']},'acceptance_review')
+            return self.change('runs',run,{'checks':checks,'manifest':result['manifest'], **{k:result[k] for k in ('quality','workflow') if k in result}},'acceptance_review')
         if action=='idle':
             now=time.time()
             continuous=now-run.get('last_idle_check',0)<=2*policy['probe_seconds']
@@ -545,14 +604,23 @@ class Scheduler:
                 self.change('requirements',req,{},'completed')
 
     def revise(self,run,product,reason,diagnostic=None):
-        if run.get('revisions',0)>=(DEFAULTS | product.get('policy',{}))['max_revisions']:
+        manual = bool(run.get('manual_retry_pending'))
+        if not manual and run.get('revisions',0)>=(DEFAULTS | product.get('policy',{}))['max_revisions']:
+            run = self.change('runs', run, {'feedback': redact(reason), 'last_revision_diagnostic': redact(diagnostic), 'revision_exhausted': True})
             return self.block(run,'返修次数已用尽：'+reason)
         # Human copy must not remove compiler/tool evidence from the next repair prompt.
         feedback=reason+('\n技术诊断：'+json.dumps(diagnostic,ensure_ascii=False) if diagnostic else '')
-        return self.change('runs',run,{'revisions':run.get('revisions',0)+1,'feedback':redact(feedback),'review_id':None},
+        return self.change('runs',run,{'revisions':run.get('revisions',0)+int(not manual),'feedback':redact(feedback),
+                           'review_id':None,'review_packet':None,'revision_exhausted':False,'manual_retry_pending':None},
                            'planning' if run['status']=='plan_review' else 'developing')
 
     def review(self,run,product,requirement):
+        if run['status'] == 'acceptance_review' and (run.get('quality') or product.get('project_config', {}).get('workflow_version') == 1):
+            try:
+                from .quality import validate as validate_quality
+                validate_quality(run.get('quality'), run['workspace'], product.get('project_config', {}), trusted_root=self.root)
+            except (OSError, ValueError) as exc:
+                return self.block(run, str(exc))
         home=Path(run['worker_home'])
         scoped=WorkerStore(self.store.state,home,product.get('agents',{}).get('acceptance'))
         engine=self.engines.setdefault(run['id'],Engine(scoped))
@@ -586,6 +654,8 @@ class Scheduler:
                 if isinstance(question,dict) and question.get('collaboration_requests'):
                     from .collaboration import wait_run
                     return wait_run(self,run,'review',question,review['id'])
+            run = self.change('runs', run, {'last_review_result': {'review_id':review['id'],
+                'decision':result.get('decision'), 'issues':result.get('issues', []), 'checks':result.get('checks', [])}})
             expected='approve' if run['status']=='plan_review' else 'done'
             if result.get('decision')==expected and result.get('pause_proof',{}).get('pause_verified'):
                 from .delivery import configured
@@ -643,10 +713,18 @@ class Scheduler:
         rid=str(uuid.uuid4())
         from .collaboration import context as collaboration_context
         collaboration = collaboration_context(self.ledger,run)
+        from .acceptance_scope import PRE_RELEASE_INSTRUCTION, pre_release
         packet={'request_id':rid,'session_id':run['id'],'cwd':run['workspace'],'scope':['.'],
                 'phase':'plan' if run['status']=='plan_review' else 'acceptance',
-                'summary':json.dumps(redact({'requirement':requirement,'plan':run.get('plan'),'checks':run.get('checks'),
+                'summary':json.dumps(redact({'acceptance_protocol':PRE_RELEASE_INSTRUCTION,
+                       'acceptance_scope':pre_release(requirement,run),
+                       'requirement':requirement,'plan':run.get('plan'),'checks':run.get('checks'),
                        'summary':run.get('summary'),'collaboration':collaboration,'collaboration_protocol':('需要补充信息时 decision=blocked，instruction 填写 JSON 字符串 {"collaboration_requests":[{"to_role":"verification","topic":"主题","content":"问题","evidence_ids":[]}]}，回复不能替代正式审查。' if product.get('intelligence',{}).get('collaboration_enabled') else None),'execution':'独立执行进程已退出；控制器冻结工作区等待审查'}),ensure_ascii=False)[:20000]}
+        from .role_skills import bind, rule
+        from review_core import SCHEMA
+        instructions = PRE_RELEASE_INSTRUCTION + (rule('local-testing') if product.get('test_execution') == 'local' else '')
+        rules, skills = bind(run['status'], self.store.state/'reviews'/rid, selected, instructions, SCHEMA, config=product.get('project_config', {}), workspace=run['workspace'])
+        packet.update(role_skill=skills)
         self.change('runs',run,{'review_id':rid,'review_packet':packet,'reason':'','off_peak_wait':None})
         from .usage import register
         register(self.ledger,product['id'],self.store.state/'reviews'/rid/'trace.jsonl',record_id=run['id'],action=run['status'])

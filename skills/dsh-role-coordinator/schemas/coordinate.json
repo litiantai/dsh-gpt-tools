@@ -1,0 +1,63 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "blocked"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "wait",
+        "repair",
+        "verify",
+        "assist",
+        "reprioritize",
+        "human"
+      ]
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "run_version": {
+      "type": "integer"
+    },
+    "strategy": {
+      "type": "string"
+    },
+    "resume_phase": {
+      "type": "string"
+    },
+    "to_role": {
+      "type": "string"
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10
+    }
+  },
+  "required": [
+    "status",
+    "reason",
+    "summary",
+    "action",
+    "run_id",
+    "run_version",
+    "strategy",
+    "resume_phase",
+    "to_role",
+    "priority"
+  ]
+}

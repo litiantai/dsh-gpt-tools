@@ -72,6 +72,11 @@ def mutate(control, ident, action, body, db=None):
             'confirmed_snapshot': {k: item.get(k) for k in FIELDS}, 'classification': classification,
             'reproduction': item.get('scenario') or item['goal'],
         }, 'pending', db)
+        from .test_chains import settings, enqueue_generation
+        if settings(product)['enabled']:
+            enqueue_generation(ledger, product, item, db)
+            if classification != 'development':
+                item = ledger.update('requirements', item['id'], item['version'], {}, 'awaiting_ui_chain', db)
         if classification == 'development':
             control.queue(item, db=db)
             item = ledger.get('requirements', ident, db)

@@ -69,6 +69,16 @@ class LocalTestingTests(unittest.TestCase):
             self.assertEqual(result['instance']['instance_role'], 'feature')
         self.assert_stopped(result['instance'])
 
+    def test_termination_closes_instance_and_restores_handler(self):
+        import signal
+        previous=signal.getsignal(signal.SIGTERM)
+        with self.assertRaises(InterruptedError):
+            with verification(self.request,self.root/'terminated') as result:
+                self.assertEqual(result['status'],'pass')
+                os.kill(os.getpid(),signal.SIGTERM)
+        self.assert_stopped(result['instance'])
+        self.assertEqual(signal.getsignal(signal.SIGTERM),previous)
+
     def test_wrong_branch_or_commit_never_runs_tests(self):
         for change in ({'branch': 'release-wrong'}, {'commit': self.base}, {'flow': ''}):
             with self.subTest(change=change), patch('autopilot.local_testing.run') as spawn:
@@ -133,6 +143,8 @@ class LocalTestingTests(unittest.TestCase):
             result = execute('verify', self.request)
         self.assertEqual(result['status'], 'pass', result)
         self.assert_stopped(result['instance'])
+        self.assertEqual(result['acceptance_scope']['stage'], 'pre_release')
+        self.assertEqual(result['acceptance_scope']['post_release']['status'], 'pending')
 
     def test_adapter_does_not_judge_or_package_failed_tests(self):
         from autopilot.generic_adapter import execute
@@ -144,6 +156,17 @@ class LocalTestingTests(unittest.TestCase):
         self.assertEqual(result['status'], 'fail')
         judge.assert_not_called(); package.assert_not_called()
         self.assert_stopped(result['instance'])
+
+    def test_ui_failure_blocks_backlog_policy_and_preserves_environment_errors(self):
+        from autopilot.generic_adapter import execute
+        self.request['record'].update(id='candidate', base_commit=self.base)
+        self.request['product'].update(adapter_spec={'capabilities':['verify']}, functional_findings_policy='backlog')
+        for status,kind in [('fail','ui_acceptance'),('blocked','ui_environment')]:
+            check={'name':'Computer Use 必要链路验收','status':status,'failure_kind':kind,'reason':'界面未通过','required':True}
+            with patch('autopilot.test_chain_worker.verification_checks', return_value=[check]), patch('autopilot.codex_executor.execute') as judge, patch('autopilot.generic_adapter.package') as package:
+                result=execute('verify',self.request)
+            self.assertEqual(result['status'],status);self.assertTrue(result['checks'][-1]['required'])
+            judge.assert_not_called();package.assert_not_called();self.assert_stopped(result['instance'])
 
     def test_worker_cannot_launch_tests_in_local_controller_mode(self):
         import subprocess

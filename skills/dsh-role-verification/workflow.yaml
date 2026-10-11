@@ -1,0 +1,20 @@
+version: 1
+role: verification
+steps:
+  - id: source
+    title: 核对当前源码、提交身份及验收范围
+    kind: instruction
+  - id: quality
+    title: 按模块执行安装、编译、类型检查、构建和测试，失败停止
+    kind: quality
+    actions: [verify, validate, daily_acceptance]
+  - id: business
+    title: 核对服务启动、界面或接口及原需求效果，保留证据
+    kind: instruction
+profiles:
+  generic: dsh-role-verification/profiles/generic.yaml
+  node: dsh-role-verification/profiles/node.yaml
+  python: dsh-role-verification/profiles/python.yaml
+  java: dsh-role-verification/profiles/java.yaml
+  react: dsh-role-verification/profiles/react.yaml
+  vue: dsh-role-verification/profiles/vue.yaml

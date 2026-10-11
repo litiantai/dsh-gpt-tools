@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import signal
+import threading
 import time
 
 from .call import atomic
@@ -43,12 +45,17 @@ def environment(root, *, port=0, origin='', runtime=None):
                DSH_E2E_PORT=str(port), DSH_E2E_EXTERNAL_ORIGIN=origin,
                DSH_SUPERVISOR_STATE=str(root/'state'), DSH_HOME=str(root/'state/dsh'), npm_config_cache=str(root/'cache/npm'),
                npm_config_update_notifier='false', GIT_TERMINAL_PROMPT='0')
+    try:
+        from .jvm import environment as jvm_environment
+        env.update(jvm_environment(root))
+    except ValueError:
+        pass
     if runtime:
         env['DSH_RUNTIME_NODE_MODULES'] = str(Path(runtime)/'node_modules')
     return env
 
 
-def run(argv, workspace, root, name, *, env, timeout=900):
+def run(argv, workspace, root, name, *, env, timeout=900, cancel_check=None):
     """前台运行本机命令；超时终止进程组，保留真实退出码与完整日志。"""
     root = Path(root); root.mkdir(parents=True, exist_ok=True)
     log = root/(name+'.log'); proc = None; code = None
@@ -57,7 +64,14 @@ def run(argv, workspace, root, name, *, env, timeout=900):
         with log.open('w') as stream:
             proc = subprocess.Popen(argv, cwd=workspace, env=env, stdout=stream,
                                     stderr=subprocess.STDOUT, start_new_session=True)
-            code = proc.wait(timeout=timeout)
+            deadline = time.monotonic() + timeout
+            while proc.poll() is None:
+                if cancel_check:
+                    cancel_check()
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                time.sleep(.1)
+            code = proc.returncode
             status = 'pass' if code == 0 else 'fail'
     except (OSError, subprocess.TimeoutExpired) as exc:
         reason = str(exc)
@@ -77,8 +91,32 @@ def verification(request, root):
     """按分支启动一个本机实例，测试和业务验收结束后统一回收。"""
     root = Path(root); root.mkdir(parents=True, exist_ok=True)
     result = {'status': 'blocked', 'checks': [], 'reason': ''}
-    proc = None; instance = None
+    proc = None; instance = None; slot = None
+    quality_session = None
+    previous_handler = None
+    if threading.current_thread() is threading.main_thread():
+        previous_handler = signal.getsignal(signal.SIGTERM)
+        def interrupted(signum, frame):
+            raise InterruptedError('分支测试进程被停止')
+        signal.signal(signal.SIGTERM, interrupted)
+    def cancel_check():
+        if request.get('computer_run_id'):
+            from review_core import Store
+            from .store import Ledger
+            ledger = Ledger(Store(Path(request['state_root']).parent))
+            if ledger.get('test_chain_runs', request['computer_run_id']).get('cancel_requested'):
+                raise InterruptedError('用户已停止运行')
     try:
+        import fcntl
+        import hashlib
+        locks = Path(request['state_root'])/'test-instance-locks'; locks.mkdir(parents=True, exist_ok=True)
+        key = hashlib.sha256(str(Path(request['record']['workspace']).resolve()).encode()).hexdigest()
+        slot = (locks/key).open('a')
+        try:
+            fcntl.flock(slot, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('该分支测试实例正在使用，请稍后重新运行')
+        cancel_check()
         instance = identity(request)
         config = request['product']['project_config']
         if config.get('blockers'):
@@ -90,15 +128,30 @@ def verification(request, root):
         result['instance'] = instance
         atomic(root/'instance.json', instance)
         workspace = instance['workspace']
-        for phase in ('install', 'build'):
-            for i, argv in enumerate(config['commands'].get(phase, [])):
-                check = run(argv, workspace, root, f'{phase}-{i}', env=env, timeout=config.get('command_timeout', 900))
-                result['checks'].append(check)
-                if check['status'] != 'pass':
-                    result.update(status=check['status'], reason=f'{phase} 检查未通过：'+check['reason'])
+        from . import quality
+        quality_session = quality.prepare(workspace, config, root, isolated=False)
+        def runner(argv, cwd, folder, name, phase):
+            command_env = dict(env)
+            from .jvm import kind, environment as jvm_environment
+            if kind(argv):
+                command_env.update(jvm_environment(folder))
+            return run(argv, cwd, folder, name, env=command_env,
+                       timeout=config.get('command_timeout', 900), cancel_check=cancel_check)
+        if quality_session:
+            failure = quality.execute(quality_session, ('install', 'compile', 'typecheck', 'build'), runner, isolated=False)
+            result['checks'].extend(quality_session['checks'])
+            if failure:
+                result.update(status=failure['status'], reason=failure.get('reason') or '必需质量检查未通过')
+        else:
+            for phase in ('install', 'compile', 'typecheck', 'build'):
+                for i, argv in enumerate(config['commands'].get(phase, [])):
+                    check = runner(argv, workspace, root, f'{phase}-{i}', phase)
+                    result['checks'].append(check)
+                    if check['status'] != 'pass':
+                        result.update(status=check['status'], reason=f'{phase} 检查未通过：'+check['reason'])
+                        break
+                if result['reason']:
                     break
-            if result['reason']:
-                break
         if not result['reason']:
             starts = config.get('test_start', config['commands'].get('start', []))
             if len(starts) != 1:
@@ -112,6 +165,7 @@ def verification(request, root):
             deadline = time.monotonic()+config.get('startup_timeout', 30)
             ready = False
             while time.monotonic() < deadline and proc.poll() is None:
+                cancel_check()
                 try:
                     ready = health(origin, config.get('health_path', '/'))
                 except (OSError, ValueError):
@@ -126,20 +180,33 @@ def verification(request, root):
                 result['reason'] = '本机分支实例启动失败或健康检查超时'
             else:
                 result.update(status='pass', reason='本机分支测试通过')
-                for phase in ('test', 'browser'):
-                    for i, argv in enumerate(config['commands'].get(phase, [])):
-                        check = run(argv, workspace, root, f'{phase}-{i}', env=env, timeout=config.get('command_timeout', 900))
-                        result['checks'].append(check)
-                        if check['status'] != 'pass':
-                            result.update(status=check['status'], reason=f'{phase} 检查未通过：'+check['reason'])
+                if quality_session:
+                    previous_count = len(quality_session['checks'])
+                    failure = quality.execute(quality_session, ('test', 'browser'), runner, isolated=False)
+                    result['checks'].extend(quality_session['checks'][previous_count:])
+                    if failure:
+                        result.update(status=failure['status'], reason=failure.get('reason') or '必需质量检查未通过')
+                else:
+                    for phase in ('test', 'browser'):
+                        for i, argv in enumerate(config['commands'].get(phase, [])):
+                            check = runner(argv, workspace, root, f'{phase}-{i}', phase)
+                            result['checks'].append(check)
+                            if check['status'] != 'pass':
+                                result.update(status=check['status'], reason=f'{phase} 检查未通过：'+check['reason'])
+                                break
+                        if result['status'] != 'pass':
                             break
-                    if result['status'] != 'pass':
-                        break
                 if proc.poll() is not None:
                     result.update(status='blocked', reason='分支测试期间实例已退出')
-    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+    except Exception as exc:
         result.update(status='blocked', reason=str(exc))
     try:
+        if quality_session:
+            from . import quality
+            proof = quality.finish(quality_session)
+            result.update(quality=proof, workflow=quality.summary(quality_session, proof))
+            if result['status'] == 'pass' and proof['status'] != 'pass':
+                result.update(status=proof['status'], reason=proof['reason'])
         for check in result['checks']:
             if instance:
                 check.update(branch=instance['branch'], commit=instance['commit'])
@@ -148,9 +215,15 @@ def verification(request, root):
         result.update(status='blocked', reason='本机验收中断：'+str(exc))
         raise
     finally:
-        if proc:
-            stop(proc)
-        if instance:
-            instance['stopped'] = True
-            atomic(root/'instance.json', instance)
-        atomic(root/'local-verification.json', result)
+        try:
+            if proc:
+                stop(proc)
+            if instance:
+                instance['stopped'] = True
+                atomic(root/'instance.json', instance)
+            atomic(root/'local-verification.json', result)
+        finally:
+            if slot:
+                slot.close()
+            if previous_handler is not None:
+                signal.signal(signal.SIGTERM, previous_handler)

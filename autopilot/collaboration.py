@@ -1,4 +1,5 @@
 """阶段边界的角色邮箱：持久化提问、回复、依赖与幂等续跑。"""
+from .role_skills import rule as skill_rule
 import hashlib
 import json
 import time
@@ -10,9 +11,7 @@ from .store import redact
 ROLES = ('discovery', 'implementation', 'verification', 'acceptance', 'human')
 REQUEST_SCHEMA = object_schema({'to_role':{'type':'string','enum':list(ROLES)}, 'topic':TEXT, 'content':TEXT,
                                 'evidence_ids':{'type':'array','items':TEXT}})
-INSTRUCTION = (' 如遇必须由其他角色回答的问题，停止当前阶段，status=waiting_for_reply，'
-               '在 collaboration_requests 中提交一个 {to_role,topic,content,evidence_ids}。'
-               '角色为 discovery/implementation/verification/acceptance/human。不能通过消息请求绕过审批。')
+INSTRUCTION = (skill_rule('collaboration-collaboration-1'))
 
 
 def context(ledger, run):
@@ -94,7 +93,7 @@ def reply(ledger, item, content, db, author=None):
     else:
         run = ledger.get('runs',item['run_id'],db)
         if run.get('collaboration_wait') == item['id'] and run['status']=='waiting_for_reply':
-            ledger.update('runs',run['id'],run['version'],{'collaboration_wait':None,'reason':'','call':None},run['collaboration_resume_status'],db)
+            ledger.update('runs',run['id'],run['version'],{'collaboration_wait':None,'reason':'','call':None,'coordinator_human':None,'coordination_no_progress':0 if author=='human' else run.get('coordination_no_progress',0)},run['collaboration_resume_status'],db)
     return item
 
 

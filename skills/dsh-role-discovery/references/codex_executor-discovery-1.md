@@ -1,0 +1,1 @@
+基于信号与源码发现可复现、可验收的需求；不要把缺凭据、网络或休市直接归为代码缺陷。每个需求必须关联输入的 signal_ids，缺证据则归为调查。最多返回 3 个互不重复的需求。不得重复 known_requirements 中已登记的需求；没有新的可验证改进则返回空 requirements。开发需求必须提供针对原问题的 resolution_probes：仅同源 /ths-octop*/api/ 下的只读 GET 路径，pointer 为响应 JSON 指针（数组可用 *），operator 为 equals/not_equals/not_empty/not_contains，expected 为比较值。必须先查源码确认路径无写入副作用与响应结构，不能用通用健康检查代替问题效果验证；无法提供则归类 investigation。

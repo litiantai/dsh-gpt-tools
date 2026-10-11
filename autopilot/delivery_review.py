@@ -1,4 +1,5 @@
 """固定 OCR 规则、可选模型与独立修复；每轮保存实际模型及提交证据。"""
+from .role_skills import rule as skill_rule
 import copy
 import hashlib
 import json
@@ -40,18 +41,11 @@ def publish_result(gh, number, round_id, folder, result, state, description):
 
 
 def schema(review=False):
-    text = {'type': 'string'}
-    fields = {'status': {'type': 'string', 'enum': ['pass', 'fail', 'blocked']}, 'summary': text, 'reason': text}
-    if review:
-        fields['coverage'] = {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False,
-            'properties': {'path': text, 'status': {'type': 'string', 'enum': ['reviewed', 'skipped']}, 'reason': text}, 'required': ['path', 'status', 'reason']}}
-        fields['issues'] = {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False,
-            'properties': {'path': text, 'severity': {'type': 'string', 'enum': ['critical', 'high', 'medium', 'low']},
-                'content': text, 'start_line': {'type': 'integer'}}, 'required': ['path', 'severity', 'content', 'start_line']}}
-    return {'type': 'object', 'additionalProperties': False, 'properties': fields, 'required': list(fields)}
+    from .role_skills import output_schema
+    return output_schema('review' if review else 'repair')
 
 
-def model(request, folder, prompt, review=False, write=False):
+def model(request, folder, prompt, review=False, write=False, workspace=None):
     from review_core import Store
     from reviewers import normalize, snapshot, command, read_result
     from .store import Ledger
@@ -65,14 +59,31 @@ def model(request, folder, prompt, review=False, write=False):
     if selected.get('bin'):
         actual['bin'] = selected['bin']
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _, _, _, workspace = paths(request)
+    explicit_workspace = workspace is not None
+    workspace = Path(workspace) if explicit_workspace else paths(request)[3]
+    from .role_skills import bind
+    prompt, skill_snapshot = bind('review' if review else 'repair' if write else 'plan', folder, actual, prompt, schema(review), config=request['product'].get('project_config', {}), workspace=workspace)
     atomic(folder / 'schema.json', schema(review))
     atomic(folder / 'selection.json', {k: v for k, v in actual.items() if k not in ('home', 'harness_home')})
+    account = None
+    if actual['provider'] == 'codex':
+        from codex_account import account_status
+        account = account_status(cfg, actual, cwd=workspace)
+        atomic(folder / 'account.json', account)
+        if account['status'] in ('limited', 'unauthenticated'):
+            from error_messages import failure_fields
+            code = 'QUOTA_EXHAUSTED' if account['status'] == 'limited' else 'AUTH_REQUIRED'
+            result = {'status': 'blocked', 'failure_kind': 'agent_execution', 'error_code': code,
+                'retryable': False, **failure_fields(code, 'Codex 模型服务', code),
+                'account_snapshot': account, 'provider': 'codex', 'model': actual['model'],
+                'reasoning_effort': actual['reasoning_effort'], 'evidence': str(folder)}
+            atomic(folder / 'result.json', result)
+            return result
     register(Ledger(store), request['product']['id'], folder / 'trace.jsonl', budget_kind='code_delivery_tokens')
     if actual['provider'] == 'harness' and (write or not review):
         from .executor import execute
         product = copy.deepcopy(request['product'])
-        product['repository'] = str(paths(request)[2])
+        product['repository'] = str(request['product']['delivery_repository'] if explicit_workspace else paths(request)[2])
         product.setdefault('agents', {})['implementation'] = selected
         worker = request['record'] | {'workspace': str(workspace), 'worker_home': str(folder / 'home'), 'plan': prompt}
         result = execute('develop' if write else 'plan', request | {'product': product, 'record': worker, 'requirement': {'title': '修复评审问题', 'acceptance': [prompt]}})
@@ -101,12 +112,16 @@ def model(request, folder, prompt, review=False, write=False):
         if write:
             allowed.append(workspace)
         # Git object/index writes are reserved for the controller; model edits only source.
-        argv = restrict(argv, allowed, folder / 'agent.sb', private_roots=[credential_file().parent], deny_local=True)
+        argv = restrict(argv, allowed, folder / 'agent.sb', private_roots=[credential_file().parent], deny_local=True, readonly_roots=[folder/'role-skill', folder.parent/'quality'])
         env = (env or os.environ.copy()) | {'GIT_OPTIONAL_LOCKS': '0'}
         with (folder / 'trace.jsonl').open('w') as out, (folder / 'stderr.log').open('w') as err:
             proc = subprocess.run(argv, input=prompt + '\n输出必须符合此 JSON schema：\n' + json.dumps(schema(review)),
                 text=True, cwd=workspace, stdout=out, stderr=err, env=env, timeout=3600)
-        if proc.returncode:
+        from .failures import codex_failure
+        failure = codex_failure(folder, proc.returncode) if actual['provider'] == 'codex' else None
+        if failure:
+            result = failure
+        elif proc.returncode:
             from .store import redact
             result = {'status': 'blocked', 'reason': f"{actual['provider']} 模型执行失败，退出码 {proc.returncode}",
                 'failure_kind': 'agent_execution',
@@ -118,7 +133,9 @@ def model(request, folder, prompt, review=False, write=False):
                 result = {'status': 'blocked', 'failure_kind': 'agent_execution', 'reason': 'Agent 回执读取失败：' + str(exc)}
     if agent_error(result):
         result['failure_kind'] = 'agent_execution'
-    result.update(provider=actual['provider'], model=actual['model'], reasoning_effort=actual['reasoning_effort'], evidence=result.get('evidence') or str(folder))
+    result.update(role_skill=skill_snapshot,provider=actual['provider'], model=actual['model'], reasoning_effort=actual['reasoning_effort'], evidence=result.get('evidence') or str(folder))
+    if account is not None:
+        result['account_snapshot'] = account
     atomic(folder / 'result.json', result)
     return result
 
@@ -183,7 +200,7 @@ def verify(request, workspace, head, base, folder):
                     'source_digest': actual_digest, 'baseline_source_digest': baseline_digest}}
             atomic(folder / 'verification.json', result)
             return result
-    record = batch | {'id': str(uuid.uuid4()), 'workspace': str(workspace), 'commit': head, 'base_commit': base,
+    record = batch | {'id': str(uuid.uuid4()), **({'delivery_id': batch['id']} if batch.get('id') else {}), 'workspace': str(workspace), 'commit': head, 'base_commit': base,
         'summary': '交付整合后完整验证；核对全部关联业务验收条件'}
     if baseline_acceptance:
         record['source_digest'] = actual_digest
@@ -225,12 +242,18 @@ def verify(request, workspace, head, base, folder):
             facts_path.write_text(json.dumps(facts, ensure_ascii=False), encoding='utf-8')
     payload = request | {'record': record, 'requirement': combined, 'verification': verification}
     proc = subprocess.run(argv + ['verify'], input=json.dumps(payload),
-        text=True, capture_output=True, timeout=7200)
+        text=True, capture_output=True, timeout=max(7200, product.get('computer_use', {}).get('timeout_seconds', 1800) + 1800))
     (folder / 'verification.stderr.log').write_text(proc.stderr)
     try:
         result = json.loads(proc.stdout)
     except ValueError:
         return {'status': 'blocked', 'reason': '验证适配器未返回结构化结果'}
+    if product.get('project_config', {}).get('workflow_version') == 1 and result.get('status') == 'pass':
+        from .quality import validate as validate_quality
+        try:
+            validate_quality(result.get('quality'), workspace, product['project_config'], trusted_root=request['state_root'])
+        except (OSError, ValueError) as exc:
+            result.update(status='blocked', reason=str(exc))
     diff_path = Path(verification['diff_file'])
     diff_hash = hashlib.sha256(diff_path.read_bytes()).hexdigest() if diff_path.is_file() else ''
     for check in result.get('checks', []):
@@ -240,6 +263,9 @@ def verify(request, workspace, head, base, folder):
                 'merge_base': verification['merge_base'], 'source': verification['source']}
     result['verification'] = {key: value for key, value in verification.items() if key != 'diff'}
     atomic(folder / 'verification.json', result)
+    ui_failed = next((c for c in result.get('checks', []) if c.get('failure_kind') in ('ui_acceptance', 'ui_environment') and c.get('status') != 'pass'), None)
+    if ui_failed:
+        return result | {'status':ui_failed['status'], 'reason':ui_failed.get('reason', '界面链路验收未通过'), 'retryable':False}
     required = [check for check in result.get('checks', []) if check.get('required', True)]
     blocked = [check for check in required if check.get('status') == 'blocked']
     failed = [check for check in required if check.get('status') == 'fail']
@@ -284,9 +310,7 @@ def execute(action, request):
         if plan_file.exists():
             plan = json.loads(plan_file.read_text())
         else:
-            plan = model(request, folder / 'plan', '只读分析并给出修复或冲突解决方案，不修改文件，不提交、不推送。保留双方有效业务逻辑。'
-                '本阶段判断的是修复方案是否就绪：能给出可执行方案即返回 pass，并将具体步骤写入 summary；'
-                '现有代码仍有问题不代表方案 fail。缺少必要前提时返回 blocked 并解释原因。\n' + material)
+            plan = model(request, folder / 'plan', skill_rule('delivery_review-code-review-2') + material)
             atomic(plan_file, plan)
         if plan.get('status') != 'pass':
             return plan
@@ -324,12 +348,19 @@ def execute(action, request):
                          workspace, head, base, folder)
         if checked.get('status') != 'pass':
             gh.status(head, 'failure', '交付验证：' + checked.get('reason', '必需检查未通过'))
-            return checked
+            return checked | {'head_sha': head, 'base_sha': base, 'pr_url': record['pr_url']}
         _, current = load_pull_request(record)
         if digest(workspace) != before or git(workspace, 'rev-parse', 'HEAD') != head or current.get('state') != 'open' or current['head']['sha'] != head or current['base']['sha'] != base:
             return {'status': 'stale', 'stale': True, 'reason': '运行验证期间源码或 PR 变化，结论失效'}
         gh.status(head, 'success', '独立代码评审及合并前验证均通过')
         return checked | {'head_sha': head, 'base_sha': base, 'pr_url': record['pr_url']}
+    quality_result = None
+    if request['product'].get('project_config'):
+        from .quality import run as quality_run
+        quality_result = quality_run(workspace, request['product']['project_config'], folder/'quality',
+            local=request['product'].get('test_execution') == 'local', runtime=request['product'].get('worker_runtime'))
+        if quality_result['status'] != 'pass':
+            return quality_result | {'head_sha': head, 'base_sha': base, 'pr_url': record['pr_url']}
     lock = json.loads((ROOT / 'vendor/open-code-review/lock.json').read_text())
     skill = (ROOT / 'vendor/open-code-review/SKILL.md').read_bytes()
     if hashlib.sha256(skill).hexdigest() != lock['skill_sha256']:
@@ -352,11 +383,16 @@ def execute(action, request):
     atomic(folder / 'ocr-rules.json', rules)
     context = {'pull_request': pr_context, 'requirements': request.get('requirements'), 'goal': request['product']['goal'],
                'base_sha': base, 'head_sha': head, 'diff_base_sha': diff_base, 'files': files, 'rules_file': str(folder / 'ocr-rules.json'),
-               'verification': {'status': 'pending', 'reason': '本轮只执行代码评审；通过后由控制器执行运行验证，不启动客户端'}}
-    prompt = '你是独立代码评审 Agent，只读检查源码，不修改、不提交、不推送。以下官方技能用于逐文件评审；必须覆盖全部给定文件，不能因发现问题提前结束。\n'
+               'quality': quality_result, 'verification': {'status': 'pending', 'reason': '代码质量门禁由控制器执行；评审通过后进行完整业务运行验证'}}
+    prompt = skill_rule('delivery_review-code-review-1')
     prompt += skill.decode() + '\n本轮确定的范围和证据：\n' + json.dumps(context, ensure_ascii=False)
     gh.status(head, 'pending', '独立模型正在评审 PR 全部增量，尚未启动运行验证')
     result = model(request, folder / 'review', prompt, review=True)
+    if quality_result:
+        result.update({k: quality_result[k] for k in ('quality', 'workflow', 'checks') if k in quality_result})
+        if quality_result.get('quality'):
+            from .quality import validate as validate_quality, PHASES
+            validate_quality(quality_result['quality'], workspace, request['product']['project_config'], trusted_root=folder, phases=PHASES[:-1])
     if result.get('status') == 'blocked':
         result |= {'head_sha': head, 'base_sha': base, 'pr_url': record['pr_url'], 'total_files': len(expected)}
         return publish_result(gh, pr_context['number'], record.get('round_id') or folder.name, folder, result,

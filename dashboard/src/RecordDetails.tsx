@@ -1,9 +1,15 @@
+import RoleWorkflow from './RoleWorkflow';
 import { ErrorNotice, TechnicalDetails, errorText } from './errors';
 import { Card, Descriptions, Empty, Space, Tag } from 'antd';
 import { eventLabels, labels, time } from './components';
 
 export type RecordData = Record<string, unknown>;
 const names: Record<string, string> = {
+  manual_retry_count:'人工重试次数（不占返修额度）',last_manual_retry_at:'最近人工重试',manual_retry_pending:'本轮人工重试授权',manual_retry_evidence_id:'人工重试记录',counts_toward_revisions:'是否计入返修额度',source_version:'操作前记录版本',
+  missing_tools:'缺少本机运行时',install_hint:'安装提示',workflow:'角色工作流',quality:'控制器质量证据',workflow_hash:'工作流版本摘要',workflow_version:'工作流版本',step_id:'步骤',module:'模块',stack:'技术栈',source_digest:'源码摘要',config_hash:'配置摘要',receipt:'证据记录',receipt_hash:'证据摘要',
+  account_snapshot:'评审启动前账户快照',auth_home:'认证目录',account_id:'账户标识',plan_type:'账户套餐',auth_mode:'认证方式',
+  checked_at:'查询时间',fetched_at:'获取时间',ordinary_usage_allowed:'服务端允许使用',rate_limits:'额度窗口',
+  primary:'主要额度窗口',secondary:'次要额度窗口',usedPercent:'已用百分比',windowDurationMins:'窗口时长（分钟）',resetsAt:'额度恢复时间',
   pending_confirmation:'待确认',waiting_for_reply:'等待协作回复',rejected:'已拒绝',
   next_auto_retry_at:'下次异常重试',last_auto_retry_at:'最近自动重试',auto_retry_count:'异常自动重试次数',auto_retry_wait_reason:'重试等待原因',last_retry_reason:'上次异常原因',
   repair_deferred_until:'修复额度恢复时间',failure_kind:'异常类型',excluded_repair_rounds:'不计入修复额度的异常轮次',
@@ -28,7 +34,7 @@ const names: Record<string, string> = {
   problem_resolved:'原需求效果已验证',uncertain:'执行结果尚待核对',pause_verified:'暂停证据已核实',
   observation:'仅作观察',source_unchanged:'源码未发生变化',processes_stopped:'执行进程已停止',
   signals:'发现的信号',source:'信号来源',component:'影响模块',classification:'处理分类',in_scope:'属于项目范围',
-  priority:'优先级',count:'累计出现次数',revisions:'返修次数',execution_seconds:'累计执行耗时',
+  priority:'优先级',queue_first:'优先排队',queue_first_at:'手动入池时间',manual_requirement_id:'手动关联需求',count:'累计出现次数',extra_revisions:'额外返修次数',coordination_no_progress:'连续无进展轮数',coordination_progress:'修复进展',coordination_pending:'待执行协调授权',coordination_reason:'协调依据',coordination_wait:'协调等待原因',role_skill:'角色技能快照',revisions:'累计返修次数',execution_seconds:'累计执行耗时',
   passed:'通过数量',blocked:'阻塞数量',target:'目标数量',target_count:'评测任务数',target_phase:'评测终点',
   method:'巡查方式',environment:'执行环境',results:'各项结果',steps:'巡查步骤',
   at:'记录时间',created:'创建时间',updated:'更新时间',started:'开始时间',finished:'结束时间',
@@ -43,6 +49,8 @@ const names: Record<string, string> = {
   acceptance_review_id:'验收审查',review_packet:'审查输入',session_id:'关联会话',
 };
 const values: Record<string,string> = {
+  manual_retry:'人工阻塞重试',autopilot_manual_retry:'人工阻塞重试',recorded:'已记录',human:'人工',
+  available:'当前可用',limited:'当前额度受限',unauthenticated:'尚未登录','codex-app-server':'Codex CLI 实时查询',
   pending_confirmation:'待确认',waiting_for_reply:'等待协作回复',rejected:'已拒绝',
   daily_attribution:'晚间统一归因',duplicate:'重复问题',no_issue:'无新问题',requirement:'形成需求',
   daily_acceptance:'晚间逐项复验',daily_retrospective:'日报与复盘',
@@ -63,12 +71,12 @@ const values: Record<string,string> = {
   verify:'独立验证',idle:'空闲检查',publish:'发布上线',observe:'上线观察',rollback:'回滚恢复',
   codex:'Codex / GPT',harness:'DeepSeek Harness',claude:'Claude',ready:'已就绪',stopped:'已停止',
   development:'开发需求',investigation:'待调查',environment:'环境问题',isolated:'隔离测试环境',
-  runtime:'运行监测',inspection:'体验巡检',feedback:'用户反馈',active:'自主运行',paused:'已暂停',
+  runtime:'运行监测',inspection:'体验巡检',feedback:'用户反馈',manual:'手动入池',active:'自主运行',paused:'已暂停',
   user:'用户',assistant:'助手',system:'系统',tool:'工具',
   'session/header':'会话已建立','session/title':'更新会话标题','user/message':'用户发送消息',
   'assistant/message':'助手回复','autopilot/process-completed':'执行步骤已结束',
 };
-const timeFields = new Set(['next_auto_retry_at','last_auto_retry_at','next_investigation','repair_deferred_until','cutoff','at','created','updated','started','finished','started_at','finished_at','sampledAt','last_seen']);
+const timeFields = new Set(['last_manual_retry_at','checked_at','fetched_at','resetsAt','queue_first_at','next_auto_retry_at','last_auto_retry_at','next_investigation','repair_deferred_until','cutoff','at','created','updated','started','finished','started_at','finished_at','sampledAt','last_seen']);
 const isRecord = (value: unknown): value is RecordData => !!value && typeof value === 'object' && !Array.isArray(value);
 export function unpack(value:unknown):unknown {
   if(typeof value==='string' && /^[\[{]/.test(value.trim())) {
@@ -98,6 +106,7 @@ export function RecordValue({value,field='',depth=0}:{value:unknown;field?:strin
   if(depth>7)return <RawRecord value={parsed}/>;
   if(field==='error')return <ErrorNotice value={parsed}/>;
   if(field==='diagnostic')return <TechnicalDetails value={parsed}/>;
+  if(field==='workflow')return <RoleWorkflow value={parsed}/>;
   if(field==='checks')return <CheckList value={parsed} depth={depth+1}/>;
   if(field==='receipts')return <ReceiptList value={parsed}/>;
   if(Array.isArray(parsed))return parsed.length?<div className="record-items">{parsed.map((item,index)=><div key={index} className="record-item"><RecordValue value={item} depth={depth+1}/></div>)}</div>:<span className="muted">暂无记录</span>;
@@ -142,7 +151,7 @@ export function CheckList({value,depth=0}:{value:unknown;depth?:number}) {
   return <div className="record-checks">{checks.length>0 && <p className="muted">共 {checks.length} 项检查 · {passed} 项通过 · {failed} 项未通过或阻塞 · {checks.length-passed-failed} 项未确认通过</p>}{parsed.map((item,index)=>{
     if(!isRecord(item))return <div className="record-item" key={index}><RecordValue value={item} depth={depth+1}/></div>;
     const summary=item.reason || item.summary || item.actual;
-    return <Card size="small" key={index} className="record-check"><Space wrap><strong>{checkName(item.name || item.title)}</strong><ResultTag status={item.status}/><Tag>{item.required===false?'非必需项':item.required===true?'必需项':'未标注是否必需'}</Tag></Space>{summary!=null && <div className="record-note">{['fail','failed','blocked'].includes(String(item.status))?<ErrorNotice value={item}/>:<RecordValue value={summary} depth={depth+1}/>}</div>}<RawRecord value={item}/></Card>;
+    return <Card size="small" key={index} className="record-check"><Space wrap><strong>{checkName(item.name || item.title)}</strong>{item.stack!=null && <Tag>{String(item.module || 'root')} · {String(item.stack)}</Tag>}<ResultTag status={item.status}/><Tag>{item.required===false?'非必需项':item.required===true?'必需项':'未标注是否必需'}</Tag></Space>{summary!=null && <div className="record-note">{['fail','failed','blocked'].includes(String(item.status))?<ErrorNotice value={item}/>:<RecordValue value={summary} depth={depth+1}/>}</div>}<RawRecord value={item}/></Card>;
   })}</div>;
 }
 export function ResultDetails({value}:{value:unknown}) {

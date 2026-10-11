@@ -178,6 +178,8 @@ class GenericTests(unittest.TestCase):
         # 不带 product_id 的首次接入不校验既有项目能力，保持可用。
         fresh=self.control.mutate('/scans',{'source':str(self.repo)})
         self.assertEqual(fresh['status'],'queued')
+        # 同仓库扫描完成后才允许再次接入；能力校验不绕过执行中去重。
+        self.ledger.update('scans',fresh['id'],fresh['version'],{},'pass')
         # 未声明 adapter_spec 的旧记录与前端预检一致，不因本次收紧被误拦。
         bare=self.ledger.create('products',{'name':'bare','source':str(self.repo),'goal':'fixture'},'paused')
         linked=self.control.mutate('/scans',{'source':str(self.repo),'product_id':bare['id']})
