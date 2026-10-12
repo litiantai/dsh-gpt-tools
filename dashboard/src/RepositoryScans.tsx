@@ -1,5 +1,5 @@
 import ProjectEnvironment from './ProjectEnvironment';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRef, useState } from 'react';
 import { Alert, App, Button, Collapse, Descriptions, Drawer, Image, Input, Space, Table, Tag } from 'antd';
 import { api } from './api';
@@ -23,6 +23,7 @@ function repositories(scans:Scan[]):Repository[] {
 export default function RepositoryScans({onClose,productId,onChanged}:{onClose:()=>void;productId?:string;onChanged:()=>unknown}) {
   const [source,setSource]=useState('');const [selected,setSelected]=useState<string>();
   const [busy,setBusy]=useState(false);const {message}=App.useApp();
+  const queryClient=useQueryClient();
   // 运行身份预检：只有后端明确声明 capabilities.repository_scans>=1 才认为支持仓库扫描 API。
   // 声明来自正在运行的代码，而不是 release marker，因此旧后端不会被新 marker 伪装成受支持。
   // 每次打开抽屉都使用独立查询键并禁用缓存，上一次会话“受支持”的结论绝不能被复用：
@@ -74,10 +75,23 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
   gate.current={checking,blocked,supported};
   const gateClosed=()=>gate.current.checking || gate.current.blocked;
   const gateReason=()=>gate.current.supported?'请先完成项目接入能力核对':'请先核对管理服务的仓库扫描能力';
+  // 手动 refetch 不经过 enabled，因此写请求返回后必须复核能力是否已被撤销。
+  // 身份刷新失败会同步把 error 写入查询缓存并保留 data（query.ts 失败分支），直接读缓存可消除
+  // await 与 React 渲染提交之间的时序窗口；只拦截“已撤销”（失败/未声明/项目不匹配/项目查询失败），
+  // 不拦例行后台核对，避免误跳过正常列表刷新。
+  function writeRevoked(){
+    const state=queryClient.getQueryState<{capabilities?:{repository_scans?:number}}>([identityKey]);
+    if(state?.error)return true;
+    const current=gate.current;
+    return current.blocked && !current.checking;
+  }
   const screenshot=useQuery<{data_url:string}>({queryKey:['scan-screenshot',selected],queryFn:()=>api(`/scans/${selected}/screenshot`),enabled:supported && !!current?.result?.checks?.some(c=>c.screenshot),retry:false});
   async function act(path:string,body:Record<string,unknown>){
     if(gateClosed()){message.error(gateReason());return;}
-    setBusy(true);try{const result=await api<Scan>(path,body);if(!path.endsWith('/apply'))setSelected(result.id);await scans.refetch();onChanged();}catch(e){message.error(errorText(e));}finally{setBusy(false);}}
+    setBusy(true);try{const result=await api<Scan>(path,body);
+      // 写请求在途期间能力被撤销：不再手动 /scans 刷新，也不触发父级 reload，避免绕过 enabled 发请求。
+      if(writeRevoked())return;
+      if(!path.endsWith('/apply'))setSelected(result.id);await scans.refetch();onChanged();}catch(e){message.error(errorText(e));}finally{setBusy(false);}}
   return <Drawer title="仓库接入与启动扫描" open width={960} onClose={onClose}>
     <Space direction="vertical" style={{width:'100%'}} size="large">
       <Alert type="info" showIcon message="在独立工作区识别并验证项目" description="提供本地仓库绝对路径或 HTTPS Git URL。获取源码后先识别 Java、前端及模块技术栈并检测本机工具；缺少运行时会提示安装。工具就绪后再安装项目依赖、构建、测试、尝试启动并保存结果。启动验证不代表业务验收通过。"/>

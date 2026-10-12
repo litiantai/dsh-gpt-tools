@@ -507,3 +507,57 @@ test('repository scan re-checks capability after the backend is downgraded inste
   await page.waitForTimeout(500);
   expect(scanRequests).toEqual([]);
 });
+
+// 缺陷回归（写请求在途）：扫描 POST 在途期间运行身份刷新失败、门控关闭，写请求返回后
+// act() 仍会手动 scans.refetch()——手动刷新不经过 enabled，会再次向已撤销能力的后端发送
+// GET /api/scans。修复后写返回必须复核实时门控，停止手动刷新，恢复后由 enabled 翻转自动补取。
+test('identity refresh failure while the scan write is in flight blocks the follow-up list refresh',async({page})=>{
+  let unavailable=false;
+  await page.route('**/api/runtime-identity',route=>route.fulfill(unavailable
+    ? {status:503,json:{error:'unavailable'}}
+    : {json:{capabilities:{repository_scans:1}}}));
+  // 分别统计 /api/scans 的读取与提交；写请求可按需挂起，制造“在途撤销”窗口。
+  let reads=0;
+  const writes:string[]=[];
+  let holdWrite=false;
+  let releaseWrite!:()=>void;
+  const writeGate=new Promise<void>(resolve=>{releaseWrite=resolve;});
+  await page.route('**/api/scans',async route=>{
+    if(route.request().method()==='POST'){
+      writes.push(route.request().url());
+      if(holdWrite)await writeGate;
+      return route.fulfill(json({id:'created',source:'/isolated/scan-fixture',status:'queued',version:1,updated:2}));
+    }
+    reads++;
+    return route.fulfill(json([]));
+  });
+  await page.goto('/autopilot');
+  await page.getByRole('button',{name:'接入仓库',exact:true}).click();
+  const dialog=page.getByRole('dialog');
+  const submit=dialog.getByRole('button',{name:'扫描新仓库'});
+  await dialog.getByLabel('代码仓库地址').fill('/isolated/scan-fixture');
+  // 首次成功：能力放行并完成一次列表读取。
+  await expect(submit).toBeEnabled();
+  await expect.poll(()=>reads).toBeGreaterThan(0);
+  // 挂起扫描写请求，先确认写请求已发出。
+  holdWrite=true;
+  await submit.click();
+  await expect.poll(()=>writes.length).toBe(1);
+  // 写请求在途期间身份刷新失败：门控关闭（缓存 data 仍在）。
+  unavailable=true;
+  await expect(dialog.getByText('无法核对管理服务')).toBeVisible({timeout:10000});
+  await expect(dialog.getByText('管理服务需要升级')).toBeHidden();
+  await expect(submit).toBeDisabled();
+  await page.waitForResponse(response=>response.url().endsWith('/api/runtime-identity') && response.status()===503);
+  await page.waitForTimeout(500);
+  const stoppedAt=reads;
+  // 释放写请求：写返回后不得绕过门控手动刷新列表。
+  releaseWrite();
+  await page.waitForTimeout(600);
+  expect(writes).toHaveLength(1);
+  expect(reads).toBe(stoppedAt);
+  // 恢复身份并重新核对后列表重新放行，证明只拦截撤销态而不破坏正常刷新。
+  unavailable=false;
+  await dialog.getByRole('button',{name:'重新核对'}).click();
+  await expect.poll(()=>reads).toBeGreaterThan(stoppedAt);
+});
