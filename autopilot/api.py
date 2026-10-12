@@ -87,8 +87,15 @@ class Control:
             return [scan | {'repository_key': repository_key(scan['source'])}
                     for scan in self.ledger.list('scans')]
         if len(parts)==1:
+            if parts[0] == 'runs':
+                from .run_progress import RunProgress
+                progress = RunProgress(self.ledger)
+                return [progress.annotate(run) for run in progress.runs]
             return self.ledger.list(parts[0])
         if len(parts)==2:
+            if parts[0] == 'runs':
+                from .run_progress import RunProgress
+                return RunProgress(self.ledger).annotate(self.ledger.get(*parts))
             return self.ledger.get(*parts)
         if len(parts)==3 and parts[0]=='products' and parts[2]=='git-token':
             from .github import credential_file

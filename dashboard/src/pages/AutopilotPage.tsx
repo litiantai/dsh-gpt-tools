@@ -43,6 +43,7 @@ const labels: Record<string,string> = {
 };
 
 function agentExecutionError(record:RecordItem) {
+  if(record.current_progress)return false;
   const result=record.result as {failure_kind?:string;reason?:string} | undefined;
   return !activeCall(record) && record.status==='blocked' && (result?.failure_kind==='agent_execution' || /模型执行失败|Harness (执行失败|审查执行失败)|Agent 回执读取失败|最终回执解析失败|执行进程已失联|执行超时/.test(String(record.reason || result?.reason || '')));
 }

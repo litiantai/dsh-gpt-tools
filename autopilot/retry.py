@@ -111,7 +111,12 @@ def abnormal(item):
 
 
 def quota_reason(scheduler, item, product, kind):
-    if not scheduler.tokens_available(product):
+    return quota_reason_for(scheduler.ledger, item, product, kind, scheduler.tokens_available(product))
+
+
+def quota_reason_for(ledger, item, product, kind, tokens_available):
+    """供调度和只读状态投影共用的当前额度判断。"""
+    if not tokens_available:
         return '每日 Token 额度不足，等待额度恢复'
     phase = item.get('resume_status')
     policy = DEFAULTS | product.get('policy', {})
@@ -119,17 +124,17 @@ def quota_reason(scheduler, item, product, kind):
         if item.get('execution_seconds', 0) >= policy['execution_seconds']:
             return '累计开发执行时间额度不足'
     if kind == 'runs' and phase == 'queued' and not item.get('budget_reserved'):
-        evaluation = scheduler.ledger.get('evaluations', item['evaluation_id']) if item.get('evaluation_id') else None
+        evaluation = ledger.get('evaluations', item['evaluation_id']) if item.get('evaluation_id') else None
         budget_kind = 'evaluation:' + evaluation['id'] if evaluation else 'development'
         limit = evaluation['target_count'] if evaluation else policy['runs_per_day']
-        if limit and scheduler.ledger.budget_used(product['id'], budget_kind) >= limit:
+        if limit and ledger.budget_used(product['id'], budget_kind) >= limit:
             return '每日需求额度不足，等待额度恢复'
     if kind == 'runs' and phase in ('plan_review', 'acceptance_review'):
-        quota = scheduler.store.state / 'quota.json'
+        quota = ledger.store.state / 'quota.json'
         if quota.exists():
             value = json.loads(quota.read_text())
             today = datetime.datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
-            if value.get('day') == today and value.get('count', 0) >= scheduler.store.settings()['max_per_day']:
+            if value.get('day') == today and value.get('count', 0) >= ledger.store.settings()['max_per_day']:
                 return '平台每日审查额度不足，等待额度恢复'
     return ''
 

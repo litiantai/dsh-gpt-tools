@@ -522,6 +522,8 @@ python3 scripts/test-computer-use-smoke.py --model <可用的 Codex 模型> --ou
 
 每个执行目录下的 `role-skill/` 保存实际加载规则、支持文件、输出契约、内容哈希及模型信息。运行快照只读，后续技能更新不覆盖历史调用。`npm run sync-skills` 将技能同步到仓库分发目录，不安装或改写用户全局 Skills。技能中的脚本只读取证据、比较进展和校验结果；任务变更通过平台事务执行。
 
+运行策略属于项目配置，保存后即时用于后续派发。需求列表与任务详情每次刷新会重新计算当前等待条件，区分项目暂停、更新排空、额度、高峰时段、协作回复、关联设计、审查回执和主执行槽；占槽时显示对应任务及阶段。API 的 `current_progress` 是只读投影，不改写任务版本或历史失败原因，旧原因在详情的「上次结果」保留。
+
 项目 API：`GET /api/products/{id}/coordinator` 查询状态与最近决定；`POST .../coordinator/settings` 提交 `{version, config:{enabled, model, human_authority}}`；`POST .../coordinator/evaluate` 提交 `{version}`。写操作沿用 Cookie、CSRF 与 operation_id；过期版本或暂停项目会拒绝执行。
 
 回归入口：`python3 -B -m unittest discover -s tests -p 'test_coordinator.py'`、`test_role_skills.py`，以及 `npx playwright test tests/browser/coordinator.spec.ts`。测试使用隔离状态和可控模型结果，不向真实任务派发修复。

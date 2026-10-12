@@ -100,6 +100,8 @@ def progress(run):
 
 def snapshot(ledger, product):
     from .quota import snapshot as quota
+    from .run_progress import RunProgress
+    progress_view = RunProgress(ledger)
     tasks = []
     for run in ledger.scoped('runs', product['id']):
         if run['status'] in TERMINAL:
@@ -108,7 +110,7 @@ def snapshot(ledger, product):
         tasks.append({k: run.get(k) for k in ('id', 'version', 'title', 'status', 'resume_status', 'reason',
             'commit', 'revisions', 'extra_revisions', 'execution_seconds', 'feedback', 'coordination_no_progress',
             'coordination_progress', 'coordination_pending', 'coordinator_human', 'requirement_id')} |
-            {'protected': protected(run, delegated=bool(question)), 'delegated_question': question, 'checks': checks_snapshot(run),
+            {'current_progress':progress_view.current(run), 'protected': protected(run, delegated=bool(question)), 'delegated_question': question, 'checks': checks_snapshot(run),
              'diagnostic': run.get('last_revision_diagnostic'),
              'recent_results': [r.get('result') for r in run.get('receipts', [])[-3:]],
              'evidence_ids': [r['evidence_id'] for r in run.get('receipts', [])[-5:] if r.get('evidence_id')]})
@@ -172,7 +174,7 @@ def watch_summary(material):
             '等待已派发协作回复' if task['status']=='waiting_for_reply' else
             '等待已批准协调的资源' if task.get('coordination_pending') else '评估帮助与资源协调')
         findings.append({'run_id':task['id'], 'requirement_id':task.get('requirement_id'),
-            'title':task.get('title'), 'status':task['status'], 'reason':task.get('reason'), 'action':action})
+            'title':task.get('title'), 'status':task['status'], 'reason':(task.get('current_progress') or {}).get('reason') or task.get('reason'), 'action':action})
     return {'requirements_checked':len(material['requirements']), 'tasks_checked':len(material['tasks']),
             'abnormal_count':len(findings), 'findings':findings}
 

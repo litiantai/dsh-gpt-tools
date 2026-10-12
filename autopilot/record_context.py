@@ -77,4 +77,13 @@ def record_context(ledger, kind, ident, record=None):
         if forward or reverse or same_call:
             related.append({'kind': target, 'record': item})
     missing = [{'kind': k, 'id': i} for k, i in sorted(wanted) if (k, i) not in candidates]
+    from .run_progress import RunProgress
+    progress = RunProgress(ledger)
+    if kind == 'runs':
+        record = progress.annotate(record)
+    elif kind == 'requirements':
+        linked = next((run for run in progress.runs if run['id']==record.get('run_id') and run.get('requirement_id')==record['id'] and run['product_id']==record['product_id']), None)
+        if linked and progress.current(linked):
+            record = record | {'current_progress':progress.current(linked)}
+    related = [item | {'record':progress.annotate(item['record'])} if item['kind']=='runs' else item for item in related]
     return {'record': redact(record), 'related': redact(related), 'missing': missing}
