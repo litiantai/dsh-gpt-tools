@@ -57,7 +57,7 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.fresh()['revisions'],3)
         self.assertTrue(c.resume_pending(self.scheduler))
         run = self.fresh()
-        self.assertEqual(run['status'],'developing')
+        self.assertEqual(run['status'],'planning')
         self.assertIn('部分拒收',run['feedback'])
         run = c.consume_grant(self.scheduler,run)
         self.assertEqual((run['revisions'],run['extra_revisions']),(4,1))
@@ -263,7 +263,7 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.fresh()['coordination_no_progress'],2)
         self.assertTrue(c.resume_pending(Scheduler(self.store)))
         run=c.consume_grant(self.scheduler,self.fresh())
-        self.assertEqual((run['status'],run['revisions'],run['extra_revisions']),('developing',4,1))
+        self.assertEqual((run['status'],run['revisions'],run['extra_revisions']),('planning',4,1))
         self.assertEqual(c.apply(self.scheduler,decision,decision['result'])['status'],'applied')
         self.assertEqual(self.fresh()['revisions'],4)
 

@@ -31,7 +31,7 @@ export default function ProjectCoordinator({pid,settings=false}:{pid?:string;set
     }catch(e){message.error(errorText(e));}finally{setBusy(false);}
   };
   return <Space direction="vertical" style={{width:'100%'}} size="middle">
-    <Alert type="info" showIcon message="每项目一个协调 Agent" description={'每 5 分钟核对需求与任务状态，先记录方案，再执行并保留结果。' + (value?.config.human_authority?'Watch 已获协调决策授权，可评估并回答技术返修问题，逐轮决定修复或协助；保留人工暂停、取消和正式验收。':'连续两轮无进展时转人工。')}/>
+    <Alert type="info" showIcon message="每项目一个协调 Agent" description={'每 5 分钟核对需求与任务状态，先记录协调方案；返修重新制定技术方案、通过方案评审后再开发。' + (value?.config.human_authority?'Watch 已获协调决策授权，可评估并回答技术返修问题，逐轮决定修复或协助；保留人工暂停、取消和正式验收。':'连续两轮无进展时转人工。')}/>
     {data.error && <Alert type="error" message={errorText(data.error)}/>}
     {value && <Descriptions column={2} items={[
       {key:'state',label:'当前状态',children:<Tag>{value.enabled?(states[value.instance.status]||value.instance.status):'已停用或项目暂停'}</Tag>},

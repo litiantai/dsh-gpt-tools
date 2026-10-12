@@ -12,6 +12,13 @@ INTERVAL = 3600
 FAULT = re.compile(r'timed?\s*out|timeout|connection|network|temporar|ECONN|ENOTFOUND|EAI_AGAIN|超时|退出码|执行失败|运行异常|回执.*(?:读取|解析)失败|网络|连接失败|连接中断|服务不可用|rate.limit|限流|429|502|503|504', re.I)
 
 
+def repair_plan_changes(run):
+    """返修先重新制定技术方案并评审，历史方案保留在上下文与回执中。"""
+    return {'previous_plan':run.get('plan') or run.get('previous_plan'), 'plan':None,
+            'plan_approved':False, 'repair_plan_required':True, 'repair_plan_review_id':None,
+            'review_id':None, 'review_packet':None}
+
+
 def manual_run_retry(ledger, ident, version, allow_revision=False):
     """人工授权单轮重试，独立留痕且不重置或消耗自动返修次数。"""
     from review_core import Conflict, ACTIVE
@@ -49,14 +56,15 @@ def manual_run_retry(ledger, ident, version, allow_revision=False):
         changes = {'control': None, 'reason': '', 'next_auto_retry_at': None, 'auto_retry_wait_reason': None,
                    'coordination_pending': None, 'coordination_wait': '', 'revision_exhausted': False}
         if (exhausted or allow_revision) and phase in ('planning', 'plan_review', 'developing', 'verifying', 'acceptance_review'):
-            phase = 'planning' if phase in ('planning', 'plan_review') else 'developing'
+            phase = 'planning'
+            changes.update(repair_plan_changes(run))
             feedback = run.get('feedback') or run.get('reason', '')
             diagnostic = run.get('last_revision_diagnostic')
             if diagnostic:
                 feedback += '\n技术诊断：' + json.dumps(diagnostic, ensure_ascii=False)
             changes['feedback'] = redact(feedback)
         if allow_revision:
-            authorization = '人工允许再执行一轮返修，本轮不计入自动返修次数；按原失败反馈修复并重新验证。'
+            authorization = '人工允许再执行一轮返修，本轮不计入自动返修次数；先根据失败证据重新制定修复方案，方案评审通过后开发并重新验证。'
             if question:
                 from .collaboration import human_reply
                 human_reply(ledger, run['product_id'], question['id'],

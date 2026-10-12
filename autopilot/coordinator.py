@@ -334,6 +334,8 @@ def apply(scheduler, decision, result):
             if run.get('coordination_no_progress', 0) >= 2 and not config(product)['human_authority']:
                 human(ledger, run, '连续两轮没有可验证进展：' + strategy, db)
                 return finish('needs_human', '停止自动追加，等待人工回复')
+            # 调度方案只授权一轮；技术修复方案必须重新生成并通过方案评审。
+            phase = 'planning' if action == 'repair' else phase
             ledger.update('runs', run['id'], run['version'], {'coordination_pending': {
                 'decision_id': decision['id'], 'phase': phase, 'strategy': instruction, 'action': action,
                 'requires_human_authority': config(product)['human_authority']},
@@ -370,7 +372,9 @@ def resume_pending(scheduler):
                 current = ledger.get('runs', run['id'], db)
                 if current['version'] != run['version']:
                     continue
-                ledger.update('runs', run['id'], run['version'], {'feedback': pending['strategy'] + '\n原失败原因：' + run.get('reason', ''),
+                from .retry import repair_plan_changes
+                planning = repair_plan_changes(run) if pending['action'] == 'repair' else {}
+                ledger.update('runs', run['id'], run['version'], planning | {'feedback': pending['strategy'] + '\n原失败原因：' + run.get('reason', ''),
                     'review_id': None, 'review_packet': None, 'reason': '', 'coordination_wait': '',
                     'next_auto_retry_at': None, 'coordination_baseline': checks_snapshot(run)}, pending['phase'], db)
             return True

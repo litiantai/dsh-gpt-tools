@@ -49,7 +49,7 @@ class ManualRetryTests(unittest.TestCase):
             waiting = self.human_wait(run)
             messages.append(waiting['collaboration_wait'])
             run = self.allow_revision(waiting)
-            self.assertEqual(run['status'], 'developing')
+            self.assertEqual(run['status'], 'planning')
             self.assertEqual((run['revisions'], run['extra_revisions'], run['execution_seconds']), (3, 0, 123))
             self.assertEqual(run['manual_retry_count'], count)
             self.assertIsNone(run['collaboration_wait'])
@@ -75,7 +75,7 @@ class ManualRetryTests(unittest.TestCase):
         run = self.ledger.update('runs', self.run['id'], self.run['version'],
             {'resume_status': 'verifying', 'reason': '验证失败', 'revision_exhausted': False})
         run = self.allow_revision(run)
-        self.assertEqual(run['status'], 'developing')
+        self.assertEqual(run['status'], 'planning')
         self.assertEqual(run['revisions'], 3)
 
     def test_invalid_allowance_does_not_answer_question(self):
@@ -97,7 +97,7 @@ class ManualRetryTests(unittest.TestCase):
         with self.assertRaises(Conflict):
             self.allow_revision(waiting)
 
-    def dispatch(self, run, action='develop'):
+    def dispatch(self, run, action='plan'):
         with patch('autopilot.scheduler.subprocess.Popen') as spawn:
             spawn.return_value.pid = 123456
             return self.scheduler.start_call('runs', run, self.product, action, self.product['executor'])
@@ -106,7 +106,7 @@ class ManualRetryTests(unittest.TestCase):
         run = self.run
         for count in range(1, 8):
             run = self.retry(run)
-            self.assertEqual(run['status'], 'developing')
+            self.assertEqual(run['status'], 'planning')
             self.assertEqual(run['manual_retry_count'], count)
             self.assertIsNone(run['review_id'])
             run = self.dispatch(run)
@@ -137,13 +137,13 @@ class ManualRetryTests(unittest.TestCase):
             run = self.dispatch(run, 'verify')
             run = self.scheduler.consume('runs', run, {'status': 'fail'})
             run = self.scheduler.complete_action(run, self.product, 'verify', {'status': 'fail', 'reason': '功能失败'})
-            self.assertEqual(run['status'], 'developing')
+            self.assertEqual(run['status'], 'planning')
             self.assertEqual(run['revisions'], revisions)
             run = self.dispatch(run)
             run = self.scheduler.consume('runs', run, {'status': 'fail'})
             run = self.scheduler.complete_action(run, self.product, 'develop', {'status': 'fail', 'reason': '下一轮失败'})
             self.assertEqual(run['revisions'], revisions + int(revisions < 3))
-            self.assertEqual(run['status'], 'developing' if revisions < 3 else 'blocked')
+            self.assertEqual(run['status'], 'planning' if revisions < 3 else 'blocked')
 
     def test_plan_retry_preserves_diagnostics_and_supersedes_coordinator_grant(self):
         run = self.ledger.update('runs', self.run['id'], self.run['version'], {'resume_status': 'plan_review',
@@ -203,7 +203,7 @@ class ManualRetryTests(unittest.TestCase):
     def test_resource_wait_keeps_authorization_and_other_budgets(self):
         run = self.retry(self.run)
         with patch.object(self.scheduler, 'tokens_available', return_value=False), patch('autopilot.scheduler.subprocess.Popen') as spawn:
-            run = self.scheduler.start_call('runs', run, self.product, 'develop', self.product['executor'])
+            run = self.scheduler.start_call('runs', run, self.product, 'plan', self.product['executor'])
             spawn.assert_not_called()
         self.assertTrue(run['manual_retry_pending'])
         self.assertEqual((run['revisions'], run['execution_seconds']), (3, 123))

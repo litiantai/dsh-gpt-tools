@@ -71,6 +71,8 @@ class Scheduler:
 
     def start_call(self,kind,item,product,action,command,extra=None,timeout=600):
         with dispatch_lock(self.store.state):
+            if kind == 'runs' and action == 'develop' and item.get('repair_plan_required'):
+                raise Conflict('返修必须先重新制定修复方案并通过方案评审')
             return self._start_call(kind,item,product,action,command,extra,timeout)
 
     def _start_call(self,kind,item,product,action,command,extra=None,timeout=600):
@@ -525,6 +527,8 @@ class Scheduler:
             from .project_groups import current_designs
             if sorted(run.get('plan_design_ids',[]))!=sorted(d['id'] for d in current_designs(self.ledger,run)):
                 return self.change('runs',run,{'plan_approved':False,'review_id':None,'reason':'设计版本已变化，重新核对完整方案'},'planning')
+        if run['status'] == 'developing' and run.get('repair_plan_required'):
+            return self.change('runs',run,{'reason':'返修等待新修复方案及方案评审'},'planning')
         if run['status'] in ('planning','developing'):
             remaining=policy['execution_seconds']-run.get('execution_seconds',0)
             if remaining<=0:
@@ -598,7 +602,7 @@ class Scheduler:
             if not result.get('plan'):
                 return self.block(run,'执行器未提交开发方案')
             from .project_groups import current_designs
-            return self.change('runs',run,{'plan':redact(result['plan']),'plan_design_ids':[d['id'] for d in current_designs(self.ledger,run)]},'plan_review')
+            return self.change('runs',run,{'plan':redact(result['plan']),'plan_approved':False,'plan_saved_at':time.time(),'plan_design_ids':[d['id'] for d in current_designs(self.ledger,run)]},'plan_review')
         if action=='develop':
             commit_id=commit(run['workspace'])
             return self.change('runs',run,{'commit':commit_id,'source_digest':digest(run['workspace']),'summary':redact(result.get('summary',''))},'verifying')
@@ -650,9 +654,10 @@ class Scheduler:
             return self.block(run,'返修次数已用尽：'+reason)
         # Human copy must not remove compiler/tool evidence from the next repair prompt.
         feedback=reason+('\n技术诊断：'+json.dumps(diagnostic,ensure_ascii=False) if diagnostic else '')
-        return self.change('runs',run,{'revisions':run.get('revisions',0)+int(not manual),'feedback':redact(feedback),
+        from .retry import repair_plan_changes
+        return self.change('runs',run,repair_plan_changes(run) | {'revisions':run.get('revisions',0)+int(not manual),'feedback':redact(feedback),
                            'review_id':None,'review_packet':None,'revision_exhausted':False,'manual_retry_pending':None},
-                           'planning' if run['status']=='plan_review' else 'developing')
+                           'planning')
 
     def review(self,run,product,requirement):
         if run['status'] == 'acceptance_review' and (run.get('quality') or product.get('project_config', {}).get('workflow_version') == 1):
@@ -714,7 +719,7 @@ class Scheduler:
                         self.change('runs',run,{'acceptance_review_id':review['id'],'accepted_at':time.time(),'review_id':None,'reason':''},'accepted')
                         self.change('requirements',requirement,{},'accepted')
                         return
-                return self.change('runs',run,{'review_id':None, **({'plan_approved':True} if expected=='approve' else {})} | ({'accepted_at':time.time(),'acceptance_review_id':review['id']} if expected=='done' else {}),'developing' if expected=='approve' else 'awaiting_release')
+                return self.change('runs',run,{'review_id':None, **({'plan_approved':True,'repair_plan_required':False,'repair_plan_review_id':review['id']} if expected=='approve' else {})} | ({'accepted_at':time.time(),'acceptance_review_id':review['id']} if expected=='done' else {}),'developing' if expected=='approve' else 'awaiting_release')
             if result.get('decision')=='revise':
                 return self.revise(run,product,result.get('instruction','审查要求修改'))
             return self.block(self.change('runs',run,{'review_id':None}),result.get('summary','审查未通过'))
@@ -761,6 +766,8 @@ class Scheduler:
                 'summary':json.dumps(redact({'acceptance_protocol':PRE_RELEASE_INSTRUCTION,
                        'acceptance_scope':pre_release(requirement,run),
                        'designs':designs,'design_protocol':'读取 designs 中各 path 的完整设计文件，核对 UI、字段需求与接口契约版本，再审查完整方案；后端保持对旧前端兼容。','requirement':requirement,'plan':run.get('plan'),'checks':run.get('checks'),
+                       'repair_context':({'failure':run.get('feedback'),'diagnostic':run.get('last_revision_diagnostic'),
+                           'previous_plan':run.get('previous_plan'),'instruction':'本轮为返修方案评审：核对剩余缺陷根因、针对性修改、回归检查及相较上次的新策略；协调方案不能替代技术修复方案。'} if run.get('repair_plan_required') else None),
                        'summary':run.get('summary'),'collaboration':collaboration,'collaboration_protocol':('需要补充信息时 decision=blocked，instruction 填写 JSON 字符串 {"collaboration_requests":[{"to_role":"verification","topic":"主题","content":"问题","evidence_ids":[]}]}，回复不能替代正式审查。' if product.get('intelligence',{}).get('collaboration_enabled') else None),'execution':'独立执行进程已退出；控制器冻结工作区等待审查'}),ensure_ascii=False)[:20000]}
         from .role_skills import bind, rule
         from review_core import SCHEMA

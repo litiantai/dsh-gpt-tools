@@ -14,7 +14,7 @@ test('human allowance requests one uncounted repair from the waiting task', asyn
   await page.route(`**/api/runs/${run.id}/allow-revision`,async r=>{
     requests.push(r.request().postDataJSON());
     if(reject){await r.fulfill({status:409,json:{error:'记录已更新，请刷新后重试'}});return;}
-    run={...run,status:'developing',version:4};
+    run={...run,status:'planning',version:4};
     await r.fulfill({json:run});
   });
   await page.goto(`/autopilot?project=${product.id}`);
@@ -33,7 +33,7 @@ test('human allowance requests one uncounted repair from the waiting task', asyn
   await expect(allow).toHaveCount(0);
   expect(requests).toHaveLength(2);
   await page.locator('.ant-drawer-close').click();
-  await expect(page.getByRole('button',{name:'开发执行 1',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'任务规划 1',exact:true})).toBeVisible();
 });
 
 test('waiting replies and unmapped states remain visible after a task leaves blocked', async ({page})=>{

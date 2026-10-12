@@ -57,6 +57,6 @@ class ErrorMessageTests(unittest.TestCase):
             run=scheduler.ledger.create('runs',{'product_id':product['id']},'verifying')
             result=present_errors({'status':'fail','reason':'Command failed: src/main.ts(8) TS2322'})
             updated=scheduler.complete_action(run,product,'verify',result)
-            self.assertEqual(updated['status'],'developing')
+            self.assertEqual(updated['status'],'planning')
             self.assertIn('TS2322',updated['feedback'])
             self.assertNotIn('TS2322',result['reason'])

@@ -461,6 +461,45 @@ for(const command of ['node test.js &','nohup node test.js','node test.js & node
         self.assertEqual(current['status'], 'acceptance_review')
         self.assertEqual(self.ledger.list('releases'), [])
 
+    def test_repair_requires_new_technical_plan_and_review_before_development(self):
+        requirement=self.requirement()
+        run=self.control.queue(requirement)
+        run=self.ledger.update('runs',run['id'],run['version'],{
+            'workspace':str(self.source),'worker_home':str(self.root/'worker'),
+            'plan':'旧方案','plan_approved':True,'review_id':'old-review'},'verifying')
+        scheduler=Scheduler(self.store)
+        run=scheduler.revise(run,self.product,'跨项目凭证覆盖',{'test':'isolation failed'})
+        self.assertEqual(run['status'],'planning')
+        self.assertEqual(run['previous_plan'],'旧方案')
+        self.assertIsNone(run['plan'])
+        self.assertFalse(run['plan_approved'])
+        self.assertTrue(run['repair_plan_required'])
+        with patch('autopilot.scheduler.subprocess.Popen') as spawn, self.assertRaises(Conflict):
+            scheduler.start_call('runs',run,self.product,'develop',self.product['executor'])
+        spawn.assert_not_called()
+        run=scheduler.complete_action(run,self.product,'plan',{'status':'pass','plan':'按项目与发件人隔离凭证，补交叉发送回归'})
+        self.assertEqual(run['status'],'plan_review')
+        self.assertTrue(run['repair_plan_required'])
+        with patch('autopilot.scheduler.Engine') as engine:
+            scheduler.review(run,self.product,requirement)
+        packet=engine.return_value.submit.call_args.args[0]
+        self.assertIn('跨项目凭证覆盖',packet['summary'])
+        self.assertIn('协调方案不能替代技术修复方案',packet['summary'])
+        current=self.ledger.get('runs',run['id'])
+        with patch('autopilot.scheduler.subprocess.Popen') as spawn, self.assertRaises(Conflict):
+            scheduler.start_call('runs',current,self.product,'develop',self.product['executor'])
+        spawn.assert_not_called()
+        review={'id':current['review_id'],'status':'done','execution_done':True,
+                'result':{'decision':'approve','pause_proof':{'pause_verified':True},'summary':'修复方案评审通过'}}
+        with patch.object(WorkerStore,'get',return_value=review):
+            scheduler.review(current,self.product,requirement)
+        approved=self.ledger.get('runs',run['id'])
+        self.assertEqual(approved['status'],'developing')
+        self.assertTrue(approved['plan_approved'])
+        self.assertFalse(approved['repair_plan_required'])
+        self.assertEqual(approved['repair_plan_review_id'],review['id'])
+        self.assertIn('isolation failed',approved['feedback'])
+
     def test_process_receipt_survives_scheduler_restart(self):
         scheduler=Scheduler(self.store)
         run=self.control.queue(self.requirement())
