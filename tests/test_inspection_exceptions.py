@@ -57,6 +57,14 @@ class InspectionExceptionTests(unittest.TestCase):
         self.assertEqual(Ledger(self.store).get('signals', record['id'])['version'], migrated['version'])
         self.assertEqual(self.ledger.get('signals', feedback['id'])['status'], 'pending')
 
+    def test_current_ledger_can_be_constructed_inside_a_write_transaction(self):
+        self.signal('blocked')
+        self.signal('observed', version='observed')
+        with self.store.transaction() as db:
+            record = self.ledger.create('requirements', {'product_id': self.product['id'], 'title': '事务内需求'}, db=db)
+            nested = Ledger(self.store)
+            self.assertEqual(nested.get('requirements', record['id'], db)['title'], '事务内需求')
+
 
 if __name__ == '__main__':
     unittest.main()

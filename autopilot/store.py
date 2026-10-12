@@ -67,12 +67,15 @@ class Ledger:
             for column in ('record_id', 'action'):
                 if column not in {r[1] for r in db.execute('PRAGMA table_info(auto_token_sources)')}:
                     db.execute(f"ALTER TABLE auto_token_sources ADD COLUMN {column} TEXT")
-        with store.transaction() as db:
-            # 兼容已有待处理记录，保留原始证据及已归因记录；串行转换避免并发初始化冲突。
-            for row in db.execute("SELECT * FROM auto_signals WHERE status='pending' AND json_extract(data, '$.source')='inspection'").fetchall():
-                item = self.decode(row)
-                if inspection_exception(item) and not item.get('requirement_id') and not item.get('requirement_ids'):
-                    self.update('signals', item['id'], item['version'], {'attribution_pending': False}, 'abnormal', db)
+            legacy = [self.decode(row) for row in db.execute("SELECT * FROM auto_signals WHERE status='pending' AND json_extract(data, '$.source')='inspection'")]
+            legacy = [item for item in legacy if inspection_exception(item) and not item.get('requirement_id') and not item.get('requirement_ids')]
+        # 无需迁移时不申请写锁，允许已有事务中的业务操作构造台账。
+        if legacy:
+            with store.transaction() as db:
+                for candidate in legacy:
+                    item = self.get('signals', candidate['id'], db)
+                    if item['status'] == 'pending' and inspection_exception(item) and not item.get('requirement_id') and not item.get('requirement_ids'):
+                        self.update('signals', item['id'], item['version'], {'attribution_pending': False}, 'abnormal', db)
 
     def _table(self, kind):
         if kind not in KINDS:
