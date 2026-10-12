@@ -175,6 +175,102 @@ test('identity refresh failure blocks applying the scan config to the current pr
   expect(productReads.length).toBe(stoppedReads);
 });
 
+// 缺陷回归（缓存详情 A）：运行身份“先成功后失败”后缓存列表仍保留记录，扫描详情继续渲染；
+// 但详情内的环境查询继承全局 3s 轮询、“检测本机运行时”按钮此前无门控。
+// 修复后 identity.isError 必须同时关闭环境轮询与运行时检测，已缓存展示保持只读。
+test('identity refresh failure stops cached scan environment polling and runtime checks',async({page})=>{
+  let unavailable=false;
+  await page.route('**/api/runtime-identity',route=>route.fulfill(unavailable
+    ? {status:503,json:{error:'unavailable'}}
+    : {json:{capabilities:{repository_scans:1}}}));
+  let environmentReads=0;
+  await page.route('**/api/scans/cached-pass/environment',route=>{environmentReads++;return route.fulfill(json({stacks:[],modules:[],warnings:[]}));});
+  const runtimeChecks:string[]=[];
+  page.on('request',request=>{if(new URL(request.url()).pathname==='/api/scans/cached-pass/runtime-check')runtimeChecks.push(request.url());});
+  await page.route('**/api/scans/cached-pass/runtime-check',route=>route.fulfill(json({stacks:[],modules:[],warnings:[],status:'ready'})));
+  await page.route('**/api/scans',route=>route.fulfill(json([
+    {id:'cached-pass',source:'/isolated/cached',repository_key:'/isolated/cached',status:'pass',version:1,product_id:'',created:1,updated:1}
+  ])));
+  await page.goto('/autopilot');
+  await page.getByRole('button',{name:'接入仓库',exact:true}).click();
+  const dialog=page.getByRole('dialog');
+  // 选中缓存中的 pass 扫描记录：首次成功时环境查询已触达，运行时检测入口可用。
+  await dialog.getByRole('button',{name:'/isolated/cached',exact:true}).click();
+  const check=dialog.getByRole('button',{name:'检测本机运行时'});
+  await expect(check).toBeEnabled();
+  await expect.poll(()=>environmentReads).toBeGreaterThan(0);
+  // 后台刷新失败：缓存详情仍在，但环境查询与运行时检测必须随身份失败一并停止。
+  unavailable=true;
+  await expect(dialog.getByText('无法核对管理服务')).toBeVisible({timeout:10000});
+  await expect(dialog.getByText('管理服务需要升级')).toBeHidden();
+  // 等待失败后的下一个身份轮询周期结束，再让可能仍在途的环境请求结算。
+  await page.waitForResponse(response=>response.url().endsWith('/api/runtime-identity') && response.status()===503);
+  await page.waitForTimeout(500);
+  const stoppedAt=environmentReads;
+  // 观察至少一个完整的环境轮询周期：缓存能力不得让环境查询继续。
+  await page.waitForTimeout(3200);
+  expect(environmentReads).toBe(stoppedAt);
+  await expect(check).toBeDisabled();
+  // 即使对禁用入口强行点击，也不得发起 runtime-check 检测请求。
+  await check.click({force:true});
+  await page.waitForTimeout(200);
+  expect(runtimeChecks).toEqual([]);
+  // 恢复：重新核对成功后环境查询与运行时检测自动放行。
+  unavailable=false;
+  await dialog.getByRole('button',{name:'重新核对'}).click();
+  await expect(check).toBeEnabled();
+  await expect.poll(()=>environmentReads).toBeGreaterThan(stoppedAt);
+});
+
+// 缺陷回归（缓存详情 B）：应用配置在点击后先 await 项目详情，等待期间身份刷新失败时，
+// 已进入的 async 闭包仍持旧的 checking/blocked，详情返回后可能仍提交 apply。
+// 修复后必须在 await 之后重新读取实时门控，详情返回也不得发起 /scans/<id>/apply。
+test('identity refresh failure while the apply product lookup is in flight blocks the scan write',async({page})=>{
+  const product={id:'apply-product',name:'应用项目',goal:'fixture',status:'active',version:1};
+  let unavailable=false;
+  await page.route('**/api/runtime-identity',route=>route.fulfill(unavailable
+    ? {status:503,json:{error:'unavailable'}}
+    : {json:{capabilities:{repository_scans:1}}}));
+  // 点击“应用”后 apply 处理函数会再次读取项目详情；挂起该请求以制造在途窗口。
+  let holdProduct=false;
+  let releaseProduct!:()=>void;
+  const productGate=new Promise<void>(resolve=>{releaseProduct=resolve;});
+  await page.route(url=>url.pathname.startsWith('/api/products'),async route=>{
+    const path=new URL(route.request().url()).pathname;
+    if(path==='/api/products')return route.fulfill(json([product]));
+    if(path==='/api/products/apply-product'){
+      if(holdProduct)await productGate;
+      return route.fulfill(json({...product,adapter_spec:{version:1,kind:'command',capabilities:['verify']}}));
+    }
+    if(path.endsWith('/delivery-board'))return route.fulfill(json({prs:[],release_prs:[],issues:[]}));
+    if(path.endsWith('/workbench'))return route.fulfill(json({sessions:[],reviews:[],events:[]}));
+    return route.fulfill(json({}));
+  });
+  const applies:string[]=[];
+  page.on('request',request=>{if(new URL(request.url()).pathname==='/api/scans/cached-pass/apply')applies.push(request.url());});
+  await page.route('**/api/scans',route=>route.fulfill(json([
+    {id:'cached-pass',source:'/isolated/cached',repository_key:'/isolated/cached',status:'pass',version:1,product_id:'',created:1,updated:1}
+  ])));
+  await page.route('**/api/scans/cached-pass/environment',route=>route.fulfill(json({stacks:[],modules:[],warnings:[]})));
+  await page.route('**/api/scans/cached-pass/apply',route=>route.fulfill(json({id:'cached-pass',status:'pass',version:2,product_id:'apply-product',updated:2})));
+  await page.goto('/autopilot?project=apply-product');
+  await page.getByRole('button',{name:'接入仓库',exact:true}).click();
+  const dialog=page.getByRole('dialog');
+  await dialog.getByRole('button',{name:'/isolated/cached',exact:true}).click();
+  const apply=dialog.getByRole('button',{name:'应用扫描配置到当前项目'});
+  // 首次成功：项目能力已确认，apply 入口可用（证明 await 前的门控检查通过）。
+  await expect(apply).toBeEnabled();
+  // 点击后挂起项目详情，随后让身份下一次轮询失败，最后释放详情请求。
+  holdProduct=true;
+  await apply.click();
+  unavailable=true;
+  await expect(dialog.getByText('无法核对管理服务')).toBeVisible({timeout:10000});
+  releaseProduct();
+  await page.waitForTimeout(500);
+  // 即使详情随后返回，也不得用旧闭包状态提交 apply 写请求。
+  expect(applies).toEqual([]);
+});
+
 test('repository onboarding records scan requests and distinguishes startup from acceptance',async({page})=>{
   await page.goto('/autopilot');
   await page.getByRole('button',{name:'接入仓库',exact:true}).click();

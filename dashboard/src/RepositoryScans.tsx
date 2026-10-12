@@ -1,6 +1,6 @@
 import ProjectEnvironment from './ProjectEnvironment';
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Alert, App, Button, Collapse, Descriptions, Drawer, Image, Input, Space, Table, Tag } from 'antd';
 import { api } from './api';
 import { time } from './components';
@@ -67,9 +67,16 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
   const checking=identity.isPending || identity.isFetching || projectChecking;
   // blocked 必须显式覆盖 identity.isError（先成功后失败），即使缓存 data 仍在也要拦截扫描/重新扫描/onboard/apply。
   const blocked=!supported || identityFailed || mismatch || projectFailed;
+  // 异步写操作必须读取“当前”门控，而不是点击时那次渲染捕获的旧值：
+  // 应用配置在 await 项目详情期间若身份刷新失败，闭包里的 checking/blocked 仍是旧值，
+  // 会放行写入。用 ref 在每次渲染后同步最新门控，await 之后重新读取即可拦截。
+  const gate=useRef({checking,blocked,supported});
+  gate.current={checking,blocked,supported};
+  const gateClosed=()=>gate.current.checking || gate.current.blocked;
+  const gateReason=()=>gate.current.supported?'请先完成项目接入能力核对':'请先核对管理服务的仓库扫描能力';
   const screenshot=useQuery<{data_url:string}>({queryKey:['scan-screenshot',selected],queryFn:()=>api(`/scans/${selected}/screenshot`),enabled:supported && !!current?.result?.checks?.some(c=>c.screenshot),retry:false});
   async function act(path:string,body:Record<string,unknown>){
-    if(checking||blocked){message.error(!supported?'请先核对管理服务的仓库扫描能力':'请先完成项目接入能力核对');return;}
+    if(gateClosed()){message.error(gateReason());return;}
     setBusy(true);try{const result=await api<Scan>(path,body);if(!path.endsWith('/apply'))setSelected(result.id);await scans.refetch();onChanged();}catch(e){message.error(errorText(e));}finally{setBusy(false);}}
   return <Drawer title="仓库接入与启动扫描" open width={960} onClose={onClose}>
     <Space direction="vertical" style={{width:'100%'}} size="large">
@@ -99,7 +106,7 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
         {key:'source',label:'源码提交',children:current.result?.source_commit || '等待采集'},
         {key:'state',label:'结果',children:names[current.status] || current.status},
         {key:'business',label:'业务验收',children:'独立于启动扫描，需进入研发验收流程'}]}/>
-        <ProjectEnvironment key={`${current.id}:${!!current.result}`} path={`/scans/${current.id}`}/>
+        <ProjectEnvironment key={`${current.id}:${!!current.result}`} path={`/scans/${current.id}`} disabled={blocked}/>
         {current.reason && <ErrorNotice value={current.reason}/>}
         <Table<Check> rowKey="name" size="small" dataSource={current.result?.checks} pagination={false} columns={[
           {title:'步骤',dataIndex:'name'},{title:'结果',dataIndex:'status'},
@@ -107,7 +114,7 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
           {title:'退出码',dataIndex:'exit_code'},{title:'说明',dataIndex:'reason'}
         ]}/>
         {current.status==='pass' && !current.product_id && <Button loading={busy} disabled={checking || blocked} onClick={()=>void act(`/scans/${current.id}/onboard`,{version:current.version})}>登记项目并进入观察模式</Button>}
-        {current.status==='pass' && productId && (!current.product_id || current.product_id===productId) && <Button loading={busy} disabled={checking || blocked} onClick={async()=>{if(checking||blocked){message.error(!supported?'请先核对管理服务的仓库扫描能力':'请先完成项目接入能力核对');return;}const product=await api<{version:number}>(`/products/${productId}`);await act(`/scans/${current.id}/apply`,{version:current.version,product_id:productId,product_version:product.version});}}>应用扫描配置到当前项目</Button>}
+        {current.status==='pass' && productId && (!current.product_id || current.product_id===productId) && <Button loading={busy} disabled={checking || blocked} onClick={async()=>{if(gateClosed()){message.error(gateReason());return;}const product=await api<{version:number}>(`/products/${productId}`);if(gateClosed()){message.error(gateReason());return;}await act(`/scans/${current.id}/apply`,{version:current.version,product_id:productId,product_version:product.version});}}>应用扫描配置到当前项目</Button>}
         {screenshot.data && <Image alt="隔离实例启动截图" src={screenshot.data.data_url}/>}
         <Collapse items={[{key:'raw',label:'识别配置与完整回执',children:<pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(current.result,null,2)}</pre>}]}/>
       </>}

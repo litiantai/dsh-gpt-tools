@@ -9,13 +9,16 @@ type Module = {path:string;stacks:string[];selection:string;evidence:string[]};
 type Check = {tool:string;modules:string[];status:string;path?:string;version?:string;reason?:string;install_hint?:string};
 type Environment = {stacks:string[];modules:Module[];warnings:string[];checks?:Check[];checked_at?:number;status?:string};
 const labels:Record<string,string>={java:'Java 后端',react:'React 前端',vue:'Vue 前端',node:'Node.js',python:'Python',generic:'通用'};
-export default function ProjectEnvironment({path}:{path:string}) {
-  const detected=useQuery<Environment>({queryKey:[path,'environment'],queryFn:()=>api(`${path}/environment`),retry:false});
+export default function ProjectEnvironment({path,disabled=false}:{path:string;disabled?:boolean}) {
+  // 能力门控：运行身份核对失败（先成功后失败）时上游传入 disabled，
+  // 环境查询必须随之停发请求（含继承自 main.tsx 的全局轮询），已缓存 data 只作只读展示。
+  const detected=useQuery<Environment>({queryKey:[path,'environment'],queryFn:()=>api(`${path}/environment`),enabled:!disabled,retry:false});
   const [result,setResult]=useState<Environment>();
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState<unknown>();
   const value=result || detected.data;
   async function check(){
+    if(disabled) return;
     setBusy(true);setError(undefined);
     try{setResult(await api<Environment>(`${path}/runtime-check`,{}));}
     catch(e){setError(e);}
@@ -24,7 +27,7 @@ export default function ProjectEnvironment({path}:{path:string}) {
   return <section aria-label="项目技术栈与本机运行时" style={{marginBottom:24}}>
     <h4>项目技术栈与本机运行时</h4>
     <Space wrap>{value?.stacks.map(stack=><Tag key={stack}>{labels[stack] || stack}</Tag>)}
-      <Button onClick={()=>void check()} loading={busy}>{result?'重新检测本机运行时':'检测本机运行时'}</Button>
+      <Button onClick={()=>void check()} loading={busy} disabled={disabled || busy}>{result?'重新检测本机运行时':'检测本机运行时'}</Button>
       {value?.checked_at && <span className="muted">检测时间：{time(value.checked_at)}</span>}
     </Space>
     <p className="muted">检测管理服务所在电脑的已安装工具及版本。缺少工具时按提示安装，安装后重新检测；运行时可用后仍需完成项目编译、测试与业务验收。</p>
