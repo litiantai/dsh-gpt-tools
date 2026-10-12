@@ -59,7 +59,7 @@ class DailyTests(unittest.TestCase):
         self.ledger.budget(self.product['id'],'tokens',1)
         self.ledger.budget(self.product['id'],'development',1)
         with patch('autopilot.daily.time.time',return_value=self.midnight+19*3600),patch.object(scheduler,'start_call') as start:
-            self.assertTrue(tick(scheduler))
+            self.assertFalse(tick(scheduler))
             self.assertEqual(start.call_args.args[3],'daily_retrospective')
         self.assertFalse(scheduler.tokens_available(self.product))
 
@@ -117,12 +117,22 @@ class DailyTests(unittest.TestCase):
             tick(scheduler)
             self.assertEqual(start.call_args.args[3],'daily_attribution')
 
-    def test_daily_waits_for_development_and_discovery(self):
+    def test_readonly_retrospective_runs_during_development(self):
         self.ledger.create('runs',{'product_id':self.product['id'],'call':{'action':'develop'}},'developing')
         scheduler=Scheduler(self.store)
         with patch('autopilot.daily.time.time',return_value=self.midnight+19*3600),patch.object(scheduler,'start_call') as start:
-            self.assertFalse(tick(scheduler));start.assert_not_called()
+            self.assertFalse(tick(scheduler))
+            self.assertEqual(start.call_args.args[3], 'daily_retrospective')
         self.assertEqual(len(self.ledger.list('daily_reports')),1)
+
+    def test_actual_reacceptance_waits_for_development(self):
+        req=self.ledger.create('requirements',{'product_id':self.product['id']})
+        self.ledger.create('runs',{'product_id':self.product['id'], 'requirement_id':req['id'], 'accepted_at':self.midnight+3600},'accepted')
+        self.ledger.create('runs',{'product_id':self.product['id'], 'call':{'action':'develop'}},'developing')
+        scheduler=Scheduler(self.store)
+        with patch('autopilot.daily.time.time',return_value=self.midnight+19*3600),patch.object(scheduler,'start_call') as start:
+            self.assertFalse(tick(scheduler))
+            start.assert_not_called()
 
     def test_nightly_batches_backlog_but_only_archives_failed_inspections(self):
         self.product=self.ledger.update('products',self.product['id'],self.product['version'],{'nightly_attribution':True})

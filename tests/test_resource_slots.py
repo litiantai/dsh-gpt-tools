@@ -111,3 +111,37 @@ class ResourceTests(unittest.TestCase):
         second=self.owner('awaiting_release',call=None)
         self.assertIsNone(ResourceSlots(self.ledger).blocker(first))
         self.assertEqual(ResourceSlots(self.ledger).blocker(second)['blocking_id'],first['id'])
+
+    def test_readonly_daily_call_does_not_starve_watch_or_run_receipts(self):
+        self.apply()
+        owner=self.owner()
+        report=self.ledger.create('daily_reports',{'product_id':self.product['id'],
+            'title':'日报', 'call':{'id':'daily-call','action':'daily_attribution'}},'running')
+        with ExitStack() as stack:
+            for module,name in [('onboarding','tick'),('notifications','tick'),('usage','collect'),
+                ('intelligence_scheduler','tick'),('coordinator','tick'),('test_chain_worker','tick'),
+                ('project_groups','tick'),('inspection_routes','tick'),('delivery','tick'),
+                ('progress','investigate'),('progress','recover_review')]:
+                stack.enter_context(patch('autopilot.'+module+'.'+name,return_value=False))
+            stack.enter_context(patch.object(self.scheduler,'monitor'))
+            stack.enter_context(patch.object(self.scheduler,'call_result',return_value=None))
+            advance=stack.enter_context(patch.object(self.scheduler,'advance'))
+            for action in ('daily_attribution','daily_retrospective'):
+                report=self.ledger.update('daily_reports',report['id'],report['version'],
+                    {'call':{'id':'daily-call','action':action}})
+                self.scheduler.tick()
+                self.assertEqual(self.fresh()['status'],'planning')
+                self.assertEqual(RunProgress(self.ledger).current(self.fresh())['kind'],'dispatch')
+            self.assertIn(owner['id'],[v.args[0]['id'] for v in advance.call_args_list])
+            self.assertIn(self.run['id'],[v.args[0]['id'] for v in advance.call_args_list])
+
+    def test_daily_acceptance_keeps_resource_lock_and_watch_grant(self):
+        self.apply()
+        report=self.ledger.create('daily_reports',{'product_id':self.product['id'],
+            'title':'实际复验','call':{'id':'daily','action':'daily_acceptance'}},'running')
+        self.assertFalse(c.resume_pending(self.scheduler))
+        self.assertEqual(RunProgress(self.ledger).current(self.fresh())['blocking_id'],report['id'])
+        with patch('autopilot.scheduler.subprocess.Popen') as launch:
+            self.scheduler.start_call('runs',self.fresh(),self.product,'plan',['fake'])
+        launch.assert_not_called()
+        self.assertEqual(self.fresh()['revisions'],3)

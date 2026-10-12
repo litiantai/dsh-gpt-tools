@@ -232,9 +232,9 @@ class Scheduler:
         except (OSError, ValueError, KeyError, Conflict) as exc:
             self.store.event('autopilot_delivery_error', detail={'reason': str(exc)})
         from .daily import tick as daily_tick
-        daily_active=False
+        daily_exclusive=False
         try:
-            daily_active=daily_tick(self)
+            daily_exclusive=daily_tick(self)
         except (OSError,ValueError,KeyError,Conflict) as exc:
             self.store.event('autopilot_daily_error',detail={'reason':str(exc)})
         for product in self.ledger.list('products'):
@@ -242,7 +242,7 @@ class Scheduler:
                 continue
             if product['status'] in ('active','observing'):
                 try:
-                    self.monitor(product,allow_discovery=not daily_active)
+                    self.monitor(product,allow_discovery=not daily_exclusive)
                 except (OSError,ValueError,KeyError,Conflict) as exc:
                     self.store.event('autopilot_monitor_error',detail={'product_id':product['id'],'reason':str(exc)})
             if product['status']=='active' and not product.get('evaluation_id'):
@@ -252,7 +252,7 @@ class Scheduler:
                             self.control.queue(requirement)
                         except Conflict:
                             pass
-        if daily_active:
+        if daily_exclusive:
             return
         for release in reversed(self.ledger.list('releases')):
             if release['status']=='rollback_pending' and not self.ledger.get('products',release['product_id']).get('automation_disabled'):

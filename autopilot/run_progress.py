@@ -87,8 +87,8 @@ class RunProgress:
         from .project_groups import runnable
         if not runnable(self.ledger, run):
             return result('dependency','等待关联项目完成前置设计或方案评审')
-        # 日报和调查在调度器中优先于主任务，正在执行时明确标出占用者。
-        for kind, title in (('daily_reports','每日报告'),('requirements','需求调查')):
+        # 调查仍由调度器串行处理；日报实际复验由统一资源判断处理。
+        for kind, title in (('requirements','需求调查'),):
             for item in reversed(self.ledger.list(kind)):
                 if self.products.get(item['product_id'], {}).get('automation_disabled'):
                     continue

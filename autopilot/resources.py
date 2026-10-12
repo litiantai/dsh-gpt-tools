@@ -35,6 +35,11 @@ class ResourceSlots:
 
     def blocker(self, run):
         requested = slot(run)
+        from .daily import blocks_development
+        for report in self.ledger.list('daily_reports'):
+            if not self.products.get(report['product_id'], {}).get('automation_disabled') and blocks_development(report):
+                return {'kind':'main_slot', 'resource':requested, 'reason':'等待日报实际复验结束，保护候选目录和测试实例',
+                        'blocking_id':report['id'], 'blocking_kind':'daily_reports'}
         for owner in self.owners:
             if owner['id'] == run['id']:
                 continue
