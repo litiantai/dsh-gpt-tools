@@ -28,7 +28,8 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
   // 从而避免向不存在的接口发起请求。只有确认支持后才请求列表，且不受全局 refetchInterval 影响。
   const identity=useQuery<{capabilities?:{repository_scans?:number}}>({queryKey:['runtime-identity'],queryFn:()=>api('/runtime-identity'),retry:false});
   const version=identity.data?.capabilities?.repository_scans;
-  const supported=typeof version==='number' && Number.isInteger(version) && version>=1;
+  // 查询刷新失败仍会保留 data；必须同时核对本次查询状态，不能用缓存继续放行。
+  const supported=identity.isSuccess && typeof version==='number' && Number.isInteger(version) && version>=1;
   const scans=useQuery<Scan[]>({queryKey:['/scans'],queryFn:()=>api('/scans'),enabled:supported,refetchInterval:3000,retry:false});
   const current=scans.data?.find(s=>s.id===selected);
   const groups=repositories(scans.data || []);
@@ -40,9 +41,9 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
   const mismatchReason='当前项目接入能力不是通用命令适配器（adapter_spec.kind 必须为 command 且包含 verify 能力），且协议版本必须为 1，无法用隔离工作区执行扫描与验收；请先在项目设置中修正接入能力。';
   // 加载中（后端身份确认中或项目能力查询中）与查询失败一律不可提交：
   // 原因未明时既不请求 /scans，也不对旧后端或未知状态发起写请求。
-  const projectChecking=!!productId && supported && capability.isPending;
+  const projectChecking=!!productId && supported && (capability.isPending || capability.isFetching);
   const projectFailed=!!productId && supported && capability.isError;
-  const checking=identity.isPending || projectChecking;
+  const checking=identity.isPending || identity.isFetching || projectChecking;
   const backendUnsupported=identity.isSuccess && !supported;
   const blocked=!supported || mismatch || projectFailed;
   const screenshot=useQuery<{data_url:string}>({queryKey:['scan-screenshot',selected],queryFn:()=>api(`/scans/${selected}/screenshot`),enabled:supported && !!current?.result?.checks?.some(c=>c.screenshot),retry:false});
