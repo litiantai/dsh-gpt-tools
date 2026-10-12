@@ -4,6 +4,7 @@ import json
 import os
 import runpy
 from pathlib import Path
+import signal
 import subprocess
 import shlex
 import sys
@@ -71,8 +72,34 @@ print(json.dumps(out))
         self.product=self.control.mutate('/products',{'config':{'name':'test','source':str(self.source),'goal':'fix calculation',
             'repository':base['repository'],'adapter':[sys.executable,str(self.adapter)],'executor':[sys.executable,str(self.adapter)],
             'policy':{'idle_seconds':1,'observation_seconds':1,'probe_seconds':1,'deepseek_off_peak_only':False}}})
+        self.schedulers=[]
+
+    def scheduler(self):
+        """登记调度器，tearDown 统一回收它派发的分离 call.py 子进程。"""
+        instance=Scheduler(self.store)
+        self.schedulers.append(instance)
+        return instance
 
     def tearDown(self):
+        # call.py 以 start_new_session=True 分离运行，退出调度器不会回收它；
+        # 必须在删除临时目录前等它退出，否则 rmtree 会与子进程写 calls/<id> 竞态。
+        for scheduler in getattr(self,'schedulers',[]):
+            for child in scheduler.children:
+                if child.poll() is not None:
+                    continue
+                try:
+                    child.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    for sig in (signal.SIGTERM,signal.SIGKILL):
+                        try:
+                            os.killpg(os.getpgid(child.pid),sig)
+                        except (ProcessLookupError,PermissionError):
+                            pass
+                        try:
+                            child.wait(timeout=5)
+                            break
+                        except subprocess.TimeoutExpired:
+                            continue
         self.tmp.cleanup()
 
     def test_legacy_probe_reads_health_without_claiming_release_readiness(self):
@@ -124,7 +151,7 @@ print(json.dumps(out))
     def test_acceptance_target_stops_before_release(self):
         evaluation=self.ledger.create('evaluations',{'product_id':self.product['id'],'target_count':1,'run_ids':[],'target_phase':'acceptance'},'running')
         self.product=self.ledger.update('products',self.product['id'],self.product['version'],{'evaluation_id':evaluation['id']},'active')
-        run=self.control.queue(self.requirement());scheduler=Scheduler(self.store)
+        run=self.control.queue(self.requirement());scheduler=self.scheduler()
         end=time.time()+20
         while time.time()<end:
             scheduler.tick();current=self.ledger.get('runs',run['id'])
@@ -161,7 +188,7 @@ for(const command of ['node test.js &','nohup node test.js','node test.js & node
         run=self.control.queue(self.requirement())
         evaluation=self.ledger.create('evaluations',{'product_id':self.product['id'],'target_count':1,'run_ids':[run['id']],'target_phase':'acceptance'},'running')
         run=self.ledger.update('runs',run['id'],run['version'],{'reason':'missing prerequisite'},'blocked')
-        scheduler=Scheduler(self.store);scheduler.reconcile_evaluations()
+        scheduler=self.scheduler();scheduler.reconcile_evaluations()
         self.assertEqual(self.ledger.get('evaluations',evaluation['id'])['status'],'blocked')
         self.ledger.update('runs',run['id'],run['version'],{'reason':''},'accepted')
         scheduler.reconcile_evaluations()
@@ -342,7 +369,7 @@ for(const command of ['node test.js &','nohup node test.js','node test.js & node
             {'policy':self.product['policy'] | {'tokens_per_day':100,'runs_per_day':5},'last_probe':time.time()},'active')
         trace=self.root/'trace.jsonl';trace.write_text(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'output_tokens':1}})+'\n')
         register(self.ledger,product['id'],trace);collect(self.ledger)
-        run=self.control.queue(self.requirement());scheduler=Scheduler(self.store)
+        run=self.control.queue(self.requirement());scheduler=self.scheduler()
         scheduler.advance(run)
         self.assertEqual(self.ledger.get('runs',run['id'])['status'],'queued')
         self.assertIn('Token',self.ledger.get('runs',run['id'])['reason'])
@@ -362,15 +389,19 @@ for(const command of ['node test.js &','nohup node test.js','node test.js & node
 
     def test_daily_task_limit_keeps_queue_and_midnight_restores_it(self):
         import datetime
+        from zoneinfo import ZoneInfo
         product=self.ledger.update('products',self.product['id'],self.product['version'],
             {'policy':self.product['policy'] | {'runs_per_day':1}},'active')
-        self.assertTrue(self.ledger.budget(product['id'],'development',1))
-        run=self.control.queue(self.requirement());scheduler=Scheduler(self.store)
-        scheduler.advance(run)
-        self.assertEqual(self.ledger.get('runs',run['id'])['status'],'queued')
-        tomorrow=datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=1)
-        with patch('autopilot.store.datetime.datetime') as date,patch.object(scheduler,'start_call'):
-            date.now.return_value=tomorrow
+        run=self.control.queue(self.requirement());scheduler=self.scheduler()
+        # 额度日按北京时间（Asia/Shanghai）结算；用固定基准时钟跨过北京午夜，
+        # 避免 UTC 16:00-24:00（北京 00:00-08:00）时 “UTC 明天” 与 “北京今天” 同日导致假失败。
+        base=datetime.datetime(2026,5,20,23,59,tzinfo=ZoneInfo('Asia/Shanghai'))
+        with patch('autopilot.store.datetime.datetime') as clock,patch.object(scheduler,'start_call'):
+            clock.now.return_value=base
+            self.assertTrue(self.ledger.budget(product['id'],'development',1))
+            scheduler.advance(run)
+            self.assertEqual(self.ledger.get('runs',run['id'])['status'],'queued')
+            clock.now.return_value=base+datetime.timedelta(minutes=2)
             scheduler.advance(self.ledger.get('runs',run['id']))
         self.assertEqual(self.ledger.get('runs',run['id'])['status'],'planning')
 
@@ -406,7 +437,7 @@ for(const command of ['node test.js &','nohup node test.js','node test.js & node
         with self.assertRaises(ValueError):validate([probe | {'path':'https://other.invalid/write'}])
 
     def test_skipped_required_check_never_enters_acceptance(self):
-        scheduler=Scheduler(self.store)
+        scheduler=self.scheduler()
         run=self.control.queue(self.requirement())
         run=self.ledger.update('runs',run['id'],run['version'],{},'verifying')
         scheduler.complete_action(run,self.product,'verify',{'status':'pass','manifest':'fake','checks':[{'status':'skipped','required':True}]})
@@ -426,7 +457,7 @@ for(const command of ['node test.js &','nohup node test.js','node test.js & node
     def test_completed_pipeline_uses_real_reviews_and_promotes_once(self):
         self.product=self.control.mutate(f'/products/{self.product["id"]}/enable',{'version':self.product['version']})
         run=self.control.queue(self.requirement())
-        scheduler=Scheduler(self.store)
+        scheduler=self.scheduler()
         end=time.time()+25
         states=[]
         while time.time()<end:
@@ -450,7 +481,7 @@ for(const command of ['node test.js &','nohup node test.js','node test.js & node
             'workspace': str(self.source), 'worker_home': str(self.root/'worker'),
             'commit': 'candidate', 'plan': '完整计划' * 10000}, 'acceptance_review')
         with patch('autopilot.scheduler.Engine') as engine:
-            Scheduler(self.store).review(run, self.product, requirement)
+            self.scheduler().review(run, self.product, requirement)
         packet = engine.return_value.submit.call_args.args[0]
         # 阶段协议位于长方案之前，不能被原有的摘要截断吞掉。
         self.assertIn('当前为发布前候选版本验收', packet['summary'])
@@ -467,7 +498,7 @@ for(const command of ['node test.js &','nohup node test.js','node test.js & node
         run=self.ledger.update('runs',run['id'],run['version'],{
             'workspace':str(self.source),'worker_home':str(self.root/'worker'),
             'plan':'旧方案','plan_approved':True,'review_id':'old-review'},'verifying')
-        scheduler=Scheduler(self.store)
+        scheduler=self.scheduler()
         run=scheduler.revise(run,self.product,'跨项目凭证覆盖',{'test':'isolation failed'})
         self.assertEqual(run['status'],'planning')
         self.assertEqual(run['previous_plan'],'旧方案')
@@ -501,10 +532,10 @@ for(const command of ['node test.js &','nohup node test.js','node test.js & node
         self.assertIn('isolation failed',approved['feedback'])
 
     def test_process_receipt_survives_scheduler_restart(self):
-        scheduler=Scheduler(self.store)
+        scheduler=self.scheduler()
         run=self.control.queue(self.requirement())
         started=scheduler.start_call('runs',run,self.product,'probe',[sys.executable,str(self.adapter)])
-        restored=Scheduler(self.store)
+        restored=self.scheduler()
         end=time.time()+5
         result=None
         while time.time()<end and result is None:
