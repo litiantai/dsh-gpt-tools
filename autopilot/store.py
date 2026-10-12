@@ -33,7 +33,7 @@ def redact(value):
 
 
 def inspection_exception(body):
-    """失败的巡检仅作为异常留档，不进入待处理信号。"""
+    """识别巡检执行异常，保留异常状态并交给复扫和独立归因。"""
     evidence = body.get('evidence')
     return body.get('source') == 'inspection' and isinstance(evidence, dict) and evidence.get('status') in ('blocked', 'fail', 'failed', 'error', 'abnormal')
 
@@ -75,7 +75,7 @@ class Ledger:
                 for candidate in legacy:
                     item = self.get('signals', candidate['id'], db)
                     if item['status'] == 'pending' and inspection_exception(item) and not item.get('requirement_id') and not item.get('requirement_ids'):
-                        self.update('signals', item['id'], item['version'], {'attribution_pending': False}, 'abnormal', db)
+                        self.update('signals', item['id'], item['version'], {'attribution_pending': True}, 'abnormal', db)
 
     def _table(self, kind):
         if kind not in KINDS:
@@ -131,6 +131,7 @@ class Ledger:
                 return self.create(kind, data, status, ident, conn)
         if kind == 'signals' and status == 'pending' and inspection_exception(data):
             status = 'abnormal'
+            data = data | {'attribution_pending':True}
         ident, now = ident or str(uuid.uuid4()), time.time()
         db.execute(f'INSERT INTO {self._table(kind)} VALUES (?,?,?,?,?,?,?)',
                    (ident, data.get('product_id', ident if kind == 'products' else ''), status, 1, now, now, json.dumps(data, ensure_ascii=False)))
@@ -165,7 +166,7 @@ class Ledger:
                 status = ('abnormal' if inspection_exception(body) else 'pending') if old['status'] in ('pending', 'abnormal') else old['status']
                 changes = {'count':old['count']+1,'last_seen':time.time(),'evidence':body['evidence']}
                 if status == 'abnormal':
-                    changes['attribution_pending'] = False
+                    changes.update(attribution_pending=True, rescan_status=None)
                 return self.update('signals', old['id'], old['version'], changes, status, db=db)
             signal = self.create('signals', body | {'product_id':product_id,'fingerprint':fingerprint,'count':1,'last_seen':time.time()}, db=db)
             db.execute('INSERT INTO auto_dedup VALUES (?,?,?)', (product_id,fingerprint,signal['id']))

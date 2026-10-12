@@ -23,12 +23,24 @@ export default function ProjectEvidence({productId,tab,onTabChange}:{productId?:
   const evidence=useData<Evidence[]>('/evidence');
   const evaluations=useData<Evidence[]>('/evaluations');
   const signals=useData<Evidence[]>('/signals');
-  const exceptions=signals.data?.filter(e=>e.product_id===productId && e.status==='abnormal') ?? [];
+  const exceptions=signals.data?.filter(e=>e.product_id===productId && e.source==='inspection' &&
+    ['blocked','fail','failed','error','abnormal'].includes(String((e.evidence as {status?:string})?.status))) ?? [];
   const [exception,setException]=useState<Evidence>();
   const [selection,setSelected]=useState<Evidence>();
   const selected=inspections.data?.find(row=>row.id===selection?.id && row.product_id===productId) || selection;
   const [image,setImage]=useState('');
   const [error,setError]=useState('');
+  const [rescanning,setRescanning]=useState(false);
+  const [rescanNotice,setRescanNotice]=useState('');
+  const rescan=async()=>{
+    if(!productId)return;
+    setRescanning(true);
+    try{
+      const result=await api<{id:string;status:string}>(`/products/${productId}/inspection-routes/rescan`,{});
+      setRescanNotice(`重新扫描已${result.status==='running'?'开始':'入队'}，轮次 ${result.id.slice(0,8)}；完成后保存逐路线证据并参与归因。`);
+      setError('');await signals.refetch();
+    }catch(err){setError(serializeError(err));}finally{setRescanning(false);}
+  };
   const entries=evidence.data?.filter(e=>e.product_id===productId) ?? [];
   const list=inspections.data?.filter(e=>e.product_id===productId) ?? [];
   const color=(s:string)=>s==='pass'?'success':s==='fail'?'error':s==='blocked'?'warning':'processing';
@@ -50,11 +62,14 @@ export default function ProjectEvidence({productId,tab,onTabChange}:{productId?:
       {key:'inspection_routes',label:'巡检路线',children:productId?<InspectionRoutes pid={productId}/>:null},
       {key:'daily',label:'日报与复盘',children:<DailyReports productId={productId}/>},
       {key:'inspection_exceptions',label:`巡检异常 (${exceptions.length})`,children:<>
-        <Alert type="info" showIcon message="异常仅留存记录，不进入巡检信号待处理队列。"/>
+        <Alert type="info" showIcon message="异常每日北京时间 09:00 自动复扫，执行障碍与复扫证据参与归因；原始记录保留。" description="服务停机时恢复后补跑。只有真实断言通过才标记已恢复，取证完成仍需独立判断。"/>
+        <Space style={{margin:'12px 0'}}><Button type="primary" loading={rescanning} disabled={!productId} onClick={()=>void rescan()}>重新扫描</Button>{rescanNotice}</Space>
         <Table rowKey="id" dataSource={exceptions} pagination={{pageSize:10}} columns={[
           {title:'巡查场景',render:(_,r)=><Button type="link" onClick={()=>setException(r)}>{String(r.summary || r.title || r.id)}</Button>},
           {title:'状态',render:()=> <Tag color="error">异常</Tag>},
           {title:'原因',render:(_,r)=><ErrorNotice value={r.evidence || r.reason}/>},
+          {title:'复扫结论',render:(_,r)=><><Tag>{({queued:'已排队',recovered:'已恢复',collected:'已取证，待归因',blocked:'仍受阻'} as Record<string,string>)[String(r.rescan_status)] || '待复扫'}</Tag>{r.rescan_result!==undefined&&<ResultDetails value={r.rescan_result}/>}</>},
+          {title:'归因',render:(_,r)=><RecordValue value={r.attribution || (r.attribution_pending?'待归因':'尚未归因')}/>},
           {title:'时间',dataIndex:'updated',render:time},
           {title:'证据',render:(_,r)=><Button onClick={()=>setException(r)}>详情</Button>},
         ]}/>

@@ -121,6 +121,9 @@ def api(control, parts, body=None):
                 'rounds':ledger.scoped('inspection_rounds', product['id'])[-20:]}
     if parts[3:] == ['generate']:
         return enqueue(ledger, product, force=True)
+    if parts[3:] == ['rescan']:
+        from .inspection_rescan import enqueue as rescan
+        return rescan(ledger, product)
     if len(parts) == 5 and parts[4] == 'toggle':
         item = ledger.get('inspection_routes', parts[3])
         if item['product_id'] != product['id']:
@@ -149,9 +152,16 @@ def tick(scheduler):
                     if kind == 'inspection_plans':
                         finish_plan(ledger, item, result)
                     else:
+                        from .inspection_rescan import finish
+                        finish(ledger, item, result)
+                        if item.get('legacy_inspection'):
+                            for signal_data in result.get('signals', []):
+                                ledger.signal(product['id'], signal_data)
                         scheduler.change(kind, item, {'processed_call':item['receipts'][-1]['call_id'],
                             'result':result,'reason':result.get('reason',''), 'finished_at':time.time()},
                             'completed' if result['status']=='pass' else 'blocked')
+        from .inspection_rescan import schedule
+        schedule(ledger, product, time.time())
         # 主实例尚未登记版本时仍可人工生成路线，自动执行等待可信运行身份。
         plans = ledger.scoped('inspection_plans', product['id'])
         plan = enqueue(ledger, product) if product.get('master_environment', {}).get('commit') else next((p for p in plans if p['status']=='queued'), None)
@@ -160,16 +170,34 @@ def tick(scheduler):
                 started = scheduler.start_call('inspection_plans', plan, product, 'inspection_design', command, timeout=900)
                 if started.get('call'):
                     scheduler.change('inspection_plans', started, {}, 'running')
-        if not product.get('master_environment', {}).get('commit'):
-            continue
         rounds = ledger.scoped('inspection_rounds', product['id'])
+        if any(r['status']=='running' or r.get('call') for r in rounds):
+            continue
+        if (product.get('call') or {}).get('action') == 'inspect':
+            continue
         pending = next((r for r in rounds if r['status']=='queued' and not r.get('call')), None)
         if pending:
-            started = scheduler.start_call('inspection_rounds', pending, product, 'inspection_run', command,
-                timeout=sum(sum(s.get('wait_seconds',45)+60 for s in v['definition']['steps']) for v in pending['snapshots'])+1800)
+            legacy = pending.get('legacy_inspection')
+            if pending.get('rescan') and not legacy:
+                # 排队期间可能更新主实例或停用路线；以实际派发时的版本冻结本轮。
+                if not product.get('master_environment', {}).get('commit'):
+                    continue
+                current_routes = [r for r in ledger.scoped('inspection_routes', product['id'])
+                    if r.get('enabled') and r['status']=='ready' and r.get('current_version_id')]
+                if not current_routes:
+                    continue
+                snapshots = [ledger.get('inspection_route_versions', r['current_version_id']) for r in current_routes]
+                changes = {'target_commit':product['master_environment']['commit'], 'snapshots':snapshots}
+                if any(pending.get(k) != v for k,v in changes.items()):
+                    pending = scheduler.change('inspection_rounds', pending, changes)
+            started = scheduler.start_call('inspection_rounds', pending, product, 'inspect' if legacy else 'inspection_run',
+                product['adapter'] if legacy else command,
+                timeout=600 if legacy else sum(sum(s.get('wait_seconds',45)+60 for s in v['definition']['steps']) for v in pending['snapshots'])+1800)
             if started.get('call'):
                 scheduler.change('inspection_rounds', started, {}, 'running')
         if any(r['status'] in ('queued','running') or r.get('call') for r in rounds):
+            continue
+        if not product.get('master_environment', {}).get('commit'):
             continue
         interval = (DEFAULTS | product.get('policy', {}))['inspection_seconds']
         if rounds and time.time() - rounds[-1]['created'] < interval:
@@ -346,6 +374,7 @@ def execute_round(request):
     from contextlib import ExitStack
     with ExitStack() as stack:
         isolated = None
+        isolation_error = None
         for snapshot in record['snapshots']:
             folder=root/snapshot['id'];folder.mkdir(exist_ok=True)
             try:
@@ -354,7 +383,13 @@ def execute_round(request):
                     instance=identity(product,record['target_commit'])
                 else:
                     if isolated is None:
-                        isolated=stack.enter_context(isolated_instance(request,root))
+                        if isolation_error:
+                            raise ValueError('共享隔离实例准备失败：'+isolation_error)
+                        try:
+                            isolated=stack.enter_context(isolated_instance(request,root))
+                        except Exception as exc:
+                            isolation_error = str(exc)
+                            raise
                     instance=isolated
                 result=execute_route(ledger, product, record, snapshot, instance, folder)
                 if snapshot['definition']['environment']=='master' and identity(product,record['target_commit'])!=instance:

@@ -341,7 +341,9 @@ class Scheduler:
             self.start_call('products',product,product,'probe',product['adapter'],timeout=30)
         elif self.master_step(product):
             return
-        elif time.time()-product.get('last_inspect',0)>=policy['inspection_seconds'] and not self.ledger.scoped('inspection_routes',product['id']):
+        elif (time.time()-product.get('last_inspect',0)>=policy['inspection_seconds']
+              and not self.ledger.scoped('inspection_routes',product['id'])
+              and not any(r['status'] in ('queued','running') or r.get('call') for r in self.ledger.scoped('inspection_rounds',product['id']))):
             self.start_call('products',product,product,'inspect',product['adapter'],timeout=600)
         elif allow_discovery and product['status']=='active' and product.get('executor') and not product.get('nightly_attribution'):
             signals=[s for s in self.ledger.list('signals') if s['product_id']==product['id'] and s['status']=='pending']
