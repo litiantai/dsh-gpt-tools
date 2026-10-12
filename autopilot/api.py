@@ -340,6 +340,9 @@ class Control:
         if kind=='requirements' and action=='queue':
             return self.queue(old)
         if kind=='runs':
+            if action=='allow-revision':
+                from .retry import manual_run_retry
+                return manual_run_retry(self.ledger, ident, old['version'], allow_revision=True)
             if action=='repair-timing':
                 import json
                 product=self.ledger.get('products',old['product_id'])

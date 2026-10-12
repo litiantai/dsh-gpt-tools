@@ -85,7 +85,7 @@ export default function AutopilotPage() {
   const reload=()=>Promise.all([products.refetch(),signals.refetch(),requirements.refetch(),runs.refetch(),releases.refetch(),deliveries.refetch(),deliveryBoard.refetch(),workbench.refetch(),...(gitUrl?[gitStatus.refetch()]:[])]);
   const act=async(kind:string,item:RecordItem,action:string)=>{
     setBusy(true);
-    try { await api(`/${kind}/${item.id}/${action}`,{version:item.version}); await reload(); message.success('操作已记录'); }
+    try { await api(`/${kind}/${item.id}/${action}`,{version:item.version}); await reload(); message.success(action==='allow-revision'?'已允许一轮返修，不计入返修次数':'操作已记录'); }
     catch(e) { message.error(errorText(e)); }
     finally { setBusy(false); }
   };
@@ -145,6 +145,7 @@ export default function AutopilotPage() {
       ...(kind==='requirements'?[{title:'处理分类',width:150,render:(_:unknown,r:RecordItem)=><RecordValue value={r.classification} field="classification"/>},{title:'下次调查',width:150,render:(_:unknown,r:RecordItem)=>r.classification!=='development' && ['pending','awaiting_external'].includes(r.status) && r.next_investigation?time(Number(r.next_investigation)):'—'},{title:'需求归属日期',width:150,render:(_:unknown,r:RecordItem)=>String(r.requirement_day || '历史需求')}]:[]),
       {title:'更新时间',width:150,render:(_,r)=>time(r.updated)},
       {title:'操作',width:200,render:(_,r)=><Space wrap>
+        {(kind==='runs' || kind==='requirements' && linkedRun(r)) && ['blocked','waiting_for_reply'].includes(currentStatus(r)) && <Tooltip title="允许再执行一轮返修，不计入自动返修次数；保留原有次数和记录"><Button size="small" type="primary" disabled={busy || currentRecord(r).uncertain===true || !!activeCall(currentRecord(r))} onClick={()=>void act('runs',currentRecord(r),'allow-revision')}>人工允许返修</Button></Tooltip>}
         {kind==='signals' && r.status==='pending' && !r.requirement_id && !(r.requirement_ids as string[]|undefined)?.length && <Button size="small" disabled={promotionBusy} onClick={()=>openPromotion(r)}>加入需求池</Button>}
         {kind==='requirements' && r.status==='pending' && (!r.classification || r.classification==='development') && <Button size="small" disabled={busy} onClick={()=>void act(kind,r,'queue')}>{r.queue_first===true?'优先加入开发队列':'加入开发队列'}</Button>}
         {kind==='runs' && !['accepted','delivered','online','completed','cancelled','rolled_back','blocked'].includes(r.status) && <>

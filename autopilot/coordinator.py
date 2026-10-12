@@ -221,7 +221,8 @@ def human(ledger, run, reason, db, plan_id=None):
         plan_id = decision['id']
         reason += '\n帮助方案：\n' + json.dumps(plan, ensure_ascii=False, indent=2)
     message = request_reply(ledger, run, [{'to_role': 'human', 'topic': '项目协调需要帮助',
-        'content': reason, 'evidence_ids': []}], 'coordinator', 'coordinator-human-' + run['id'] + '-' + str(run.get('revisions', 0)), db)
+        'content': reason, 'evidence_ids': []}], 'coordinator', 'coordinator-human-' + run['id'] + '-' + str(run.get('revisions', 0))
+        + ('-manual-' + str(run['manual_retry_count']) if run.get('manual_retry_count') else ''), db)
     return ledger.update('runs', run['id'], run['version'], {'coordinator_human': message['id'],
         'collaboration_wait': message['id'], 'collaboration_resume_status': 'blocked',
         'reason': reason, 'coordination_pending': None, 'coordination_plan_id':plan_id}, 'waiting_for_reply', db)

@@ -1,5 +1,41 @@
 import { test, expect } from '@playwright/test';
 
+test('human allowance requests one uncounted repair from the waiting task', async ({page})=>{
+  const product={id:'manual-repair',name:'人工允许返修项目',status:'active',version:1,created:1,updated:1};
+  let run={id:'repair-run',product_id:product.id,title:'通知能力实现',status:'waiting_for_reply',version:3,created:1,updated:1,reason:'返修已达上限，请人工确认授权范围',revisions:3,extra_revisions:0};
+  const requests:Record<string,unknown>[]=[];
+  let reject=true;
+  await page.route('**/api/products',r=>r.fulfill({json:[product]}));
+  await page.route('**/api/runs',r=>r.fulfill({json:[run]}));
+  await page.route('**/api/requirements',r=>r.fulfill({json:[]}));
+  await page.route('**/api/deliveries',r=>r.fulfill({json:[]}));
+  await page.route(`**/api/products/${product.id}/workbench`,r=>r.fulfill({json:{sessions:[],reviews:[],events:[]}}));
+  await page.route(`**/api/products/${product.id}/delivery-board`,r=>r.fulfill({json:{prs:[],issues:[]}}));
+  await page.route(`**/api/runs/${run.id}/allow-revision`,async r=>{
+    requests.push(r.request().postDataJSON());
+    if(reject){await r.fulfill({status:409,json:{error:'记录已更新，请刷新后重试'}});return;}
+    run={...run,status:'developing',version:4};
+    await r.fulfill({json:run});
+  });
+  await page.goto(`/autopilot?project=${product.id}`);
+  await page.getByRole('button',{name:'异常阻塞 1',exact:true}).click();
+  const drawer=page.getByRole('dialog',{name:'链路节点 · 任务与证据'});
+  const allow=drawer.getByRole('button',{name:'人工允许返修',exact:true});
+  await expect(drawer.getByRole('button',{name:'人工修复',exact:true})).toHaveCount(0);
+  await allow.click();
+  await expect(page.getByText('记录已更新，请刷新后重试',{exact:true})).toBeVisible();
+  await expect(allow).toBeEnabled();
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({version:3});
+  reject=false;
+  await allow.click();
+  await expect(page.getByText('已允许一轮返修，不计入返修次数',{exact:true})).toBeVisible();
+  await expect(allow).toHaveCount(0);
+  expect(requests).toHaveLength(2);
+  await page.locator('.ant-drawer-close').click();
+  await expect(page.getByRole('button',{name:'开发执行 1',exact:true})).toBeVisible();
+});
+
 test('waiting replies and unmapped states remain visible after a task leaves blocked', async ({page})=>{
   const product={id:'flow-visibility',name:'流程可见性项目',status:'active',version:1,created:1,updated:1};
   const record=(id:string,status:string,title:string,product_id=product.id)=>({id,status,title,product_id,version:1,created:1,updated:1});
