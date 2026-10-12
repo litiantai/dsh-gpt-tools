@@ -46,6 +46,135 @@ test('identity failure blocks scan requests and explains recovery',async({page})
   expect(requests).toBe(0);
 });
 
+// 缺陷回归：运行身份“先成功后失败”时查询库保留缓存 data（repository_scans 仍为 1），
+// 旧门控只看 isSuccess+data 会继续放行写操作与轮询；修复后 identity.isError 必须撤销缓存能力。
+test('identity refresh failure revokes cached scan capability until recovery',async({page})=>{
+  let unavailable=false;
+  await page.route('**/api/runtime-identity',route=>route.fulfill(unavailable
+    ? {status:503,json:{error:'unavailable'}}
+    : {json:{capabilities:{repository_scans:1}}}));
+  // 分别统计 /api/scans 的读取与提交：证明缓存 data 保留时不放行写操作，且轮询已冻结。
+  let reads=0;
+  const writes:string[]=[];
+  await page.route('**/api/scans',route=>{
+    if(route.request().method()==='POST'){
+      writes.push(route.request().url());
+      return route.fulfill(json({id:'created',source:'/isolated/scan-fixture',status:'queued',version:1,updated:2}));
+    }
+    reads++;
+    return route.fulfill(json([{id:'cached-scan',source:'/isolated/cached',repository_key:'/isolated/cached',status:'pass',version:1,updated:1}]));
+  });
+  await page.goto('/autopilot');
+  await page.getByRole('button',{name:'接入仓库',exact:true}).click();
+  const dialog=page.getByRole('dialog');
+  const submit=dialog.getByRole('button',{name:'扫描新仓库'});
+  const retry=dialog.getByRole('button',{name:'重新扫描',exact:true});
+  await dialog.getByLabel('代码仓库地址').fill('/isolated/scan-fixture');
+  // 首次成功：能力放行，缓存列表渲染，扫描与重新扫描均可点击。
+  await expect(dialog.getByText('共 1 个仓库，1 次扫描。展开仓库可查看历史记录。')).toBeVisible();
+  await expect(submit).toBeEnabled();
+  await expect(retry).toBeEnabled();
+  // 后台刷新失败：identity.isError 撤销缓存能力（查询库仍保留 repository_scans=1 的 data）。
+  unavailable=true;
+  await expect(dialog.getByText('无法核对管理服务')).toBeVisible({timeout:10000});
+  // 失败语义只提示“无法核对管理服务”，不得叠加“管理服务需要升级”。
+  await expect(dialog.getByText('管理服务需要升级')).toBeHidden();
+  await expect(submit).toBeDisabled();
+  await expect(retry).toBeDisabled();
+  // 缓存 data 仍在（列表未清空），但门控已关闭。
+  await expect(dialog.getByText('共 1 个仓库，1 次扫描。展开仓库可查看历史记录。')).toBeVisible();
+  // 等待失败后的下一个身份轮询周期结束，再让可能仍在途的读取结算。
+  await page.waitForResponse(response=>response.url().endsWith('/api/runtime-identity') && response.status()===503);
+  await page.waitForTimeout(500);
+  const stoppedAt=reads;
+  // 观察至少一个完整 /scans 轮询周期：缓存能力不得让轮询继续。
+  await page.waitForTimeout(3200);
+  expect(reads).toBe(stoppedAt);
+  // 即使对禁用入口强行点击，act() 守卫也不得发起任何 /api/scans 写请求。
+  await submit.click({force:true});
+  expect(writes).toEqual([]);
+  // 恢复：重新核对成功后，写入口与轮询自动恢复。
+  unavailable=false;
+  await dialog.getByRole('button',{name:'重新核对'}).click();
+  await expect(submit).toBeEnabled();
+  await expect.poll(()=>reads).toBeGreaterThan(stoppedAt);
+  // 恢复过程中同样不得因为缓存 data 而发起任何写请求。
+  expect(writes).toEqual([]);
+});
+
+// 缺陷回归（写入口 A）：缓存中仍有 pass 扫描记录时，运行身份“先成功后失败”必须同时关闭
+// “登记项目并进入观察模式”写入口，不能因为查询库保留 data（repository_scans 仍为 1）而放行。
+test('identity refresh failure blocks onboarding the cached pass scan',async({page})=>{
+  let unavailable=false;
+  await page.route('**/api/runtime-identity',route=>route.fulfill(unavailable
+    ? {status:503,json:{error:'unavailable'}}
+    : {json:{capabilities:{repository_scans:1}}}));
+  const onboards:string[]=[];
+  page.on('request',request=>{if(new URL(request.url()).pathname.endsWith('/onboard'))onboards.push(request.url());});
+  await page.route('**/api/scans',route=>route.fulfill(json([
+    {id:'cached-pass',source:'/isolated/cached',repository_key:'/isolated/cached',status:'pass',version:1,product_id:'',created:1,updated:1}
+  ])));
+  await page.route('**/api/scans/cached-pass/environment',route=>route.fulfill(json({stacks:[],modules:[],warnings:[]})));
+  await page.route('**/api/scans/cached-pass/onboard',route=>route.fulfill(json({id:'cached-pass',source:'/isolated/cached',status:'pass',version:2,product_id:'new-product',updated:2})));
+  await page.goto('/autopilot');
+  await page.getByRole('button',{name:'接入仓库',exact:true}).click();
+  const dialog=page.getByRole('dialog');
+  // 选中缓存中的 pass 扫描记录：首次成功时 onboard 写入口可用。
+  await dialog.getByRole('button',{name:'/isolated/cached',exact:true}).click();
+  const onboard=dialog.getByRole('button',{name:'登记项目并进入观察模式'});
+  await expect(onboard).toBeEnabled();
+  // 后台刷新失败：缓存列表仍在，但 identity.isError 必须撤销 onboard 写入口。
+  unavailable=true;
+  await expect(dialog.getByText('无法核对管理服务')).toBeVisible({timeout:10000});
+  await expect(dialog.getByText('共 1 个仓库，1 次扫描。展开仓库可查看历史记录。')).toBeVisible();
+  await expect(onboard).toBeDisabled();
+  // 即使对禁用入口强行点击，也只显示“无法核对管理服务”，不得发起 onboard 写请求。
+  await onboard.click({force:true});
+  expect(onboards).toEqual([]);
+});
+
+// 缺陷回归（写入口 B）：当前项目场景下，运行身份“先成功后失败”必须关闭
+// “应用扫描配置到当前项目”写入口，且不得在 act() 之前的项目详情请求上放行。
+test('identity refresh failure blocks applying the scan config to the current project',async({page})=>{
+  const product={id:'apply-product',name:'应用项目',goal:'fixture',status:'active',version:1};
+  let unavailable=false;
+  await page.route('**/api/runtime-identity',route=>route.fulfill(unavailable
+    ? {status:503,json:{error:'unavailable'}}
+    : {json:{capabilities:{repository_scans:1}}}));
+  const productReads:string[]=[];
+  page.on('request',request=>{const path=new URL(request.url()).pathname;if(path==='/api/products/apply-product')productReads.push(request.url());});
+  await page.route(url=>url.pathname.startsWith('/api/products'),route=>{
+    const path=new URL(route.request().url()).pathname;
+    if(path==='/api/products')return route.fulfill(json([product]));
+    if(path==='/api/products/apply-product')return route.fulfill(json({...product,adapter_spec:{version:1,kind:'command',capabilities:['verify']}}));
+    if(path.endsWith('/delivery-board'))return route.fulfill(json({prs:[],release_prs:[],issues:[]}));
+    if(path.endsWith('/workbench'))return route.fulfill(json({sessions:[],reviews:[],events:[]}));
+    return route.fulfill(json({}));
+  });
+  const applies:string[]=[];
+  page.on('request',request=>{if(new URL(request.url()).pathname==='/api/scans/cached-pass/apply')applies.push(request.url());});
+  await page.route('**/api/scans',route=>route.fulfill(json([
+    {id:'cached-pass',source:'/isolated/cached',repository_key:'/isolated/cached',status:'pass',version:1,product_id:'',created:1,updated:1}
+  ])));
+  await page.route('**/api/scans/cached-pass/environment',route=>route.fulfill(json({stacks:[],modules:[],warnings:[]})));
+  await page.goto('/autopilot?project=apply-product');
+  await page.getByRole('button',{name:'接入仓库',exact:true}).click();
+  const dialog=page.getByRole('dialog');
+  await dialog.getByRole('button',{name:'/isolated/cached',exact:true}).click();
+  const apply=dialog.getByRole('button',{name:'应用扫描配置到当前项目'});
+  await expect(apply).toBeEnabled();
+  // 后台刷新失败：缓存列表仍在，但 identity.isError 必须撤销 apply 写入口。
+  unavailable=true;
+  await expect(dialog.getByText('无法核对管理服务')).toBeVisible({timeout:10000});
+  await expect(dialog.getByText('共 1 个仓库，1 次扫描。展开仓库可查看历史记录。')).toBeVisible();
+  await expect(apply).toBeDisabled();
+  const stoppedReads=productReads.length;
+  // 即使对禁用入口强行点击，也不得发起 apply 写请求，也不得额外读取项目详情。
+  await apply.click({force:true});
+  expect(applies).toEqual([]);
+  expect(productReads.length).toBe(stoppedReads);
+});
+
 test('repository onboarding records scan requests and distinguishes startup from acceptance',async({page})=>{
   await page.goto('/autopilot');
   await page.getByRole('button',{name:'接入仓库',exact:true}).click();

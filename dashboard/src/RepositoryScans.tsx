@@ -28,13 +28,23 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
   // 每次打开抽屉都使用独立查询键并禁用缓存，上一次会话“受支持”的结论绝不能被复用：
   // 先连新后端、关闭抽屉、切换到旧后端再打开时，必须重新核对，核对完成前不发送任何 /api/scans 请求。
   const [identityKey]=useState(()=>`runtime-identity:${crypto.randomUUID()}`);
-  const identity=useQuery<{capabilities?:{repository_scans?:number}}>({queryKey:[identityKey],queryFn:()=>api('/runtime-identity'),retry:false,staleTime:0,gcTime:0,refetchInterval:false,refetchOnWindowFocus:false});
+  // 独立查询键与禁用缓存用于阻断跨会话复用；同时保留全局后台轮询（不再设置 refetchInterval:false），
+  // 使运行身份“先成功后失败”也能被发现：刷新失败时立即撤销缓存能力，恢复后自动放行。
+  const identity=useQuery<{capabilities?:{repository_scans?:number}}>({queryKey:[identityKey],queryFn:()=>api('/runtime-identity'),retry:false,staleTime:0,gcTime:0,refetchOnWindowFocus:false});
   const scanCapability=identity.data?.capabilities?.repository_scans;
-  // 只有本次会话成功取回、且当前没有进行中的核对时才承认能力；重新核对中或查询失败一律视为未确认。
-  const capabilityConfirmed=identity.isSuccess && !identity.isFetching;
+  // 后台刷新失败时查询库会保留上一次 data，且不能假定 isSuccess 一定翻转为 false；
+  // 因此必须把本次查询的失败状态作为显式撤销开关：identity.isError 是权威信号，
+  // 同时兼容查询库在保留 data 时只把错误放在 error 的差异，任一信号成立即视为失败；
+  // 只要出现过“先成功后失败”，缓存里的 repository_scans 就不得重新放行任何扫描写操作与 /scans 轮询；
+  // 成功刷新后 error 会被重置为 null，恢复不受影响。
+  const identityFailed=identity.isError || !!identity.error;
+  // 只有本次会话成功取回、当前没有进行中的核对且未出现失败时才承认能力；重新核对中或查询失败一律视为未确认。
+  const capabilityConfirmed=identity.isSuccess && !identity.isFetching && !identityFailed;
   const supported=capabilityConfirmed && typeof scanCapability==='number' && Number.isInteger(scanCapability) && scanCapability>=1;
-  const outdated=identity.isSuccess && !identity.isFetching && !supported;
-  const unknown=identity.isError;
+  // 能力缺失（旧服务未声明）与身份查询失败是两种不同语义：
+  // 前者提示“管理服务需要升级”；刷新失败但仍持有缓存身份时只提示“无法核对管理服务”，不叠加升级提示。
+  const outdated=capabilityConfirmed && !supported;
+  const unknown=identityFailed && !identity.data;
   const identityReason=outdated
     ? '当前管理服务未声明仓库扫描能力（/api/runtime-identity 缺少 capabilities.repository_scans=1），页面无法确认其支持 /api/scans，已停止发送扫描请求。请先升级并重启管理服务，然后重新核对。'
     : '无法确认运行身份 /api/runtime-identity 声明的仓库扫描能力，页面已停止发送扫描请求。请检查管理服务后重新核对。';
@@ -54,8 +64,9 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
   // 原因未明时既不请求 /scans，也不对旧后端或未知状态发起写请求。
   const projectChecking=!!productId && supported && capability.isPending;
   const projectFailed=!!productId && supported && capability.isError;
-  const checking=identity.isFetching || projectChecking;
-  const blocked=!supported || mismatch || projectFailed;
+  const checking=identity.isPending || identity.isFetching || projectChecking;
+  // blocked 必须显式覆盖 identity.isError（先成功后失败），即使缓存 data 仍在也要拦截扫描/重新扫描/onboard/apply。
+  const blocked=!supported || identityFailed || mismatch || projectFailed;
   const screenshot=useQuery<{data_url:string}>({queryKey:['scan-screenshot',selected],queryFn:()=>api(`/scans/${selected}/screenshot`),enabled:supported && !!current?.result?.checks?.some(c=>c.screenshot),retry:false});
   async function act(path:string,body:Record<string,unknown>){
     if(checking||blocked){message.error(!supported?'请先核对管理服务的仓库扫描能力':'请先完成项目接入能力核对');return;}
@@ -64,7 +75,7 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
     <Space direction="vertical" style={{width:'100%'}} size="large">
       <Alert type="info" showIcon message="在独立工作区识别并验证项目" description="提供本地仓库绝对路径或 HTTPS Git URL。获取源码后先识别 Java、前端及模块技术栈并检测本机工具；缺少运行时会提示安装。工具就绪后再安装项目依赖、构建、测试、尝试启动并保存结果。启动验证不代表业务验收通过。"/>
       {checking && <Alert type="info" showIcon message="正在确认后端扫描接口与当前项目接入能力" description="确认完成前已禁用扫描提交，避免向不支持的后端发起请求。"/>}
-      {identity.isError && <Alert type="warning" showIcon message="无法核对管理服务" description="无法读取运行身份，扫描操作已暂停。请检查服务后重新核对。" action={<Button onClick={()=>void identity.refetch()}>重新核对</Button>}/>}
+      {identityFailed && <Alert type="warning" showIcon message="无法核对管理服务" description="无法读取运行身份，扫描操作已暂停。请检查服务后重新核对。" action={<Button onClick={()=>void identity.refetch()}>重新核对</Button>}/>}
       {(outdated || unknown) && <Alert type="warning" showIcon message="管理服务需要升级" description={identityReason} action={<Button size="small" onClick={()=>void identity.refetch()}>重新核对</Button>}/>}
       {projectFailed && <Alert type="error" showIcon message="当前项目接入能力查询失败" description={<ErrorNotice value={capability.error} subject="管理服务"/>} action={<Button onClick={()=>void capability.refetch()}>重新核对</Button>}/>}
       {mismatch && <Alert type="warning" showIcon message="当前项目接入能力不匹配" description={mismatchReason}/>}
@@ -96,7 +107,7 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
           {title:'退出码',dataIndex:'exit_code'},{title:'说明',dataIndex:'reason'}
         ]}/>
         {current.status==='pass' && !current.product_id && <Button loading={busy} disabled={checking || blocked} onClick={()=>void act(`/scans/${current.id}/onboard`,{version:current.version})}>登记项目并进入观察模式</Button>}
-        {current.status==='pass' && productId && (!current.product_id || current.product_id===productId) && <Button loading={busy} disabled={checking || blocked} onClick={async()=>{const product=await api<{version:number}>(`/products/${productId}`);await act(`/scans/${current.id}/apply`,{version:current.version,product_id:productId,product_version:product.version});}}>应用扫描配置到当前项目</Button>}
+        {current.status==='pass' && productId && (!current.product_id || current.product_id===productId) && <Button loading={busy} disabled={checking || blocked} onClick={async()=>{if(checking||blocked){message.error(!supported?'请先核对管理服务的仓库扫描能力':'请先完成项目接入能力核对');return;}const product=await api<{version:number}>(`/products/${productId}`);await act(`/scans/${current.id}/apply`,{version:current.version,product_id:productId,product_version:product.version});}}>应用扫描配置到当前项目</Button>}
         {screenshot.data && <Image alt="隔离实例启动截图" src={screenshot.data.data_url}/>}
         <Collapse items={[{key:'raw',label:'识别配置与完整回执',children:<pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(current.result,null,2)}</pre>}]}/>
       </>}
