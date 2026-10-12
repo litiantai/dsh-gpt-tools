@@ -18,7 +18,7 @@ const nodes: Node[] = [
   {id:'fixing',title:'问题修复',label:'FIX · 自动返修',detail:'未完成问题 · 同一 PR 可有多条',x:1482,y:220,w:174,h:106},
   {id:'merge',title:'待合并',label:'MERGE · 收口',detail:'release → master · 上线 PR',x:1986,y:180,w:174,h:106},
   {id:'online',title:'已上线',label:'MASTER · 已合入',detail:'已上线需求 · 按需求计数',x:1986,y:533,w:205,h:164,tone:'milestone'},
-  {id:'blocked',title:'待处理',label:'异常 · 协作',detail:'阻塞、等待回复及待核对状态',x:1025,y:860,w:188,h:90,tone:'warning'},
+  {id:'blocked',title:'异常阻塞',label:'待处理',detail:'阻塞、等待回复及待核对状态',x:1025,y:860,w:188,h:90,tone:'warning'},
   {id:'cancelled',title:'已终止',label:'保留记录',detail:'取消的任务和交付记录',x:548,y:670,w:176,h:95},
 ];
 const paths = [

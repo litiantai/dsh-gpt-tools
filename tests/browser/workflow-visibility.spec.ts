@@ -18,7 +18,7 @@ test('waiting replies and unmapped states remain visible after a task leaves blo
   await expect(page.getByRole('button',{name:'开发执行 1',exact:true})).toBeVisible();
   await expect(page.getByRole('button',{name:'已终止 2',exact:true})).toBeVisible();
   await expect(page.locator('.project-summary-bar button').filter({hasText:'需要关注'}).locator('strong')).toHaveText('3');
-  await page.getByRole('button',{name:'待处理 3',exact:true}).click();
+  await page.getByRole('button',{name:'异常阻塞 3',exact:true}).click();
   const drawer=page.locator('.ant-drawer-content');
   await expect(drawer.locator('tbody tr[data-row-key]')).toHaveCount(3);
   for(const title of ['通知能力实现','新增状态任务','暂停中的任务']) {
@@ -33,9 +33,9 @@ test('waiting replies and unmapped states remain visible after a task leaves blo
   await expect(drawer.getByText(notification.reason,{exact:true})).toBeVisible();
   await expect(drawer.locator('tbody tr[data-row-key]')).toHaveCount(3);
   await page.locator('.ant-drawer-close').click();
-  await expect(page.getByRole('button',{name:'待处理 3',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'异常阻塞 3',exact:true})).toBeVisible();
   await page.reload();
-  await page.getByRole('button',{name:'待处理 3',exact:true}).click();
+  await page.getByRole('button',{name:'异常阻塞 3',exact:true}).click();
   await expect(drawer.getByText('通知能力实现',{exact:true})).toBeVisible();
   await expect(drawer.getByText('等待协作回复',{exact:true})).toBeVisible();
 });
