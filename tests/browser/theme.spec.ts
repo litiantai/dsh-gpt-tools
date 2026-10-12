@@ -31,6 +31,11 @@ test('dark portals and light pages keep readable, consistent colors through navi
     branch: 'release-20261008', version: 1, created: 1, updated: 1, pr_url: 'https://github.com/example/project/pull/1' };
   await page.route('**/api/products', r => r.fulfill({ json: [product] }));
   await page.route('**/api/runs', r => r.fulfill({ json: [delivery] }));
+  // Keep the synthetic record's detail request local to this fixture. A real 404
+  // inserts an alert above the tabs while Playwright is clicking them.
+  await page.route('**/api/runs/theme-delivery/context', r => r.fulfill({
+    json: { record: delivery, related: [], missing: [] },
+  }));
   await page.route('**/api/products/theme/workbench', r => r.fulfill({ json: { sessions: [], reviews: [], events: [] } }));
   await page.goto('/autopilot?project=theme');
   await expect(page.getByRole('heading', { name: product.name, exact: true })).toBeVisible();
@@ -49,7 +54,10 @@ test('dark portals and light pages keep readable, consistent colors through navi
   await drawer.getByRole('button', { name: '详情', exact: true }).click();
   const modal = page.locator('.ant-modal-content');
   await expectReadableSurface(modal, true);
-  await modal.getByRole('tab', { name: '原始记录' }).click();
+  await expect(modal.locator('.ant-spin')).toHaveCount(0);
+  const rawTab = modal.getByRole('tab', { name: '原始记录' });
+  await rawTab.click();
+  await expect(rawTab).toHaveAttribute('aria-selected', 'true');
   const rawRecord = modal.getByRole('tabpanel', { name: '原始记录' });
   await rawRecord.locator('summary').click();
   await expectReadableSurface(rawRecord.locator('.log'), true);

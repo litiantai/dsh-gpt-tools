@@ -75,7 +75,15 @@ class Control:
             return self.delivery_board.get(self.ledger.get('products', parts[1]))
         if parts == ['autopilot','metrics']:
             return self.ledger.metrics()
+        if parts == ['autopilot','capabilities']:
+            # 显式声明本管理服务实现了仓库扫描接口（/scans）及协议版本；旧后端没有该路由，
+            # 会返回 404「接口不存在」，前端据此禁用提交，避免对不存在接口发起写请求。
+            from .project import SUPPORTED_ADAPTER_VERSION
+            return {'scan_api': True, 'scan_api_version': 1,
+                    'adapter_version': SUPPORTED_ADAPTER_VERSION,
+                    'features': ['repository_scans']}
         if parts == ['scans']:
+            # 服务端按仓库身份投影 repository_key，前端据此把同一仓库的历史扫描分组。
             return [scan | {'repository_key': repository_key(scan['source'])}
                     for scan in self.ledger.list('scans')]
         if len(parts)==1:

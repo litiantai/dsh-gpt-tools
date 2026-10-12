@@ -150,6 +150,20 @@ class GenericTests(unittest.TestCase):
         self.assertFalse(scan_compatible({}))
         self.assertFalse(scan_compatible({'adapter_spec':None}))
 
+    def test_capabilities_declares_scan_api_and_protocol(self):
+        """后端必须显式声明扫描接口能力，前端据此在请求 /scans 之前完成门控。"""
+        self.assertTrue(self.control.handles('/autopilot/capabilities'))
+        declaration=self.control.get('/autopilot/capabilities')
+        self.assertIs(declaration['scan_api'],True)
+        self.assertEqual(declaration['scan_api_version'],1)
+        from autopilot.project import SUPPORTED_ADAPTER_VERSION
+        self.assertEqual(declaration['adapter_version'],SUPPORTED_ADAPTER_VERSION)
+        self.assertIn('repository_scans',declaration['features'])
+        # 旧后端没有该路由：其余 autopilot 两段路径仍按台账读取并抛 KeyError（HTTP 404），
+        # 前端据此判定后端不支持扫描接口，这正是门控要覆盖的场景。
+        with self.assertRaises(KeyError):
+            self.control.get('/autopilot/unknown')
+
     def test_scan_creation_rejects_incompatible_linked_project(self):
         """服务端扫描入口必须与前端同规则拦截版本/类型/能力错配的项目。"""
         for label,spec in (

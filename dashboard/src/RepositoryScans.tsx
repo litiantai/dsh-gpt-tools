@@ -23,6 +23,9 @@ function repositories(scans:Scan[]):Repository[] {
 export default function RepositoryScans({onClose,productId,onChanged}:{onClose:()=>void;productId?:string;onChanged:()=>unknown}) {
   const [source,setSource]=useState('');const [selected,setSelected]=useState<string>();
   const [busy,setBusy]=useState(false);const {message}=App.useApp();
+  // 后端能力预检必须先于 /scans 请求：运行身份通过 capabilities.repository_scans 声明
+  // 本管理服务已实现仓库扫描接口；旧后端没有该声明（或查询失败/加载中），前端据此禁用入口，
+  // 从而避免向不存在的接口发起请求。只有确认支持后才请求列表，且不受全局 refetchInterval 影响。
   const identity=useQuery<{capabilities?:{repository_scans?:number}}>({queryKey:['runtime-identity'],queryFn:()=>api('/runtime-identity'),retry:false});
   const version=identity.data?.capabilities?.repository_scans;
   const supported=typeof version==='number' && Number.isInteger(version) && version>=1;
@@ -35,16 +38,26 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
   const spec=capability.data?.adapter_spec;
   const mismatch=!!spec && (spec.version!==1 || spec.kind!=='command' || !(spec.capabilities || []).includes('verify'));
   const mismatchReason='当前项目接入能力不是通用命令适配器（adapter_spec.kind 必须为 command 且包含 verify 能力），且协议版本必须为 1，无法用隔离工作区执行扫描与验收；请先在项目设置中修正接入能力。';
+  // 加载中（后端身份确认中或项目能力查询中）与查询失败一律不可提交：
+  // 原因未明时既不请求 /scans，也不对旧后端或未知状态发起写请求。
+  const projectChecking=!!productId && supported && capability.isPending;
+  const projectFailed=!!productId && supported && capability.isError;
+  const checking=identity.isPending || projectChecking;
+  const backendUnsupported=identity.isSuccess && !supported;
+  const blocked=!supported || mismatch || projectFailed;
   const screenshot=useQuery<{data_url:string}>({queryKey:['scan-screenshot',selected],queryFn:()=>api(`/scans/${selected}/screenshot`),enabled:supported && !!current?.result?.checks?.some(c=>c.screenshot),retry:false});
   async function act(path:string,body:Record<string,unknown>){
-    if(!supported){message.error('请先核对管理服务的仓库扫描能力');return;}
+    if(checking||blocked){message.error(!supported?'请先核对管理服务的仓库扫描能力':'请先完成项目接入能力核对');return;}
     setBusy(true);try{const result=await api<Scan>(path,body);if(!path.endsWith('/apply'))setSelected(result.id);await scans.refetch();onChanged();}catch(e){message.error(errorText(e));}finally{setBusy(false);}}
   return <Drawer title="仓库接入与启动扫描" open width={960} onClose={onClose}>
     <Space direction="vertical" style={{width:'100%'}} size="large">
       <Alert type="info" showIcon message="在独立工作区识别并验证项目" description="提供本地仓库绝对路径或 HTTPS Git URL。获取源码后先识别 Java、前端及模块技术栈并检测本机工具；缺少运行时会提示安装。工具就绪后再安装项目依赖、构建、测试、尝试启动并保存结果。启动验证不代表业务验收通过。"/>
-      {!supported && (identity.isSuccess || identity.isError) && <Alert type="warning" showIcon message={identity.isError?'无法核对管理服务':'管理服务需要升级'} description={identity.isError?'无法读取运行身份，扫描操作已暂停。请检查服务后重新核对。':'当前管理服务未声明仓库扫描能力。请升级并重启管理服务后重新核对。'} action={<Button onClick={()=>void identity.refetch()}>重新核对</Button>}/>}
+      {checking && <Alert type="info" showIcon message="正在确认后端扫描接口与当前项目接入能力" description="确认完成前已禁用扫描提交，避免向不支持的后端发起请求。"/>}
+      {identity.isError && <Alert type="warning" showIcon message="无法核对管理服务" description="无法读取运行身份，扫描操作已暂停。请检查服务后重新核对。" action={<Button onClick={()=>void identity.refetch()}>重新核对</Button>}/>}
+      {backendUnsupported && <Alert type="warning" showIcon message="管理服务需要升级" description="当前管理服务未声明仓库扫描能力。请升级并重启管理服务后重新核对。" action={<Button onClick={()=>void identity.refetch()}>重新核对</Button>}/>}
+      {projectFailed && <Alert type="error" showIcon message="当前项目接入能力查询失败" description={<ErrorNotice value={capability.error} subject="管理服务"/>} action={<Button onClick={()=>void capability.refetch()}>重新核对</Button>}/>}
       {mismatch && <Alert type="warning" showIcon message="当前项目接入能力不匹配" description={mismatchReason}/>}
-      <Space.Compact style={{width:'100%'}}><Input aria-label="代码仓库地址" value={source} onChange={e=>setSource(e.target.value)} placeholder="/绝对路径/项目 或 https://…/repo.git"/><Button type="primary" loading={busy} disabled={!source.trim() || mismatch || !supported} onClick={()=>void act('/scans',{source:source.trim()})}>扫描新仓库</Button></Space.Compact>
+      <Space.Compact style={{width:'100%'}}><Input aria-label="代码仓库地址" value={source} onChange={e=>setSource(e.target.value)} placeholder="/绝对路径/项目 或 https://…/repo.git"/><Button type="primary" loading={busy} disabled={!source.trim() || checking || blocked} onClick={()=>void act('/scans',{source:source.trim()})}>扫描新仓库</Button></Space.Compact>
       <span>共 {groups.length} 个仓库，{scans.data?.length || 0} 次扫描。展开仓库可查看历史记录。</span>
       {scans.error && <ErrorNotice value={scans.error}/>}
       <Table<Repository> size="small" rowKey="key" dataSource={groups} loading={scans.isLoading} pagination={{pageSize:8}} columns={[
@@ -52,7 +65,7 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
         {title:'当前状态',render:(_,r)=><Space direction="vertical" size={0}><Tag>{names[r.current.status] || r.current.status}</Tag>{r.active.length>1 && <span>进行中及排队共 {r.active.length} 次</span>}</Space>},
         {title:'扫描次数',render:(_,r)=>r.scans.length},
         {title:'更新时间',render:(_,r)=>time(Math.max(...r.scans.map(s=>s.updated)))},
-        {title:'操作',render:(_,r)=><Button disabled={busy || !supported || r.active.length>0} onClick={()=>void act(`/scans/${r.current.id}/retry`,{version:r.current.version})}>重新扫描</Button>}
+        {title:'操作',render:(_,r)=><Button disabled={busy || checking || blocked || r.active.length>0} onClick={()=>void act(`/scans/${r.current.id}/retry`,{version:r.current.version})}>重新扫描</Button>}
       ]} expandable={{expandedRowRender:r=><Table<Scan> aria-label="扫描历史" size="small" rowKey="id" dataSource={r.scans} pagination={{pageSize:5,hideOnSinglePage:true}} columns={[
         {title:'创建时间',render:(_,s)=>time(s.created ?? s.updated)},
         {title:'状态',render:(_,s)=><Tag>{names[s.status] || s.status}</Tag>},
@@ -71,8 +84,8 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
           {title:'用时',render:(_,c)=>c.elapsed===undefined?'—':`${c.elapsed.toFixed(1)} 秒`},
           {title:'退出码',dataIndex:'exit_code'},{title:'说明',dataIndex:'reason'}
         ]}/>
-        {current.status==='pass' && !current.product_id && <Button disabled={!supported} loading={busy} onClick={()=>void act(`/scans/${current.id}/onboard`,{version:current.version})}>登记项目并进入观察模式</Button>}
-        {current.status==='pass' && productId && (!current.product_id || current.product_id===productId) && <Button disabled={!supported} loading={busy} onClick={async()=>{if(!supported)return;const product=await api<{version:number}>(`/products/${productId}`);await act(`/scans/${current.id}/apply`,{version:current.version,product_id:productId,product_version:product.version});}}>应用扫描配置到当前项目</Button>}
+        {current.status==='pass' && !current.product_id && <Button loading={busy} disabled={checking || blocked} onClick={()=>void act(`/scans/${current.id}/onboard`,{version:current.version})}>登记项目并进入观察模式</Button>}
+        {current.status==='pass' && productId && (!current.product_id || current.product_id===productId) && <Button loading={busy} disabled={checking || blocked} onClick={async()=>{const product=await api<{version:number}>(`/products/${productId}`);await act(`/scans/${current.id}/apply`,{version:current.version,product_id:productId,product_version:product.version});}}>应用扫描配置到当前项目</Button>}
         {screenshot.data && <Image alt="隔离实例启动截图" src={screenshot.data.data_url}/>}
         <Collapse items={[{key:'raw',label:'识别配置与完整回执',children:<pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(current.result,null,2)}</pre>}]}/>
       </>}

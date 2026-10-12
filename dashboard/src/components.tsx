@@ -102,8 +102,12 @@ export function Status({ value }: { value?: string }) {
     <span className="muted">—</span>
   );
 }
-export function useData<T>(path: string) {
-  return useQuery<T>({ queryKey: [path], queryFn: () => api<T>(path) });
+export function useData<T>(path: string, options: { enabled?: boolean } = {}) {
+  return useQuery<T>({
+    queryKey: [path],
+    queryFn: () => api<T>(path),
+    ...options,
+  });
 }
 export function useAction() {
   const cache = useQueryClient();

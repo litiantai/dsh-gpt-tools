@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 
 test('exhaustion warns and a today-only limit can be saved without changing the default', async ({page})=>{
+  // 保存会依次写入今日上限并刷新多个查询；在受限机器上 30 秒可能不足以完成整条链路。
+  test.setTimeout(60000);
   const errors:string[]=[];
   page.on('pageerror',e=>errors.push(e.message));
   await page.goto('/autopilot');
@@ -29,13 +31,16 @@ c.commit()`,fixture.state,product.id]);
   await dialog.getByLabel('今日 Token 总上限',{exact:true}).fill('9000000');
   await expect(dialog).toContainText('保存后仍会等待额度恢复');
   await dialog.getByLabel('今日 Token 总上限',{exact:true}).fill('15000000');
+  // 先等真正的保存响应落地，再断言弹窗关闭，避免把“请求仍在进行”误判为“保存后弹窗未关闭”。
+  const saved=page.waitForResponse(response=>response.url().includes(`/api/products/${product.id}/today-token-limit`)&&response.request().method()==='POST');
   await dialog.getByRole('button',{name:'保存今日上限'}).click();
-  await expect(dialog).not.toBeVisible();
+  expect((await saved).ok()).toBe(true);
+  await expect(dialog).not.toBeVisible({timeout:15000});
   await expect(alert).toHaveCount(0);
   await expect(page.getByText('今日开发 Token：10,009,795 / 15,000,000（今日临时上限）',{exact:true})).toBeVisible();
-  const saved=await page.evaluate(async id=>(await fetch(`/api/products/${id}`)).json(),product.id);
-  expect(saved.policy.tokens_per_day).toBe(10000000);
-  expect(saved.today_token_limit.limit).toBe(15000000);
+  const stored=await page.evaluate(async id=>(await fetch(`/api/products/${id}`)).json(),product.id);
+  expect(stored.policy.tokens_per_day).toBe(10000000);
+  expect(stored.today_token_limit.limit).toBe(15000000);
   await page.reload();
   await expect(page.getByText('今日开发 Token：10,009,795 / 15,000,000（今日临时上限）',{exact:true})).toBeVisible();
   await page.getByRole('button',{name:'调整今日上限',exact:true}).click();
