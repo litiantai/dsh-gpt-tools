@@ -41,7 +41,10 @@ class CoordinatorTests(unittest.TestCase):
             'selection':c.selected(self.product), 'config':self.product.get('coordinator',{}),
             'material':c.snapshot(self.ledger,self.product)}, 'running')
         result = {'status':'pass','action':action,'run_id':run['id'],'run_version':run['version'],
-            'strategy':'修复拒收地址回执并增加部分拒收检查','resume_phase':'developing','priority':5,'to_role':'verification'} | extra
+            'strategy':'修复拒收地址回执并增加部分拒收检查','resume_phase':'developing','priority':5,'to_role':'verification',
+            'help_plan':{'basis':'控制器检查显示部分拒收误报成功', 'steps':['核对 SMTP 拒收回执','修复映射并回归'],
+                         'resources':['implementation 开发槽一轮，遵守现有额度'], 'verification':['部分拒收检查通过'],
+                         'stop_conditions':['两轮无进展时停止并转人工']}} | extra
         return decision, result
 
     def apply(self, **extra):
@@ -125,6 +128,9 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.apply()['status'],'needs_human')
         self.assertEqual(self.fresh()['status'],'waiting_for_reply')
         self.assertEqual(len(self.ledger.scoped('agent_messages',self.product['id'])),1)
+        plan=self.ledger.get('coordination_decisions',self.fresh()['coordination_plan_id'])
+        self.assertEqual(plan['result']['action'],'human')
+        self.assertTrue(plan['help_plan']['steps'])
         from autopilot.collaboration import human_reply
         msg=self.ledger.scoped('agent_messages',self.product['id'])[0]
         with self.store.transaction() as db:
@@ -152,13 +158,86 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.ledger.budget_used(self.product['id'],'coordination_tokens'),110)
         self.assertEqual(self.ledger.budget_used(self.product['id'],'tokens'),0)
 
-    def test_unchanged_snapshot_does_not_call_model_again(self):
+    def test_unchanged_abnormal_snapshot_is_rechecked_every_five_minutes(self):
         def launch(scheduler,decision,product):
             c.apply(scheduler,decision,{'status':'pass','action':'wait','reason':'等待新证据'})
         with patch('autopilot.coordinator.launch',side_effect=launch) as call:
             c.tick(self.scheduler,now=100)
-            c.tick(Scheduler(self.store),now=200)
+            c.tick(Scheduler(self.store),now=399)
             self.assertEqual(call.call_count,1)
+            c.tick(Scheduler(self.store),now=400)
+            self.assertEqual(call.call_count,2)
+        state=c.status(self.ledger,self.product)['instance']
+        self.assertEqual(state['last_check'],400)
+        self.assertEqual(state['watch']['requirements_checked'],1)
+        self.assertEqual(state['watch']['abnormal_count'],1)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM events WHERE kind='autopilot_requirement_watch'").fetchone()[0],2)
+
+    def test_normal_unchanged_queue_is_checked_without_repeated_model_calls(self):
+        run=self.fresh(); self.ledger.update('runs',run['id'],run['version'],{},'queued')
+        def launch(scheduler,decision,product):
+            c.apply(scheduler,decision,{'status':'pass','action':'wait','reason':'等待开发槽'})
+        with patch('autopilot.coordinator.launch',side_effect=launch) as call:
+            c.tick(self.scheduler,now=100)
+            c.tick(self.scheduler,now=400)
+        self.assertEqual(call.call_count,1)
+        self.assertEqual(c.status(self.ledger,self.product)['instance']['last_check'],400)
+
+    def test_watch_runs_while_coordination_call_is_busy(self):
+        self.ledger.create('coordination_decisions',{'product_id':self.product['id'],'call':{'id':'slow'}},'running')
+        with patch.object(self.scheduler,'call_result',return_value=None), patch('autopilot.coordinator.launch') as launch:
+            c.tick(self.scheduler,now=100)
+            c.tick(self.scheduler,now=400)
+        launch.assert_not_called()
+        self.assertEqual(c.status(self.ledger,self.product)['instance']['last_check'],400)
+
+    def test_watch_resolves_requirement_state_and_records_broken_links(self):
+        req=self.req
+        self.ledger.update('requirements',req['id'],req['version'],{'run_id':self.run['id']},'queued')
+        missing=self.ledger.create('requirements',{'product_id':self.product['id'],'run_id':'missing'},'queued')
+        other=self.ledger.create('runs',{'product_id':'other','requirement_id':req['id']},'blocked')
+        foreign=self.ledger.create('requirements',{'product_id':self.product['id'],'run_id':other['id']},'queued')
+        material=c.snapshot(self.ledger,self.product)
+        records={r['id']:r for r in material['requirements']}
+        self.assertEqual(records[req['id']]['effective_status'],'blocked')
+        self.assertEqual(records[req['id']]['issue'],'')
+        self.assertIn('不存在或不属于',records[missing['id']]['issue'])
+        self.assertIn('不存在或不属于',records[foreign['id']]['issue'])
+        self.assertEqual(c.watch_summary(material)['abnormal_count'],3)
+
+    def test_waiting_for_human_is_visible_without_duplicate_help(self):
+        run=self.fresh()
+        self.ledger.update('runs',run['id'],run['version'],{'coordinator_human':'existing-message'},'waiting_for_reply')
+        with patch('autopilot.coordinator.launch') as launch:
+            c.tick(self.scheduler,now=100)
+            c.tick(self.scheduler,now=400)
+        launch.assert_not_called()
+        watch=c.status(self.ledger,self.product)['instance']['watch']
+        self.assertEqual(watch['findings'][0]['action'],'等待人工回复')
+        self.assertEqual(self.fresh()['status'],'waiting_for_reply')
+
+    def test_missing_help_plan_never_dispatches(self):
+        for plan in (None,{}, {'basis':'仅有一句建议'}):
+            self.assertEqual(self.apply(help_plan=plan)['status'],'blocked')
+            self.assertIsNone(self.fresh().get('coordination_pending'))
+
+    def test_help_plan_is_durable_linked_and_sent_to_execution(self):
+        decision=self.apply()
+        saved=self.ledger.get('coordination_decisions',decision['id'])
+        self.assertEqual(saved['help_plan']['verification'],['部分拒收检查通过'])
+        self.assertTrue(saved['plan_saved_at'])
+        run=self.fresh()
+        self.assertEqual(run['coordination_plan_id'],decision['id'])
+        self.assertIn('两轮无进展',run['coordination_pending']['strategy'])
+        self.assertEqual(c.status(Scheduler(self.store).ledger,self.product)['decisions'][0]['help_plan'],saved['help_plan'])
+
+    def test_paused_project_does_not_watch_or_dispatch(self):
+        self.ledger.update('products',self.product['id'],self.product['version'],{},'paused')
+        with patch('autopilot.coordinator.launch') as launch:
+            c.tick(self.scheduler,now=400)
+        launch.assert_not_called()
+        self.assertEqual(self.ledger.scoped('coordinators',self.product['id']),[])
 
     def test_queued_crash_recovers_without_duplicate_decision(self):
         with patch('autopilot.coordinator.launch') as launch:
@@ -171,6 +250,19 @@ class CoordinatorTests(unittest.TestCase):
         with patch('autopilot.coordinator.launch') as call:
             c.tick(self.scheduler,now=100)
         call.assert_not_called()
+
+    def test_forced_watch_is_consumed_once_when_resources_are_busy(self):
+        self.ledger.create('chat_messages',{'product_id':self.product['id'],'call':{'id':'busy'}},'running')
+        with self.store.transaction() as db:
+            state=c.instance(self.ledger,self.product,db)
+            self.ledger.update('coordinators',state['id'],state['version'],{'last_check':100,'force':True},db=db)
+        with patch('autopilot.coordinator.launch') as launch:
+            c.tick(self.scheduler,now=101)
+            c.tick(self.scheduler,now=102)
+        launch.assert_not_called()
+        state=c.status(self.ledger,self.product)['instance']
+        self.assertEqual(state['last_check'],101)
+        self.assertFalse(state['force'])
 
     def test_settings_model_fallback_and_version_conflict(self):
         prefix='/products/'+self.product['id']+'/coordinator'

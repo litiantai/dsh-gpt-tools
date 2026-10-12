@@ -5,10 +5,12 @@ import { time, useData } from './components';
 import { errorText } from './errors';
 import { ReviewerSelect } from './ReviewerSelect';
 import type { ReviewerSelection } from './types';
-import { RecordValue } from './RecordDetails';
+import { RecordValue, recordLabel } from './RecordDetails';
 
-type Decision = {id:string;status:string;created:number;reason?:string;selection?:ReviewerSelection;result?:{run_id?:string;action?:string;strategy?:string};material?:unknown};
-type State = {version:number;enabled:boolean;config:{enabled:boolean;model?:ReviewerSelection|null};model?:ReviewerSelection;instance:{status:string;reason?:string;last_check?:number};coordination_tokens:number;decisions:Decision[]};
+type HelpPlan = {basis:string;steps:string[];resources:string[];verification:string[];stop_conditions:string[]};
+type Finding = {run_id?:string;requirement_id?:string;title?:string;status:string;reason?:string;action:string};
+type Decision = {id:string;status:string;created:number;reason?:string;help_plan?:HelpPlan;selection?:ReviewerSelection;result?:{run_id?:string;action?:string;strategy?:string};material?:unknown};
+type State = {version:number;enabled:boolean;config:{enabled:boolean;model?:ReviewerSelection|null};model?:ReviewerSelection;instance:{status:string;reason?:string;last_check?:number;watch?:{requirements_checked:number;tasks_checked:number;abnormal_count:number;findings:Finding[]}};coordination_tokens:number;decisions:Decision[]};
 const states:Record<string,string> = {idle:'监听中',running:'评估中',queued:'待评估',applied:'已处理',blocked:'受阻',stale:'证据已变化',needs_human:'等待人工',waiting:'等待资源'};
 const actions:Record<string,string> = {wait:'等待',repair:'追加返修',verify:'补充验证',assist:'角色协助',reprioritize:'调整排队',human:'请求人工帮助'};
 export default function ProjectCoordinator({pid,settings=false}:{pid?:string;settings?:boolean}) {
@@ -29,14 +31,20 @@ export default function ProjectCoordinator({pid,settings=false}:{pid?:string;set
     }catch(e){message.error(errorText(e));}finally{setBusy(false);}
   };
   return <Space direction="vertical" style={{width:'100%'}} size="middle">
-    <Alert type="info" showIcon message="每项目一个协调 Agent" description="监听任务与资源等待，按真实证据逐轮追加返修；连续两轮无进展时转人工。协调分析单独统计，协助、修复和验收仍遵守原额度。"/>
+    <Alert type="info" showIcon message="每项目一个协调 Agent" description="每 5 分钟核对需求与任务状态，异常持续时重新判断是否需要帮助或协调资源。需要帮助时先记录方案，再执行并保留结果；连续两轮无进展时转人工。"/>
     {data.error && <Alert type="error" message={errorText(data.error)}/>}
     {value && <Descriptions column={2} items={[
       {key:'state',label:'当前状态',children:<Tag>{value.enabled?(states[value.instance.status]||value.instance.status):'已停用或项目暂停'}</Tag>},
       {key:'model',label:'实际协调模型',children:value.model?.model?`${value.model.provider} / ${value.model.model}`:'待配置'},
       {key:'usage',label:'今日协调 Token（不扣项目额度）',children:value.coordination_tokens.toLocaleString()},
       {key:'checked',label:'最近检查',children:value.instance.last_check?time(value.instance.last_check):'尚未检查'},
+      {key:'watch',label:'最近需求检查',children:value.instance.watch?`${value.instance.watch.requirements_checked} 条需求 · ${value.instance.watch.tasks_checked} 个未结束任务 · ${value.instance.watch.abnormal_count} 项待关注`:'尚未检查'},
       {key:'reason',label:'下一步 / 等待原因',children:value.instance.reason||'等待任务或证据变化'},
+    ]}/>}
+    {!!value?.instance.watch?.findings.length && <Table<Finding> size="small" rowKey={r=>r.run_id||r.requirement_id||''} dataSource={value.instance.watch.findings} pagination={{pageSize:5}} columns={[
+      {title:'待关注需求 / 任务',render:(_,r)=>r.title||r.run_id||r.requirement_id},
+      {title:'当前状态',dataIndex:'status',render:recordLabel},
+      {title:'异常依据',dataIndex:'reason'}, {title:'处理判断',dataIndex:'action'},
     ]}/>}
     {settings && <Form component={false} form={form} layout="vertical" onValuesChange={()=>setDirty(true)} disabled={busy}>
       <Form.Item name="enabled" label="启用项目协调" valuePropName="checked"><Switch/></Form.Item>
@@ -44,11 +52,18 @@ export default function ProjectCoordinator({pid,settings=false}:{pid?:string;set
       <Space><Button onClick={()=>{form.setFieldValue('model',null);setDirty(true);}}>沿用验收模型</Button><Button type="primary" loading={busy} onClick={()=>void act('settings')}>保存协调设置</Button></Space>
     </Form>}
     {!settings && <><Button disabled={!value?.enabled || busy || value.instance.status==='running'} onClick={()=>void act('evaluate')}>立即评估</Button>
-      <Table<Decision> rowKey="id" dataSource={value?.decisions||[]} loading={data.isLoading} pagination={{pageSize:10}} expandable={{expandedRowRender:r=><RecordValue value={r}/>}} columns={[
+      <Table<Decision> rowKey="id" dataSource={value?.decisions||[]} loading={data.isLoading} pagination={{pageSize:10}} expandable={{expandedRowRender:r=><>
+        {r.help_plan && <Descriptions title="帮助方案" column={1} items={[
+          {key:'basis',label:'问题依据',children:r.help_plan.basis},
+          ...([['steps','处理步骤'],['resources','角色与资源'],['verification','验证方式'],['stop_conditions','停止条件']] as const).map(([key,label])=>({key,label,children:<ol>{r.help_plan![key].map((text,i)=><li key={i}>{text}</li>)}</ol>})),
+        ]}/>}
+        <RecordValue value={r}/>
+      </>}} columns={[
         {title:'时间',dataIndex:'created',render:time},
         {title:'决定',render:(_,r)=>actions[r.result?.action||'']||'项目评估'},
         {title:'任务',render:(_,r)=>r.result?.run_id||'项目'},
         {title:'状态',dataIndex:'status',render:s=><Tag>{states[s]||s}</Tag>},
+        {title:'帮助方案',render:(_,r)=>r.help_plan?'已记录 · 展开查看':'—'},
         {title:'依据与下一步',dataIndex:'reason'},
       ]}/></>}
   </Space>;

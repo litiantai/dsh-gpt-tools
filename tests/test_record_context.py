@@ -68,6 +68,16 @@ class RecordContextTests(unittest.TestCase):
         self.assertEqual(self.ids(data), {step['id'], reverse['id']})
         self.assertEqual(data['missing'], [{'kind':'evidence','id':'lost-step'}])
 
+    def test_help_plan_links_only_the_selected_task_and_its_result(self):
+        run=self.make('runs',receipts=[{'action':'verify','result':{'status':'pass'}}])
+        other=self.make('runs')
+        plan=self.make('coordination_decisions',help_plan={'basis':'实际失败检查'},result={'run_id':run['id'],'action':'repair'},
+            material={'requirements':[{'run_id':run['id']},{'run_id':other['id']}]})
+        self.ledger.update('runs',run['id'],run['version'],{'coordination_plan_id':plan['id']})
+        self.assertEqual(self.ids(self.context('runs',run)),{plan['id']})
+        self.assertEqual(self.ids(self.context('coordination_decisions',plan)),{run['id']})
+        self.assertNotIn(plan['id'],self.ids(self.context('runs',other)))
+
     def test_context_is_not_limited_to_latest_thousand_records(self):
         old = self.make('signals')
         with self.ledger.store.transaction() as db:

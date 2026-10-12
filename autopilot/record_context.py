@@ -6,7 +6,7 @@ from .store import redact
 
 
 KINDS = ('signals', 'requirements', 'runs', 'releases', 'deliveries',
-         'code_reviews', 'inspections', 'evidence', 'evaluations', 'daily_reports')
+         'code_reviews', 'inspections', 'evidence', 'evaluations', 'daily_reports', 'coordination_decisions')
 REFERENCES = {
     'signal_id': 'signals', 'signal_ids': 'signals',
     'requirement_id': 'requirements', 'requirement_ids': 'requirements',
@@ -18,6 +18,7 @@ REFERENCES = {
     'review_id': 'reviews', 'acceptance_review_id': 'reviews',
     'review_ids': 'reviews', 'code_review_id': 'code_reviews',
     'round_id': 'code_reviews',
+    'coordination_plan_id': 'coordination_decisions',
 }
 
 
@@ -30,6 +31,8 @@ def references(value, kind):
             return
     if isinstance(value, dict):
         for key, item in value.items():
+            if kind == 'coordination_decisions' and key == 'material':
+                continue  # 项目评估快照包含其他任务，不能冒充本方案的执行关联。
             target = REFERENCES.get(key) or ('evidence' if key == 'steps' and kind == 'inspections' else None)
             if target:
                 for ident in item if isinstance(item, list) else [item]:

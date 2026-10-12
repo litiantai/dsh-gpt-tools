@@ -11,6 +11,7 @@ import { ArrowRightOutlined, ReloadOutlined, PlusOutlined } from '@ant-design/ic
 import { api } from '../api';
 import { time, useData, eventLabels, labels as sharedLabels } from '../components';
 import ProjectFlow, { type FlowNodeId } from '../ProjectFlow';
+import { groupFlowRuns, type RunFlowNode } from '../projectFlowState';
 import ProjectEvidence from '../ProjectEvidence';
 import DeliveryBoard, {type DeliveryBoardData,type RepairIssue,type PullRequest} from '../DeliveryBoard';
 import DeliveryTasks from '../DeliveryTasks';
@@ -199,7 +200,7 @@ export default function AutopilotPage() {
   const deliveryStages:Record<string,string[]>={online:['online'],merge:['awaiting_merge','syncing','merging','collecting','validating','merging_feature','syncing_release','syncing_feature']};
   const stageDeliveries=(stage:string)=>projectDeliveries.filter(r=>deliveryStages[stage]?.includes(String(r.status==='blocked'?r.resume_status:r.status)));
   const blockedDeliveries=projectDeliveries.filter(r=>r.status==='blocked');
-  const count=(...statuses:string[])=>projectRuns.filter(r=>statuses.includes(r.status)).length;
+  const flowRuns=groupFlowRuns(projectRuns);
   const observations=['probe','inspect',...((project?.git as {enabled?:boolean})?.enabled?['master_sync','final_acceptance']:[]),'discover'].map(action=>{
     const receipts=(project?.receipts ?? []) as {action:string;at:number;result:RecordItem}[];
     const receipt=[...receipts].reverse().find(r=>r.action===action || action==='probe' && r.action==='recover-runtime');
@@ -213,15 +214,14 @@ export default function AutopilotPage() {
   const counts:Partial<Record<FlowNodeId,number>>={
     product:projectRequirements.length,signals:scoped(signals.data).filter(s=>s.status==='pending').length,
     requirements:projectRequirements.filter(r=>['pending','investigating','awaiting_external'].includes(r.status)).length,
-    review:count('plan_review'),planning:count('queued','planning'),design:designRuns.length,
-    development:count('developing'),testing:count('verifying'),acceptance:count('acceptance_review','accepted'),
-    delivery:count('delivered'),online:onlineRequirements.length,
+    review:flowRuns.review.length,planning:flowRuns.planning.length,design:designRuns.length,
+    development:flowRuns.development.length,testing:flowRuns.testing.length,acceptance:flowRuns.acceptance.length,
+    delivery:flowRuns.delivery.length,online:onlineRequirements.length,
     codeReview:new Set((deliveryBoard.data?.prs || []).filter(pr=>pr.status==='unreviewed' && pr.git_status==='open' && pr.requirement_id).map(pr=>pr.requirement_id)).size,fixing:deliveryBoard.data?.issues.length ?? 0,merge:deliveryBoard.data?.release_prs?.filter(pr=>pr.git_status==='open').length ?? 0,
-    blocked:count('blocked','pausing')+blockedDeliveries.length,cancelled:count('cancelled','rolled_back'),
+    blocked:flowRuns.blocked.length+blockedDeliveries.length,cancelled:flowRuns.cancelled.length,
   };
-  const nodeStatuses:Partial<Record<FlowNodeId,string[]>>={review:['plan_review'],planning:['queued','planning'],development:['developing'],testing:['verifying'],acceptance:['acceptance_review','accepted'],delivery:['delivered'],blocked:['blocked','pausing'],cancelled:['cancelled','rolled_back']};
   const selectedKind=node==='signals'?'signals':node==='requirements'?'requirements':node==='online'?'online_requirements':node==='merge'?'deliveries':'runs';
-  const selectedData=node==='product'?projectRuns:node==='design'?designRuns:node==='signals'?scoped(signals.data).filter(s=>s.status==='pending'):node==='requirements'?projectRequirements.filter(r=>['pending','investigating','awaiting_external'].includes(r.status)):node==='online'?onlineRequirements:node==='merge'?stageDeliveries(node):projectRuns.filter(r=>nodeStatuses[node ?? 'product']?.includes(r.status));
+  const selectedData=node==='product'?projectRuns:node==='design'?designRuns:node==='signals'?scoped(signals.data).filter(s=>s.status==='pending'):node==='requirements'?projectRequirements.filter(r=>['pending','investigating','awaiting_external'].includes(r.status)):node==='online'?onlineRequirements:node==='merge'?stageDeliveries(node):flowRuns[node as RunFlowNode] ?? [];
   const primaryTabs=<Tabs className={`project-primary-tabs${section==='intelligence'?' dialogue-primary-tabs':''}`} activeKey={section} items={Object.entries(sections).map(([key,value])=>({key,label:value.label}))} onChange={key=>navigate(key as ProjectSection)}/>;
   if(section==='intelligence')return <>{primaryTabs}<ProjectIntelligence pid={project?.id} projects={products.data}/></>;
   return <>
@@ -241,7 +241,7 @@ export default function AutopilotPage() {
     <div className="project-summary-bar">
       <button onClick={()=>{setTab('sessions');document.getElementById('project-records')?.scrollIntoView({behavior:'smooth'});}}><span>执行会话</span><strong>{workbench.data?.sessions.length ?? '—'}</strong><small>当前项目的真实会话</small><ArrowRightOutlined/></button>
       <button onClick={()=>{setTab('reviews');document.getElementById('project-records')?.scrollIntoView({behavior:'smooth'});}}><span>监工审查</span><strong>{workbench.data?.reviews.length ?? '—'}</strong><small>方案 · 检查 · 验收</small><ArrowRightOutlined/></button>
-      <button onClick={()=>gitIssue?document.getElementById('project-git-issue')?.scrollIntoView({behavior:'smooth'}):issues.length?showMonitoring():setNode('blocked')}><span>需要关注</span><strong>{count('blocked','pausing')+blockedDeliveries.length+issues.length+(gitIssue?1:0)}</strong><small>{gitIssue?gitIssueSummary:(issues[0]?.result?errorText(issues[0].result,'应用服务'):'阻塞与返修任务')}</small><ArrowRightOutlined/></button>
+      <button onClick={()=>gitIssue?document.getElementById('project-git-issue')?.scrollIntoView({behavior:'smooth'}):issues.length?showMonitoring():setNode('blocked')}><span>需要关注</span><strong>{flowRuns.blocked.length+blockedDeliveries.length+issues.length+(gitIssue?1:0)}</strong><small>{gitIssue?gitIssueSummary:(issues[0]?.result?errorText(issues[0].result,'应用服务'):'阻塞、等待回复与待核对任务')}</small><ArrowRightOutlined/></button>
       <button onClick={()=>setTab('policy')}><span>运行策略</span><strong className="summary-word">{project?.status==='active'?'自主运行':project?.status==='observing'?'仅监测':'已暂停'}</strong><small>{project?.status==='active'?'检查通过后自动推进':'自动开发与发布尚未启用'}</small><ArrowRightOutlined/></button>
     </div>
     <div className="project-live-note"><span><i/>{project?.last_probe?`最近巡检 ${time(Number(project.last_probe))}`:'尚无巡检回执'}</span><span>节点数字来自当前项目台账 · 点击节点查看证据</span></div>

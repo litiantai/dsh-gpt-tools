@@ -49,6 +49,7 @@ export const colors: Record<string, string> = {
 export const eventLabels: Record<string, string> = {
   autopilot_created: "建立研发记录",
   autopilot_transition: "研发阶段变更",
+  autopilot_requirement_watch: "需求状态定期检查",
   autopilot_token_limit_changed: "调整今日开发 Token 上限",
   autopilot_monitor_error: "巡检异常",
   autopilot_daily_error: "日报调度异常",
