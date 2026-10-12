@@ -145,3 +145,63 @@ class ResourceTests(unittest.TestCase):
             self.scheduler.start_call('runs',self.fresh(),self.product,'plan',['fake'])
         launch.assert_not_called()
         self.assertEqual(self.fresh()['revisions'],3)
+
+    def test_investigation_and_discovery_do_not_starve_plan_review(self):
+        self.run=self.ledger.update('runs',self.run['id'],self.run['version'],{},'plan_review')
+        self.ledger.create('requirements',{'product_id':self.product['id'], 'classification':'investigation',
+            'in_scope':True,'call':{'id':'investigate','action':'investigate'}},'investigating')
+        self.product=self.ledger.update('products',self.product['id'],self.product['version'],
+            {'call':{'id':'discover','action':'discover'}})
+        self.assertEqual(RunProgress(self.ledger).current(self.fresh())['kind'],'dispatch')
+        with ExitStack() as stack:
+            for module,name in [('onboarding','tick'),('notifications','tick'),('usage','collect'),
+                ('intelligence_scheduler','tick'),('coordinator','tick'),('test_chain_worker','tick'),
+                ('project_groups','tick'),('inspection_routes','tick'),('delivery','tick'),('daily','tick'),
+                ('progress','recover_review')]:
+                stack.enter_context(patch('autopilot.'+module+'.'+name,return_value=False))
+            stack.enter_context(patch.object(self.scheduler,'monitor'))
+            stack.enter_context(patch.object(self.scheduler,'call_result',return_value=None))
+            review=stack.enter_context(patch.object(self.scheduler,'review'))
+            self.scheduler.tick()
+            review.assert_called_once()
+            self.assertEqual(review.call_args.args[0]['id'],self.run['id'])
+
+    def test_background_readers_preserve_bidirectional_shared_write_lock(self):
+        writer=self.owner('developing',workspace=str(self.root))
+        req=self.ledger.create('requirements',{'product_id':self.product['id']},'investigating')
+        slots=ResourceSlots(self.ledger)
+        self.assertEqual(slots.background_blocker('requirements',req,self.product,'investigate')['blocking_id'],writer['id'])
+        self.ledger.update('runs',writer['id'],writer['version'],{'call':None},'completed')
+        req=self.ledger.update('requirements',req['id'],req['version'],{'call':{'id':'read','action':'investigate'}})
+        self.assertIsNone(ResourceSlots(self.ledger).blocker(self.fresh() | {'status':'plan_review'}))
+        self.assertEqual(ResourceSlots(self.ledger).blocker(self.fresh() | {'status':'developing'})['blocking_id'],req['id'])
+        product=self.product | {'test_execution':'local'}
+        self.assertIsNone(ResourceSlots(self.ledger).background_blocker('products',product,product,'discover'))
+
+    def test_watch_lane_dispatches_beside_chat_but_serializes_own_calls(self):
+        self.ledger.create('chat_messages',{'product_id':self.product['id'],'call':{'id':'chat'}},'running')
+        one=self.ledger.create('coordination_decisions',{'product_id':self.product['id']},'queued')
+        two=self.ledger.create('coordination_decisions',{'product_id':self.product['id']},'queued')
+        with patch('autopilot.scheduler.subprocess.Popen',return_value=Mock(pid=123)) as launch:
+            self.scheduler.start_call('coordination_decisions',one,self.product,'coordinate',['fake'])
+            Scheduler(self.store).start_call('coordination_decisions',two,self.product,'coordinate',['fake'])
+            self.assertEqual(launch.call_count,1)
+        self.assertIsNone(self.ledger.get('coordination_decisions',two['id']).get('call'))
+
+    def test_known_daily_acceptance_shares_validation_slot_not_global_scheduler(self):
+        target=self.ledger.create('runs',{'product_id':self.product['id'],
+            'workspace':str(self.root/'accepted-candidate')},'accepted')
+        report=self.ledger.create('daily_reports',{'product_id':self.product['id'],
+            'run_ids':[target['id']],'audits':[], 'call':{'id':'audit','action':'daily_acceptance'}},'running')
+        slots=ResourceSlots(self.ledger)
+        self.assertIsNone(slots.blocker(self.fresh() | {'status':'plan_review'}))
+        self.assertIsNone(slots.blocker(self.fresh() | {'status':'developing'}))
+        self.assertEqual(slots.blocker(self.fresh() | {'status':'verifying'})['blocking_id'],report['id'])
+        self.assertEqual(slots.blocker(self.fresh() | {'status':'developing','workspace':target['workspace']})['blocking_id'],report['id'])
+
+    def test_historical_rejected_review_does_not_reserve_exclusive_resources(self):
+        owner=self.owner('blocked',call=None,review_id='old-review')
+        with patch.object(self.store,'get',return_value={'status':'completed'}):
+            self.assertIsNone(ResourceSlots(self.ledger).blocker(self.fresh() | {'status':'planning'}))
+        with patch.object(self.store,'get',return_value={'status':'running'}):
+            self.assertEqual(ResourceSlots(self.ledger).blocker(self.fresh() | {'status':'planning'})['blocking_id'],owner['id'])

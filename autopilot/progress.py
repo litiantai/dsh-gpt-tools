@@ -91,7 +91,10 @@ def investigate(scheduler,only_active=False):
         if item.get('next_investigation',0)>time.time():
             continue
         product=ledger.get('products',item['product_id'])
-        if product['status']!='active' or product.get('call') and product['call'].get('action')=='discover':
+        if product['status']!='active':
+            continue
+        from .resources import ResourceSlots
+        if ResourceSlots(ledger).background_blocker('requirements',item,product,'investigate'):
             continue
         # 每个调查轮次消耗一个当日需求名额；同一需求随后转开发不重复扣名额。
         if scheduler.wait_for_off_peak('requirements',item,product,'investigate'):

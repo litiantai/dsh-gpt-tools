@@ -10,6 +10,9 @@ from review_core import Conflict, ACTIVE
 from .store import DEFAULTS, TERMINAL, redact
 
 AUXILIARY = ('chat_messages', 'research_jobs', 'agent_messages', 'coordination_decisions', 'test_chains', 'test_chain_runs', 'inspection_plans', 'requirement_groups')
+AUXILIARY_LANES = {kind:kind for kind in AUXILIARY}
+AUXILIARY_LANES.update(research_jobs='intelligence', chat_messages='intelligence')
+
 PHASES = ('planning', 'developing', 'verifying', 'plan_review', 'acceptance_review')
 ACTIONS = ('wait', 'repair', 'verify', 'assist', 'reprioritize', 'human')
 WATCH_SECONDS = 300
@@ -46,8 +49,11 @@ def instance(ledger, product, db):
             'fingerprint': '', 'force': False}, 'idle', ident=ident, db=db)
 
 
-def auxiliary_busy(ledger, pid):
-    return any(item.get('call') for kind in AUXILIARY for item in ledger.scoped(kind, pid))
+def auxiliary_busy(ledger, pid, requested=None):
+    """每类后台工作容量一；Watch 不再等待无关聊天或测试链。"""
+    return any(item.get('call') for kind in AUXILIARY
+               if requested is None or AUXILIARY_LANES[kind] == AUXILIARY_LANES[requested]
+               for item in ledger.scoped(kind, pid))
 
 
 def protected(run, delegated=False):
@@ -124,7 +130,9 @@ def snapshot(ledger, product):
     resources.update(review_used=review_usage.get('count', 0) if review_usage.get('day') == usage['day'] else 0,
                      review_limit=ledger.store.settings()['max_per_day'],
                      auxiliary_capacity=1,
-                     auxiliary_in_use=auxiliary_busy(ledger, product['id']))
+                     auxiliary_in_use=auxiliary_busy(ledger, product['id'], 'coordination_decisions'),
+                     auxiliary_lanes={lane:{'capacity':1,'in_use':auxiliary_busy(ledger,product['id'],kind)}
+                        for kind,lane in AUXILIARY_LANES.items()})
     from .resources import ResourceSlots
     resources['stage_resources'] = ResourceSlots(ledger).snapshot()
     requirements = requirement_states(ledger, product['id'])
@@ -505,8 +513,8 @@ def tick(scheduler, now=None):
             reason = '异常已核对，等待人工、协作回复或已批准资源；详见需求检查' if watch['abnormal_count'] else '没有需要协调的任务'
         elif not selected(product).get('model'):
             reason = '请配置协调或验收模型'
-        elif auxiliary_busy(ledger, pid):
-            reason = '等待项目辅助执行槽'
+        elif auxiliary_busy(ledger, pid, 'coordination_decisions'):
+            reason = '等待 Watch 协调执行槽'
         if reason:
             scheduler.change('coordinators', state, {'reason': reason}, 'idle')
             continue
@@ -528,7 +536,7 @@ def tick(scheduler, now=None):
     for decision in ledger.list('coordination_decisions'):
         if decision['status'] == 'queued' and not decision.get('call'):
             product = ledger.get('products', decision['product_id'])
-            if enabled(product) and not auxiliary_busy(ledger, product['id']):
+            if enabled(product) and not auxiliary_busy(ledger, product['id'], 'coordination_decisions'):
                 launch(scheduler, decision, product)
 
 

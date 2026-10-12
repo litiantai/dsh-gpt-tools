@@ -149,8 +149,8 @@ def tick(scheduler):
     # 只读归因/复盘可与研发并行；实际复验仍保护候选目录和测试实例。
     if action == 'daily_acceptance':
         from .resources import ResourceSlots
-        if ResourceSlots(ledger).owners or any(p.get('call') for p in ledger.list('products')) or any(
-                r.get('call') for r in ledger.list('requirements')):
+        resources = ResourceSlots(ledger)
+        if resources.blocker(resources.daily_candidate(report)):
             return False
     scheduler.start_call('daily_reports', report, product, action, command, extra, timeout=900)
     return action not in READ_ONLY_ACTIONS

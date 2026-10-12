@@ -172,9 +172,9 @@ def tick(scheduler):
                         continue
                     if not scheduler.tokens_available(product):
                         continue
-                # A project has one auxiliary model call at a time. The primary development slot stays independent.
+                # 同类后台工作限一；Watch、协作和测试链使用独立容量。
                 from .coordinator import auxiliary_busy
-                if auxiliary_busy(ledger, pid):
+                if auxiliary_busy(ledger, pid, kind):
                     continue
                 if scheduler.wait_for_off_peak(kind,item,product,action,selected=role):
                     continue

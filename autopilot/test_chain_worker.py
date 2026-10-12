@@ -140,7 +140,7 @@ def tick(scheduler):
                 if not scheduler.tokens_available(product):
                     continue
                 from .coordinator import auxiliary_busy
-                if auxiliary_busy(ledger, product['id']):
+                if auxiliary_busy(ledger, product['id'], kind):
                     continue
                 action = 'generate' if kind == 'test_chains' else 'run'
                 command = [sys.executable, str(Path(__file__).resolve().parents[1]/'scripts/test-chain-worker.py')]

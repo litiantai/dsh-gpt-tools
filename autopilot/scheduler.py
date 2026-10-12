@@ -76,11 +76,19 @@ class Scheduler:
             return self._start_call(kind,item,product,action,command,extra,timeout)
 
     def _start_call(self,kind,item,product,action,command,extra=None,timeout=600):
+        if item.get('call'):
+            return item
         # 派发锁内再次核对占用；等待不消费 Watch 授权、额度或启动进程。
         if kind == 'runs':
             from .resources import ResourceSlots, ACTION_PHASES
             if item.get('call') or ResourceSlots(self.ledger).blocker(item | {'status':ACTION_PHASES.get(action,item['status'])}):
                 return item
+        from .resources import ResourceSlots
+        resources = ResourceSlots(self.ledger)
+        if resources.background_blocker(kind,item,product,action):
+            return item
+        if kind == 'daily_reports' and action == 'daily_acceptance' and resources.blocker(resources.daily_candidate(item)):
+            return item
         # Delivery checks before allocating its review round; other calls enter here.
         if kind != 'deliveries' and self.wait_for_off_peak(kind,item,product,action):
             return self.ledger.get(kind,item['id'])
@@ -92,7 +100,7 @@ class Scheduler:
         if product.get('automation_disabled'):
             raise Conflict('项目已停用自动运行')
         from .coordinator import AUXILIARY, auxiliary_busy
-        if kind in AUXILIARY and auxiliary_busy(self.ledger, product['id']):
+        if kind in AUXILIARY and auxiliary_busy(self.ledger, product['id'], kind):
             return item
         if (self.root/'update-drain.json').exists():
             raise Conflict('平台更新正在等待执行器退出，暂停新调用')
@@ -232,9 +240,8 @@ class Scheduler:
         except (OSError, ValueError, KeyError, Conflict) as exc:
             self.store.event('autopilot_delivery_error', detail={'reason': str(exc)})
         from .daily import tick as daily_tick
-        daily_exclusive=False
         try:
-            daily_exclusive=daily_tick(self)
+            daily_tick(self)
         except (OSError,ValueError,KeyError,Conflict) as exc:
             self.store.event('autopilot_daily_error',detail={'reason':str(exc)})
         for product in self.ledger.list('products'):
@@ -242,7 +249,7 @@ class Scheduler:
                 continue
             if product['status'] in ('active','observing'):
                 try:
-                    self.monitor(product,allow_discovery=not daily_exclusive)
+                    self.monitor(product)
                 except (OSError,ValueError,KeyError,Conflict) as exc:
                     self.store.event('autopilot_monitor_error',detail={'product_id':product['id'],'reason':str(exc)})
             if product['status']=='active' and not product.get('evaluation_id'):
@@ -252,15 +259,12 @@ class Scheduler:
                             self.control.queue(requirement)
                         except Conflict:
                             pass
-        if daily_exclusive:
-            return
         for release in reversed(self.ledger.list('releases')):
             if release['status']=='rollback_pending' and not self.ledger.get('products',release['product_id']).get('automation_disabled'):
                 self.rollback(release)
                 return
         from .progress import investigate
-        if investigate(self,only_active=True):
-            return
+        investigate(self,only_active=True)
         runs=[r for r in reversed(self.ledger.list('runs')) if r['status'] in ('cancelling','pausing') or not self.ledger.get('products',r['product_id']).get('automation_disabled')]
         from .coordinator import runnable
         from .project_groups import runnable as group_runnable
@@ -272,26 +276,21 @@ class Scheduler:
             if not runnable(self, run) or not group_runnable(self.ledger, run):
                 continue
             product=self.ledger.get('products',run['product_id'])
-            if (product.get('call') or {}).get('action')=='discover':
-                continue
             if not run.get('call') and not run.get('review_id') and ResourceSlots(self.ledger).blocker(run):
                 continue
             self.advance(run)
         from .coordinator import resume_pending
-        resumed = resume_pending(self)
+        resume_pending(self)
         from .progress import recover_review, investigate
         recover_review(self)
         # 插队改变空闲资源的候选顺序，不抢占在途调用。
         for run in sorted(runs,key=lambda r:(0,-r.get('queue_first_at',r['created'])) if r.get('queue_first') else (1,-r.get('coordination_priority',0),r['created'])):
-            if not resumed and run['status']=='queued' and group_runnable(self.ledger,run):
+            if run['status']=='queued' and group_runnable(self.ledger,run):
                 product=self.ledger.get('products',run['product_id'])
-                if (product['status']=='active' and (product.get('call') or {}).get('action')!='discover'
-                        and not ResourceSlots(self.ledger).blocker(run)):
+                if product['status']=='active' and not ResourceSlots(self.ledger).blocker(run):
                     self.advance(run)
                     break
-        owners = ResourceSlots(self.ledger).owners
-        if not owners or all(r['status']=='awaiting_release' and not r.get('call') and not r.get('review_id') for r in owners):
-            investigate(self)
+        investigate(self)
 
     def monitor(self,product,allow_discovery=True):
         policy=DEFAULTS | product.get('policy',{})
@@ -346,7 +345,8 @@ class Scheduler:
             self.start_call('products',product,product,'inspect',product['adapter'],timeout=600)
         elif allow_discovery and product['status']=='active' and product.get('executor') and not product.get('nightly_attribution'):
             signals=[s for s in self.ledger.list('signals') if s['product_id']==product['id'] and s['status']=='pending']
-            executing=any(r['product_id']==product['id'] and r.get('call') for r in self.ledger.list('runs'))
+            from .resources import ResourceSlots
+            executing=ResourceSlots(self.ledger).background_blocker('products',product,product,'discover')
             retry_due=time.time()-product.get('last_discover',0)>=policy['inspection_seconds']
             if signals and retry_due and not executing and not self.wait_for_off_peak('products',product,product,'discover') and self.ledger.budget(product['id'],'discovery',policy['discovery_per_day']):
                 self.start_call('products',product,product,'discover',product['executor'],{'signals':signals[:20]},timeout=300)
@@ -742,7 +742,7 @@ class Scheduler:
                         return
                 return self.change('runs',run,{'review_id':None, **({'plan_approved':True,'repair_plan_required':False,'repair_plan_review_id':review['id']} if expected=='approve' else {})} | ({'accepted_at':time.time(),'acceptance_review_id':review['id']} if expected=='done' else {}),'developing' if expected=='approve' else 'awaiting_release')
             if result.get('decision')=='revise':
-                return self.revise(run,product,result.get('instruction','审查要求修改'))
+                return self.revise(self.change('runs',run,{'review_id':None,'review_packet':None}),product,result.get('instruction','审查要求修改'))
             return self.block(self.change('runs',run,{'review_id':None}),result.get('summary','审查未通过'))
         from reviewers import snapshot as reviewer_snapshot
         selected = reviewer_snapshot(scoped.settings(),'plan' if run['status']=='plan_review' else 'acceptance')

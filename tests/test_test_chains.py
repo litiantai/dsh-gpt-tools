@@ -199,16 +199,16 @@ class TestChainsTests(unittest.TestCase):
         self.assertEqual(requirement['status'],'queued');self.assertTrue(requirement['ui_acceptance'])
         self.assertEqual(len([r for r in self.ledger.list('runs') if r.get('requirement_id')==requirement['id']]),1)
 
-    def test_shared_auxiliary_slot_prevents_parallel_model_dispatch(self):
+    def test_same_generation_lane_prevents_duplicate_dispatch(self):
         from autopilot.scheduler import Scheduler
         from autopilot.test_chain_worker import tick
         from autopilot.coordinator import auxiliary_busy
         other=self.ledger.create('requirements',{'product_id':self.product['id'],'title':'另一个','acceptance':['另一结果']},'queued')
         enqueue_generation(self.ledger,self.product,other)
-        self.ledger.create('chat_messages',{'product_id':self.product['id'],'call':{'id':'busy'}},'running')
+        self.ledger.create('test_chains',{'product_id':self.product['id'],'call':{'id':'busy'}},'running')
         self.assertTrue(auxiliary_busy(self.ledger,self.product['id']))
         scheduler=Scheduler(self.ledger.store)
-        with patch.object(scheduler,'start_call') as start:
+        with patch.object(scheduler,'call_result',return_value=None),patch.object(scheduler,'start_call') as start:
             tick(scheduler);start.assert_not_called()
 
     def test_generation_receipt_recovered_once_after_restart(self):

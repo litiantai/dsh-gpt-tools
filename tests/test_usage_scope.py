@@ -55,6 +55,9 @@ class UsageScopeTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM auto_token_sources').fetchone()[0], 13)
 
     def test_discovery_and_investigation_ignore_exhausted_token_quota(self):
+        # 隔离调查与验证目录，单独核对额度限制，避免先命中共享源码保护。
+        self.product = self.ledger.update('products', self.product['id'], self.product['version'],
+            {'inspection_workspace': str(self.root / 'inspection')})
         register(self.ledger, self.product['id'], self.trace('plan'), action='plan')
         collect(self.ledger)
         self.assertFalse(self.scheduler.tokens_available(self.product))
@@ -71,7 +74,8 @@ class UsageScopeTests(unittest.TestCase):
         req = self.ledger.get('requirements', req['id'])
         self.assertEqual(req['status'], 'investigating')
         self.assertEqual(req['call']['action'], 'investigate')
-        run = self.ledger.create('runs', {'product_id': self.product['id']}, 'verifying')
+        run = self.ledger.create('runs', {'product_id': self.product['id'],
+            'workspace': str(self.root / 'verification')}, 'verifying')
         with patch('autopilot.scheduler.subprocess.Popen') as launch:
             self.scheduler.start_call('runs', run, self.product, 'verify', ['fake'])
             launch.assert_not_called()

@@ -326,18 +326,18 @@ class CoordinatorTests(unittest.TestCase):
             c.tick(Scheduler(self.store),now=200)
         self.assertEqual(len(self.ledger.scoped('coordination_decisions',self.product['id'])),1)
 
-    def test_existing_auxiliary_call_defers_coordinate(self):
+    def test_chat_does_not_defer_watch_coordinate(self):
         self.ledger.create('chat_messages',{'product_id':self.product['id'],'call':{'id':'busy'}},'running')
         with patch('autopilot.coordinator.launch') as call:
             c.tick(self.scheduler,now=100)
-        call.assert_not_called()
+        self.assertTrue(call.called)
 
     def test_forced_watch_is_consumed_once_when_resources_are_busy(self):
-        self.ledger.create('chat_messages',{'product_id':self.product['id'],'call':{'id':'busy'}},'running')
+        self.ledger.create('coordination_decisions',{'product_id':self.product['id'],'call':{'id':'busy'}},'running')
         with self.store.transaction() as db:
             state=c.instance(self.ledger,self.product,db)
             self.ledger.update('coordinators',state['id'],state['version'],{'last_check':100,'force':True},db=db)
-        with patch('autopilot.coordinator.launch') as launch:
+        with patch.object(self.scheduler,'call_result',return_value=None), patch('autopilot.coordinator.launch') as launch:
             c.tick(self.scheduler,now=101)
             c.tick(self.scheduler,now=102)
         launch.assert_not_called()

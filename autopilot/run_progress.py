@@ -87,17 +87,7 @@ class RunProgress:
         from .project_groups import runnable
         if not runnable(self.ledger, run):
             return result('dependency','等待关联项目完成前置设计或方案评审')
-        # 调查仍由调度器串行处理；日报实际复验由统一资源判断处理。
-        for kind, title in (('requirements','需求调查'),):
-            for item in reversed(self.ledger.list(kind)):
-                if self.products.get(item['product_id'], {}).get('automation_disabled'):
-                    continue
-                if item.get('call') and item['status'] in ('running','investigating'):
-                    return result('main_slot',f'等待主执行槽：{title}“{item.get("title") or item["id"]}”正在执行',
-                                  blocking_id=item['id'],blocking_kind=kind)
         blocker = self.resources.blocker(run)
         if blocker:
             return result(blocker['kind'],blocker['reason'], **{k:v for k,v in blocker.items() if k not in ('kind','reason')})
-        if (product.get('call') or {}).get('action') == 'discover':
-            return result('discovery','等待当前项目需求发现调用完成')
         return result('dispatch','条件已满足，等待调度器派发'+('新的技术修复方案' if pending.get('action')=='repair' else '下一阶段'))
