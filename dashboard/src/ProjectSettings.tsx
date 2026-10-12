@@ -28,18 +28,21 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
   const [dirty,setDirty]=useState(false);
   const [saveError,setSaveError]=useState('');
   const loadedVersion=useRef(project?.version);
+  const initialValues=useRef<Record<string,unknown>>({});
   const baseConfig=useRef<Record<string,unknown>>({});
   const {message}=App.useApp();
   const automation=useData<{tokens_used:number;code_delivery_tokens_used?:number;tasks_used:number;tokens_limit:number;tasks_limit:number;queued:number;next_inspection:number;deepseek_schedule?:{enabled:boolean;peak:boolean;next_allowed_at:number|null;holiday_calendar_known:boolean;holiday_calendar_year:number}}>(project?`/products/${project.id}/automation`:'/autopilot/workbench-empty');
+  const projects=useData<{id:string;name:string}[]>('/products');
   const runs=useData<{id:string;status:string}[]>('/runs');
   useEffect(()=>{
     if(project && !dirty) {
       const roles=project.agents as Record<string,unknown> | undefined;
-      form.setFieldsValue({runtime_recovery:project.runtime_recovery || {enabled:false},goal:project.goal,agents:project.agents,policy:{tokens_per_day:0,deepseek_off_peak_only:true,...project.policy as object},
+      form.setFieldsValue({related_projects:project.related_projects||[],project_role:project.project_role||'auto',runtime_recovery:project.runtime_recovery || {enabled:false},goal:project.goal,agents:{inspection_design:{provider:'codex',model:'gpt-6.1-sol'},...project.agents as object},policy:{tokens_per_day:0,deepseek_off_peak_only:true,...project.policy as object},
         git:project.git || {url:'',base_branch:'master',enabled:false},
         code_review:{reviewer:roles?.acceptance,fixer:roles?.implementation,max_revisions:0,...project.code_review as object}});
+      initialValues.current=structuredClone(form.getFieldsValue(true));
       loadedVersion.current=project.version;
-      baseConfig.current=structuredClone({runtime_recovery:project.runtime_recovery ?? null,goal:project.goal ?? null,agents:project.agents ?? null,policy:project.policy ?? null,git:project.git ?? null,code_review:project.code_review ?? null});
+      baseConfig.current=structuredClone({related_projects:project.related_projects??null,project_role:project.project_role??null,runtime_recovery:project.runtime_recovery ?? null,goal:project.goal ?? null,agents:project.agents ?? null,policy:project.policy ?? null,git:project.git ?? null,code_review:project.code_review ?? null});
       setSaveError('');
     }
   },[project?.version,project?.id,dirty,form]);
@@ -51,7 +54,8 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
   const save=async()=>{
     try {
       await form.validateFields();
-      const config=form.getFieldsValue(true);
+      const values=form.getFieldsValue(true);
+      const config=Object.fromEntries(Object.entries(values).filter(([key,value])=>JSON.stringify(value)!==JSON.stringify(initialValues.current[key]))) as typeof values;
       if(!config.git?.url?.trim() && !config.git?.enabled)delete config.git;
       if(!config.code_review?.reviewer?.model && !config.code_review?.fixer?.model)delete config.code_review;
       setBusy(true);
@@ -82,6 +86,18 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
     <Form form={form} layout="vertical" disabled={busy} onValuesChange={()=>setDirty(true)}>
       <Tabs activeKey={tab} onChange={onTabChange} items={[
         {key:'coordination_settings',label:'项目协调',children:<ProjectCoordinator pid={project.id} settings/>},
+        {key:'linked_projects',label:'关联项目',forceRender:true,children:<>
+          <p>关联项目可共同完成需求。先设计前端 UI，再设计接口；各项目保留独立 PR，联合验收后协调交付。</p>
+          <Form.Item name="project_role" label="当前项目职责"><Select disabled={hasRunningTasks} options={['auto','frontend','backend','fullstack','other'].map(value=>({value,label:({auto:'自动识别',frontend:'前端',backend:'后端',fullstack:'前后端',other:'其他'} as Record<string,string>)[value]}))}/></Form.Item>
+          <Form.List name="related_projects">{(fields,{add,remove})=><>
+            {fields.map(field=><Space key={field.key} align="baseline">
+              <Form.Item name={[field.name,'project_id']} rules={[{required:true,message:'请选择项目'}]}><Select aria-label="关联项目" disabled={hasRunningTasks} style={{width:220}} options={projects.data?.filter(p=>p.id!==project.id).map(p=>({value:p.id,label:p.name}))}/></Form.Item>
+              <Form.Item name={[field.name,'role']} rules={[{required:true,message:'请选择职责'}]}><Select aria-label="项目职责" disabled={hasRunningTasks} style={{width:140}} options={['frontend','backend','fullstack','other'].map(value=>({value,label:({frontend:'前端',backend:'后端',fullstack:'前后端',other:'其他'} as Record<string,string>)[value]}))}/></Form.Item>
+              <Button disabled={hasRunningTasks} onClick={()=>{remove(field.name);setDirty(true);}}>移除</Button>
+            </Space>)}
+            <Button disabled={hasRunningTasks} onClick={()=>{add({role:'backend'});setDirty(true);}}>添加关联项目</Button>
+          </>}</Form.List>
+        </>},
         {key:'research',label:'竞品分析配置',children:null},
         {key:'git',label:'Git 与代码评审',forceRender:true,children:<>
           <Alert type="info" showIcon message="合入 master 才标记已上线" description="release 每天从 master 创建。feat → release MR 必须先通过 Code Review；23:30 封板并停止新评审，统一验证后再合入 master。合入后等待主实例空闲更新，再在 master 实例进行最终复验。"/>
@@ -103,12 +119,12 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
         {key:'roles',label:'模型分工',forceRender:true,children:<>
           <Alert type="info" showIcon message="按角色选择执行器与模型" description="验证先执行项目的必需检查，再由独立模型核验；配置只影响后续调用，不自动替换不可用的模型。"/>
           <ConfigProvider componentDisabled={busy || hasRunningTasks}><div className="project-settings-grid">{[
-            ['discovery','需求发现','codex'],['implementation','方案与实现','harness'],['verification','独立验证','codex'],['acceptance','方案审查与业务验收','codex'],
+            ['inspection_design','巡检路线设计','codex'],['discovery','需求发现','codex'],['implementation','方案与实现','harness'],['verification','独立验证','codex'],['acceptance','方案审查与业务验收','codex'],
           ].map(([key,label])=><Form.Item key={key} name={['agents',key]} label={label} rules={[{validator:(_,value)=>value?.provider && value?.model?.trim()?Promise.resolve():Promise.reject(new Error('请选择执行器和模型'))}]}><ReviewerSelect connection={()=>({})}/></Form.Item>)}</div></ConfigProvider>
         </>},
         {key:'policy',label:'运行策略',forceRender:true,children:<>
-          <Form.Item name={['policy','deepseek_off_peak_only']} label="DeepSeek 仅空闲时段运行" valuePropName="checked" extra="北京时间周一至周五（不含中国法定节假日）09:00–12:00、14:00–18:00 为高峰。开启后，本项目 DeepSeek 官方调用在高峰期排队，空闲时段自动继续；周末及节假日全天放行。已启动的执行任务允许完成，等待不计执行超时或返修次数。"><Switch/></Form.Item>
-          {automation.data?.deepseek_schedule?.enabled && <Alert type="info" showIcon message={automation.data.deepseek_schedule.peak?'DeepSeek 当前为高峰时段':'DeepSeek 当前为空闲时段'} description={automation.data.deepseek_schedule.next_allowed_at?`新 DeepSeek 任务等待至北京时间 ${new Date(automation.data.deepseek_schedule.next_allowed_at*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})} 后自动继续；关闭开关可解除时段等待。`:'DeepSeek 任务可按队列及额度正常执行。'}/>}
+          <Form.Item name={['policy','deepseek_off_peak_only']} label="允许高峰期使用 DeepSeek" getValueProps={value=>({checked:value===false})} getValueFromEvent={checked=>!checked} extra="北京时间周一至周五（不含中国法定节假日）09:00–12:00、14:00–18:00 为高峰。关闭时，本项目 DeepSeek 官方调用在高峰期排队，空闲时段自动继续；周末及节假日全天放行。已启动的执行任务允许完成，等待不计执行超时或返修次数。"><Switch/></Form.Item>
+          {automation.data?.deepseek_schedule?.enabled && <Alert type="info" showIcon message={automation.data.deepseek_schedule.peak?'DeepSeek 当前为高峰时段':'DeepSeek 当前为空闲时段'} description={automation.data.deepseek_schedule.next_allowed_at?`新 DeepSeek 任务等待至北京时间 ${new Date(automation.data.deepseek_schedule.next_allowed_at*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})} 后自动继续；开启“允许高峰期使用 DeepSeek”可解除时段等待。`:'DeepSeek 任务可按队列及额度正常执行。'}/>}
           {automation.data?.deepseek_schedule && !automation.data.deepseek_schedule.holiday_calendar_known && <Alert type="warning" showIcon message={`${automation.data.deepseek_schedule.holiday_calendar_year} 年节假日表尚未更新`} description="暂按周一至周五的高峰时间排队，周末仍全天放行；更新日历后才能识别该年的节假日。"/>}
           <Form.Item name={['runtime_recovery','enabled']} label="应用自动恢复" valuePropName="checked" extra="开启后，正常退出应用也会自动重新启动；暂停项目后停止恢复。连续失败会延迟重试。"><Switch/></Form.Item>
           <Button disabled={busy || dirty || !(project.runtime_recovery as {enabled?:boolean} | undefined)?.enabled || project.status==='paused'} onClick={()=>void mode('recover-runtime')}>立即尝试恢复</Button>

@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Alert, Button, Card, Descriptions, Empty, Image, Modal, Space, Table, Tabs, Tag } from 'antd';
 import { RecordValue, ResultDetails, RawRecord } from './RecordDetails';
 import RecordInspector from './RecordInspector';
+import InspectionRoutes from './InspectionRoutes';
 import DailyReports from './DailyReports';
 import { api } from './api';
 import { time, useData } from './components';
@@ -32,7 +33,7 @@ export default function ProjectEvidence({productId,tab,onTabChange}:{productId?:
     try {setImage((await api<{data_url:string}>(`/evidence/${e.id}/screenshot`)).data_url);}
     catch(err){setError(serializeError(err));}
   };
-  const detail=(entry:Evidence)=><Card key={entry.id} size="small" className="evidence-step" title={<Space><Tag color={color(entry.status)}>{statusNames[entry.status] || entry.status}</Tag>{phases[entry.title] || entry.title}</Space>} extra={time(entry.created)}>
+  const detail=(entry:Evidence)=><Card key={entry.id} size="small" className="evidence-step" title={<Space><Tag color={color(entry.status)}>{statusNames[entry.status] || entry.status}</Tag>{phases[entry.title] || entry.title}{!!(entry.details as {phase?:string})?.phase && <Tag>{({before:'操作前',after:'操作后',settled:'结果就绪',timeout:'等待超时',response:'接口响应',interrupted:'执行中断'} as Record<string,string>)[(entry.details as {phase:string}).phase] || (entry.details as {phase:string}).phase}</Tag>}</Space>} extra={time(entry.created)}>
     <Descriptions size="small" column={1} items={[
       ...['action','expected','actual','judgement'].filter(k=>entry[k as keyof Evidence]).map(k=>({key:k,label:({action:'巡查操作',expected:'预期结果',actual:'实际结果',judgement:'判断依据'} as Record<string,string>)[k],children:<RecordValue value={entry[k as keyof Evidence]}/>})),
       ...(entry.provider?[{key:'actor',label:'执行角色',children:`${entry.provider} · ${entry.model || '继承配置'}`}]:[]),
@@ -43,9 +44,12 @@ export default function ProjectEvidence({productId,tab,onTabChange}:{productId?:
   return <>
     {(error || inspections.error || evidence.error || evaluations.error) && <Alert type="error" message={<ErrorNotice value={error || inspections.error || evidence.error || evaluations.error}/>}/>}
     <Tabs activeKey={tab} onChange={onTabChange} items={[
+      {key:'inspection_routes',label:'巡检路线',children:productId?<InspectionRoutes pid={productId}/>:null},
       {key:'daily',label:'日报与复盘',children:<DailyReports productId={productId}/>},
       {key:'inspections',label:`巡查记录 (${list.length})`,children:<Table rowKey="id" dataSource={list} pagination={{pageSize:10}} scroll={{x:700}} columns={[
         {title:'巡查场景',dataIndex:'title',render:(title:string,row:Evidence)=><Button type="link" onClick={()=>setSelected(row)}>{title}</Button>},
+        {title:'业务线',dataIndex:'business_line',filters:[...new Set(list.map(r=>String(r.business_line||'历史巡检')))].map(value=>({text:value,value})),onFilter:(value,row)=>String(row.business_line||'历史巡检')===value},
+        {title:'路线',dataIndex:'route_id',filters:[...new Set(list.flatMap(r=>r.route_id?[String(r.route_id)]:[]))].map(value=>({text:list.find(r=>r.route_id===value)?.title||value,value})),onFilter:(value,row)=>row.route_id===value,render:(_,r)=>r.route_id?r.title:'历史巡检'},
         {title:'巡查方式',dataIndex:'method'},
         {title:'执行环境',dataIndex:'environment',render:(s:string)=>s==='isolated'?'隔离测试环境':s},
         {title:'结果',dataIndex:'status',render:(s:string)=><Tag color={color(s)}>{statusNames[s] || s}</Tag>},

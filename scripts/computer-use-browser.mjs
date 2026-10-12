@@ -1,7 +1,9 @@
 /** 隔离浏览器执行器：仅接受受约束的界面动作，不执行模型生成代码。 */
 import { chromium } from '@playwright/test';
 import { createInterface } from 'node:readline';
-let browser, context, page, origin, allowed;
+let browser, context, page, origin, allowed, readOnly = false, readonlyPaths = [];
+let errors = [], fullPage = false;
+function logError(value) { errors.push(String(value).slice(0,2000)); if(errors.length>100)errors.shift(); }
 const viewport = { width: 1440, height: 1000 };
 function permitted(url) { try { return allowed.has(new URL(url).origin); } catch { return false; } }
 function number(value, max) { if (!Number.isFinite(value) || value < 0 || value >= max) throw Error('坐标无效'); return value; }
@@ -9,30 +11,74 @@ async function command(input) {
   if (input.command === 'open') {
     origin = new URL(input.origin).origin;
     if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(origin)) throw Error('必须使用分支本机实例');
+    fullPage = input.full_page === true; readOnly = input.read_only === true; readonlyPaths = input.readonly_paths || []; errors = [];
     allowed = new Set([origin, ...(input.allowed_origins || []).map(x => new URL(x).origin)]);
     browser = await chromium.launch({ headless: true });
     context = await browser.newContext({ viewport, serviceWorkers: 'block', acceptDownloads: false,
       ...(input.storage_state ? { storageState: input.storage_state } : {}) });
-    await context.route('**/*', route => permitted(route.request().url()) ? route.continue() : route.abort('blockedbyclient'));
+    await context.route('**/*', route => {
+      const request = route.request(); const url = new URL(request.url());
+      const safe = !readOnly || (['GET','HEAD'].includes(request.method()) &&
+        (!['fetch','xhr'].includes(request.resourceType()) || readonlyPaths.includes(url.pathname + url.search)));
+      return permitted(url.href) && safe ? route.continue() : route.abort('blockedbyclient');
+    });
     await context.routeWebSocket('**/*', socket => {
       const url = socket.url().replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
-      if (permitted(url)) socket.connectToServer(); else socket.close();
+      if (!readOnly && permitted(url)) socket.connectToServer(); else socket.close();
     });
     context.on('page', popup => { if (page && popup !== page) popup.close().catch(() => {}); });
     page = await context.newPage();
+    page.on('pageerror',error=>logError(error.message));
+    page.on('console',message=>{if(message.type()==='error')logError(message.text());});
+    page.on('requestfailed',request=>logError(request.url()+': '+request.failure()?.errorText));
     page.on('dialog', dialog => dialog.dismiss());
     page.setDefaultTimeout(10000);
-    await page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const entry=new URL(input.entry_url || origin);
+    if (entry.origin!==origin || entry.username || entry.password) throw Error('登录入口超出实例范围');
+    await page.goto(entry.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
     return { viewport };
   }
   if (input.command === 'close') { await browser?.close(); return { closed: true }; }
   if (!page || page.isClosed()) throw Error('浏览器会话丢失');
   if (input.command === 'screenshot') {
     if (!permitted(page.url())) throw Error('页面超出测试访问范围');
-    await page.screenshot({ path: input.path });
-    return { url: page.url(), title: await page.title(), viewport };
+    await page.screenshot({ path: input.path, fullPage });
+    return { url: page.url(), title: await page.title(), viewport, text: (await page.locator('body').innerText()).slice(-12000), errors };
+  }
+  if (input.command === 'inspect_api') {
+    const url = new URL(input.path, origin);
+    if (url.origin !== origin || (readOnly && !readonlyPaths.includes(url.pathname + url.search))) throw Error('接口不在只读范围');
+    const method=input.method || 'GET';
+    if (!['GET','POST','PUT','PATCH','DELETE'].includes(method) || (readOnly && method!=='GET')) throw Error('主实例禁止接口写入');
+    const response = await context.request.fetch(url.href, {method,data:input.body?JSON.parse(input.body):undefined,maxRedirects:0,timeout:(input.step?.wait_seconds || 45)*1000});
+    return {ok:response.ok(), text:(await response.text()).slice(0,30000), status:response.status()};
+  }
+  if (input.command === 'inspect_wait') {
+    const step=input.step; let settled=true; const deadline=Date.now()+(step.wait_seconds || 45)*1000;
+    try {
+      if (step.wait_selector) await page.locator(step.wait_selector).waitFor({state:'visible',timeout:Math.max(1,deadline-Date.now())});
+      if (step.wait_text) await page.getByText(step.wait_text,{exact:false}).first().waitFor({state:'visible',timeout:Math.max(1,deadline-Date.now())});
+    } catch { settled=false; }
+    const text=await page.locator('body').innerText();
+    return {settled,matched:!step.expected_text || text.includes(step.expected_text)};
+  }
+  if (input.command === 'inspect_action') {
+    const step=input.step;
+    if (readOnly && step.action !== 'navigate') throw Error('主实例禁止交互写入');
+    if (step.action === 'navigate') {
+      const url=new URL(step.path,origin);
+      if(url.origin!==origin || url.username || url.password) throw Error('页面超出巡检范围');
+      await page.goto(url.href,{waitUntil:'domcontentloaded'});
+    } else if (step.action === 'click') await page.locator(step.selector).click();
+    else if (step.action === 'fill') await page.locator(step.selector).fill(step.text);
+    else if (step.action === 'press') {
+      if (!/^(Enter|Tab|Escape|ArrowDown|ArrowUp|Space)$/.test(step.text)) throw Error('按键不受支持');
+      await page.locator(step.selector).press(step.text);
+    } else throw Error('未知巡检动作');
+    return {url:page.url()};
   }
   if (input.command !== 'action') throw Error('未知命令');
+  if (readOnly) throw Error('主实例只允许受控巡检动作');
   const a = input.action;
   switch (a.type) {
     case 'click': await page.mouse.click(number(a.x, viewport.width), number(a.y, viewport.height)); break;

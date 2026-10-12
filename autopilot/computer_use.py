@@ -44,7 +44,7 @@ class BrowserDriver(ComputerUseDriver):
         if not self.proc or self.proc.poll() is not None:
             raise RuntimeError('浏览器执行器已退出')
         self.proc.stdin.write(json.dumps(value) + '\n'); self.proc.stdin.flush()
-        if not select.select([self.proc.stdout], [], [], 40)[0]:
+        if not select.select([self.proc.stdout], [], [], value.get('step', {}).get('wait_seconds', 0) + 40)[0]:
             raise RuntimeError('浏览器动作超时')
         line = self.proc.stdout.readline()
         if not line:
@@ -59,7 +59,8 @@ class BrowserDriver(ComputerUseDriver):
         self.proc = subprocess.Popen(['node', str(ROOT/'scripts/computer-use-browser.mjs')], stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, stderr=self.log, text=True, bufsize=1)
         return self.send({'command':'open', 'origin':origin, 'allowed_origins':config.get('allowed_origins', []),
-                          'storage_state':config.get('storage_state')})
+                          'entry_url':config.get('entry_url'), 'storage_state':config.get('storage_state'), 'full_page':config.get('full_page',False), 'read_only':config.get('read_only',False),
+                          'readonly_paths':config.get('readonly_paths',[])})
 
     def screenshot(self, path):
         return self.send({'command':'screenshot', 'path':str(path)})

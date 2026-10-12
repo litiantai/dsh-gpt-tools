@@ -26,6 +26,15 @@ class Control:
         if len(path.strip('/').split('/')) >= 3 and path.strip('/').split('/')[0] == 'products' and path.strip('/').split('/')[2] == 'test-chains':
             from .test_chains import api
             return api(self, path)
+        if '/requirement-groups' in path or path.startswith('/requirement_groups/'):
+            from .project_groups import api
+            return api(self, path.strip('/').split('/'))
+        if len(path.strip('/').split('/')) == 3 and path.strip('/').split('/')[0]=='runs' and path.endswith('/designs'):
+            from .project_groups import current_designs
+            return current_designs(self.ledger, self.ledger.get('runs',path.strip('/').split('/')[1]))
+        if '/inspection-routes' in path:
+            from .inspection_routes import api
+            return api(self, path.strip('/').split('/'))
         if '/intelligence' in path:
             from .intelligence import get
             return get(self, path)
@@ -132,6 +141,12 @@ class Control:
         if len(path.strip('/').split('/')) >= 3 and path.strip('/').split('/')[0] == 'products' and path.strip('/').split('/')[2] == 'test-chains':
             from .test_chains import api
             return api(self, path, body)
+        if path.startswith('/requirement_groups/'):
+            from .project_groups import api
+            return api(self, path.strip('/').split('/'), body)
+        if '/inspection-routes' in path:
+            from .inspection_routes import api
+            return api(self, path.strip('/').split('/'), body)
         if '/intelligence' in path:
             from .intelligence import mutate
             return mutate(self, path, body)
@@ -370,6 +385,9 @@ class Control:
         if not isinstance(changes,dict):
             raise ValueError('项目配置必须为对象')
         current = self.ledger.get('products', ident)
+        if 'related_projects' in changes or 'project_role' in changes:
+            from .project_groups import validate_links
+            validate_links(self.ledger, current, current | changes)
         if 'git' in changes and changes['git'] != current.get('git'):
             self.validate_product({k:v for k,v in current.items()} | changes)
             from .github import GitHub
@@ -379,7 +397,7 @@ class Control:
             if 'base_config' in body:
                 base=body['base_config']
                 # Only the settings form may use content-based concurrency checks.
-                if not isinstance(base,dict) or not set(changes)<=set(base)<= {'goal','agents','policy','git','code_review','runtime_recovery'}:
+                if not isinstance(base,dict) or not set(changes)<=set(base)<= {'goal','agents','policy','git','code_review','runtime_recovery','related_projects','project_role'}:
                     raise ValueError('项目配置编辑基线无效')
                 if any(old.get(key)!=base[key] for key in changes):
                     raise Conflict('项目配置已被其他操作修改；当前草稿已保留，请核对后放弃修改以载入最新配置')
@@ -392,7 +410,7 @@ class Control:
                             if changes.get('policy',{}).get(key)!=old.get('policy',{}).get(key)} if isinstance(changes.get('policy',{}),dict) else {'invalid'}
             if 'policy' not in changes:
                 policy_changes = set()
-            limits_only=changed<= {'policy','code_review','runtime_recovery'} and policy_changes<=live_limits
+            limits_only=changed<= {'policy','code_review','runtime_recovery','related_projects','project_role'} and policy_changes<=live_limits
             staged_git = 'git' in changed and not old.get('git', {}).get('enabled') and not changes['git'].get('enabled')
             limits_only = limits_only or (staged_git and changed <= {'git','code_review','policy'} and policy_changes <= live_limits)
             if 'git' in changed and any(r['product_id']==ident and r['status'] not in ('online','cancelled') for r in self.ledger.list('deliveries')):
@@ -454,6 +472,8 @@ class Control:
             if not approved(latest):
                 raise Conflict('需求必须由用户确认后才能排队')
             product=self.ledger.get('products',latest['product_id'],db)
+            from .project_groups import create_group
+            latest=create_group(self.ledger,product,latest,db)
             evaluation=self.ledger.get('evaluations',product['evaluation_id'],db) if product.get('evaluation_id') else None
             if evaluation and len(evaluation.get('run_ids',[]))>=evaluation['target_count']:
                 raise Conflict('本次用户指定的评测任务数已满，其余需求保留待评估')
@@ -461,6 +481,7 @@ class Control:
             if settings(product)['enabled']:
                 enqueue_generation(self.ledger, product, latest, db)
             run=self.ledger.create('runs',{'product_id':latest['product_id'],'requirement_id':latest['id'],
+                 'group_id':latest.get('group_id'),'design_workflow':True,
                  'priority':latest.get('priority',2),'queue_first':latest.get('queue_first',False),
                  'queue_first_at':latest.get('queue_first_at',0),
                  'title':latest['title'],'budget_reserved':bool(latest.get('investigation_budget_reserved')),'revisions':0,'execution_seconds':0,'reason':'','receipts':[],
@@ -529,9 +550,9 @@ class Control:
         if 'agents' in config:
             from reviewers import selection
             required={'discovery':'codex','implementation':'harness','verification':'codex','acceptance':'codex'}
-            if not isinstance(config['agents'],dict) or set(config['agents'])!=set(required):
+            if not isinstance(config['agents'],dict) or not set(required)<=set(config['agents']) or set(config['agents'])-set(required)-{'inspection_design'}:
                 raise ValueError('请配置需求发现、实现、验证、验收四个角色')
-            for name,provider in required.items():
+            for name in config['agents']:
                 selected=selection(config['agents'][name])
                 if selected['provider'] not in ('codex', 'harness', 'claude'):
                     raise ValueError(f'{name} 执行器不受支持')

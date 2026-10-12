@@ -1,0 +1,132 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "blocked"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "routes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "business_line": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "preconditions": {
+            "type": "string"
+          },
+          "source_evidence": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "action": {
+                  "type": "string"
+                },
+                "expected": {
+                  "type": "string"
+                },
+                "selector": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "wait_selector": {
+                  "type": "string"
+                },
+                "wait_text": {
+                  "type": "string"
+                },
+                "expected_text": {
+                  "type": "string"
+                },
+                "wait_seconds": {
+                  "type": "integer"
+                },
+                "api_method": {
+                  "type": "string"
+                },
+                "api_body": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "action",
+                "expected",
+                "selector",
+                "path",
+                "text",
+                "wait_selector",
+                "wait_text",
+                "expected_text",
+                "wait_seconds",
+                "api_method",
+                "api_body"
+              ]
+            }
+          },
+          "requires_auth": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "business_line",
+          "environment",
+          "preconditions",
+          "source_evidence",
+          "steps",
+          "requires_auth"
+        ]
+      }
+    },
+    "coverage_gaps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "status",
+    "reason",
+    "summary",
+    "routes",
+    "coverage_gaps"
+  ]
+}

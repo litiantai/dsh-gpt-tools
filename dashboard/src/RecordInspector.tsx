@@ -1,3 +1,4 @@
+import {RunDesigns} from './ProjectGroups';
 import {CollaborationPanel, RequirementCard} from './ProjectIntelligence';
 import { ErrorNotice, errorText, serializeError } from './errors';
 import { useEffect, useState } from 'react';
@@ -118,6 +119,7 @@ export default function RecordInspector({record,kind,receipt,statusLabel}:{recor
     {query.error && <Alert type="warning" showIcon message="关联记录加载失败，当前仅展示已取得的内容" description={<ErrorNotice value={query.error}/>} action={<Button onClick={()=>void query.refetch()}>重试</Button>}/>}
     {current.kind==='runs' && <Alert type="info" message={`基础返修 ${Math.max(0,Number(selected.revisions||0)-Number(selected.extra_revisions||0))} 次 · 额外返修 ${Number(selected.extra_revisions||0)} 次 · 人工重试 ${Number(selected.manual_retry_count||0)} 次（不占返修额度） · 连续无进展 ${Number(selected.coordination_no_progress||0)} 轮`} description={String(selected.coordination_wait || selected.coordination_reason || '协调 Agent 将依据新证据判断是否需要帮助')}/>}
     <Tabs key={`${current.kind}:${String(selected.id || '')}`} activeKey={tab} onChange={setTab} items={[
+      ...(current.kind==='runs'&&selected.design_workflow?[{key:'design',label:'UI 与接口设计',children:<RunDesigns runId={String(selected.id)}/>}]:[]),
       {key:'summary',label:'概况与判断',children:<>{progress.running?<Alert type="info" showIcon message={progress.label} description="本轮执行尚未结束，等待回执。"/>:!linked && statusLabel && <p>{statusLabel}</p>}<RecordValue value={summary}/>{previous && (previous.reason || previous.result)?<details><summary>上次结果</summary><RecordValue value={previous}/></details>:null}<Space wrap>
         {['sessions','reviews'].includes(current.kind) && !!selected.id && <Link to={`/${current.kind}?id=${encodeURIComponent(String(selected.id))}`}>打开完整{current.kind==='sessions'?'会话':'审查'}</Link>}
         {current.kind!=='reviews' && [selected.review_id,selected.acceptance_review_id].filter((id,index,all)=>typeof id==='string' && all.indexOf(id)===index).map(id=><Link key={String(id)} to={`/reviews?id=${encodeURIComponent(String(id))}`}>查看关联审查 {String(id).slice(0,8)}</Link>)}

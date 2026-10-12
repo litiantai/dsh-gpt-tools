@@ -1,0 +1,12 @@
+version: 1
+role: inspection-design
+steps:
+  - id: inventory
+    title: 从源码与历史证据识别业务线和前置条件
+    kind: instruction
+  - id: routes
+    title: 设计真实操作、等待条件和业务断言
+    kind: instruction
+  - id: coverage
+    title: 核对环境边界与覆盖缺口
+    kind: instruction

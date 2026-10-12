@@ -9,7 +9,7 @@ import time
 from review_core import Conflict, ACTIVE
 from .store import DEFAULTS, TERMINAL, redact
 
-AUXILIARY = ('chat_messages', 'research_jobs', 'agent_messages', 'coordination_decisions', 'test_chains', 'test_chain_runs')
+AUXILIARY = ('chat_messages', 'research_jobs', 'agent_messages', 'coordination_decisions', 'test_chains', 'test_chain_runs', 'inspection_plans', 'requirement_groups')
 PHASES = ('planning', 'developing', 'verifying', 'plan_review', 'acceptance_review')
 ACTIONS = ('wait', 'repair', 'verify', 'assist', 'reprioritize', 'human')
 

@@ -26,18 +26,23 @@ function More({query}:{query:{hasNextPage:boolean;isFetchingNextPage:boolean;fet
 }
 
 export function IntelligenceSettings({pid,research=false}:{pid:string;research?:boolean}) {
-  type Config={enabled?:boolean;research_enabled?:boolean;collaboration_enabled?:boolean;chat?:unknown;research?:unknown};
+  type Config={enabled?:boolean;research_enabled?:boolean;collaboration_enabled?:boolean;chat?:unknown;research?:unknown;competitor_names?:string[];comparison_focus?:string;analysis_goal?:string};
   const query=useQuery<{config:Config;version:number;capabilities:Record<string,{reason:string}>}>({queryKey:['intelligence-settings',pid],queryFn:()=>api(`${base(pid)}/settings`),retry:false});
   const [form]=Form.useForm();const [dirty,setDirty]=useState(false),[busy,setBusy]=useState(false);const {message}=App.useApp();
-  useEffect(()=>{if(query.data&&!dirty)form.setFieldsValue({enabled:true,research_enabled:false,collaboration_enabled:false,...query.data.config});},[query.data,dirty,form]);
+  useEffect(()=>{if(query.data&&!dirty)form.setFieldsValue({enabled:true,research_enabled:false,collaboration_enabled:false,competitor_names:[],comparison_focus:'',analysis_goal:'',...query.data.config});},[query.data,dirty,form]);
   return <Form form={form} layout="vertical" onValuesChange={()=>setDirty(true)} onFinish={async values=>{
-    const keys=research?['research','research_enabled']:['chat','enabled','collaboration_enabled'];
+    const keys=research?['research','research_enabled','competitor_names','comparison_focus','analysis_goal']:['chat','enabled','collaboration_enabled'];
     const changes=Object.fromEntries(keys.filter(key=>key in values).map(key=>[key,values[key]]));
     setBusy(true);try{await api(`${base(pid)}/settings`,{version:query.data?.version,config:{...query.data?.config,...changes}});setDirty(false);await query.refetch();message.success('已保存');}catch(e){message.error(errorText(e));}finally{setBusy(false);}
   }}>
     {query.error && <p role="alert">{errorText(query.error)}</p>}
     {(research?[['research_enabled','自动研究竞品']]:[['enabled','启用对话助手'],['collaboration_enabled','Agent 异步协作']]).map(([key,text])=><Form.Item key={key} name={key} label={text} valuePropName="checked"><Switch/></Form.Item>)}
     {(research?['research'] as const:['chat'] as const).map(role=><div key={role}><Form.Item name={role} label={role==='chat'?'对话模型':'竞品分析模型'}><ReviewerSelect connection={()=>({})}/></Form.Item><Button type="link" onClick={()=>{form.setFieldValue(role,null);setDirty(true);}}>继承项目需求发现模型</Button><p className="dialogue-muted">{query.data?.capabilities[role]?.reason}</p></div>)}
+    {research && <>
+      <Form.Item name="competitor_names" label="竞品名称" extra="可填写多个名称；留空由 Agent 自动发现竞品。"><Select mode="tags" tokenSeparators={['，', ',']} options={[]} placeholder="输入名称并按回车添加"/></Form.Item>
+      <Form.Item name="comparison_focus" label="重点比较方向"><Input.TextArea rows={3} maxLength={5000} placeholder="留空由 Agent 根据项目目标判断"/></Form.Item>
+      <Form.Item name="analysis_goal" label="分析目标"><Input.TextArea rows={3} maxLength={5000} placeholder="留空分析能力差距并提出有证据的改进建议"/></Form.Item>
+    </>}
     {research && <p className="dialogue-muted">自动研究：每日 02:00 分析竞品，每周一 01:00 寻找新竞品，北京时间。</p>}
     <Button type="primary" htmlType="submit" loading={busy} disabled={!dirty||!query.data}>保存设置</Button>
   </Form>;

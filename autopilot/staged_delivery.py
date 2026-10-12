@@ -131,6 +131,10 @@ def initialize_seed(request):
 
 
 def merge_feature(request):
+    from .project_groups import check_merge_request
+    waiting=check_merge_request(request,merging=False)
+    if waiting:
+        return {'status':'busy','reason':waiting}
     b = request['record']
     target = feature_request(request)['record']
     gh, pr = load_pull_request(target)
@@ -422,6 +426,18 @@ def tick_product(scheduler, product, now):
     action = {'preparing': 'prepare', 'code_review': 'review_feature', 'merging_feature': 'merge_feature',
         'syncing_feature': 'sync_feature', 'repairing_feature': 'repair_feature', 'syncing_release': 'sync_release',
         'reviewing_release': 'review_release', 'repairing_release': 'repair_release', 'validating': 'validate_release', 'merging': 'merge_release'}[b['status']]
+    from .project_groups import delivery_gate
+    linked_runs=[ledger.get('runs',i) for i in b.get('integrated_ids' if action=='merge_release' else 'run_ids',[])]
+    if action=='merge_feature':
+        linked_runs=[r for r in linked_runs if r['requirement_id']==b.get('feature_requirement_id')]
+    if any((ledger.get('requirement_groups',r['group_id']).get('call') or {}).get('action')=='joint_verify' for r in linked_runs if r.get('group_id')):
+        return
+    if action in ('merge_feature','merge_release'):
+        reason=delivery_gate(ledger,linked_runs,merging=action=='merge_release')
+        if reason:
+            if b.get('reason')!=reason:
+                scheduler.change('deliveries',b,{'reason':reason})
+            return
     if action.startswith('review') and not review_window:
         if b.get('reason') != '23:30 后不开启新代码评审，等待次日评审窗口':
             scheduler.change('deliveries', b, {'reason': '23:30 后不开启新代码评审，等待次日评审窗口'})

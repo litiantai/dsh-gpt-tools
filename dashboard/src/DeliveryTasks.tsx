@@ -8,7 +8,7 @@ import RecordInspector from './RecordInspector';
 import { currentProgress } from './currentProgress';
 
 type Item = {id:string;title?:string;name?:string;status:string;[key:string]:unknown};
-type Task = {run:Item;requirement:Partial<Item>;signals:Item[];inspections:Item[];evidence:Item[];prs:{label:string;pr_url:string}[]};
+type Task = {run:Item;requirement:Partial<Item>;signals:Item[];inspections:Item[];evidence:Item[];prs:{label:string;pr_url:string;project_name?:string}[]};
 type Usage = {tokens:number;sources:{id:string;action:string;tokens:number;collected:boolean;budget_kind:string}[];day:string;project_tokens_used:number;project_tokens_limit:number;execution_seconds?:number;receipts:unknown[];evidence:Item[];reviews:Item[]};
 const title = (task:Task)=>task.run.title || task.run.name || task.requirement.title || task.run.id;
 
@@ -70,7 +70,7 @@ export default function DeliveryTasks({deliveryId,day}:{deliveryId:string;day?:s
           {task.evidence.map(entry=><Card key={entry.id} size="small" title={entry.title}><RecordValue value={entry}/>{!!entry.screenshot && <Button onClick={()=>void screenshot(entry.id)}>查看过程截图</Button>}</Card>)}
           {error && <Alert type="error" message={<ErrorNotice value={error}/>}/>}
         </>},
-        {key:'pr',label:'PR 详情',children:task.prs.length?<Space direction="vertical">{task.prs.map((pr,i)=><div key={`${pr.pr_url}-${i}`}>{pr.label}：{pr.pr_url.startsWith('https://github.com/')?<a href={pr.pr_url} target="_blank" rel="noreferrer">{pr.pr_url}</a>:'PR 地址不可用'}</div>)}</Space>:<Empty description="该任务尚未关联 PR"/>},
+        {key:'pr',label:'PR 详情',children:task.prs.length?<Space direction="vertical">{task.prs.map((pr,i)=><div key={`${pr.pr_url}-${i}`}>{pr.project_name?`${pr.project_name} · ${pr.label}`:pr.label}：{pr.pr_url.startsWith('https://github.com/')?<a href={pr.pr_url} target="_blank" rel="noreferrer">{pr.pr_url}</a>:'PR 地址不可用'}</div>)}</Space>:<Empty description="该任务尚未关联 PR"/>},
         {key:'usage',label:'查看用量',children:selected?.view==='usage'?<TaskUsage key={task.run.id} runId={task.run.id}/>:null},
       ]}/>}
     </Modal>

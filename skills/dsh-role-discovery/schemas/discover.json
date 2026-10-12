@@ -97,6 +97,9 @@
                 "expected"
               ]
             }
+          },
+          "existing_requirement_id": {
+            "type": "string"
           }
         },
         "required": [
@@ -109,7 +112,8 @@
           "classification",
           "in_scope",
           "priority",
-          "resolution_probes"
+          "resolution_probes",
+          "existing_requirement_id"
         ]
       }
     }

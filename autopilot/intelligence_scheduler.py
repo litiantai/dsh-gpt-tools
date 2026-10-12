@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import sys
+import re
 import time
 
 from review_core import Conflict
@@ -95,8 +96,18 @@ def finish(scheduler, kind, item, result):
                 'requirement_ids':created,'requirement_versions':versions,'snapshot_at':result.get('snapshot_at',item['created']),
                 'provider':result.get('provider'),'model':result.get('model')},'completed' if ok else 'failed',
                 ident='answer-'+call_id+('-'+conversation_id if kind=='research_jobs' else ''),db=db)
+        retries = item.get('auto_retries', 0)
+        diagnostic=str(result.get('reason',''))+' '+str(result.get('diagnostic',''))+' '+str(result.get('detail',''))+' '+str(result.get('fetch_failures',[]))+' '+str([s.get('reason','') for s in result.get('snapshots',[])])
+        auth=result.get('error_code') in ('AUTH_REQUIRED','ACCESS_DENIED') or bool(re.search(r'401|403|unauthori|authentication|鉴权|认证|登录失效',diagnostic,re.I))
+        network=not auth and bool(re.search(r'timed?\s*out|timeout|connection|network|ECONN|ENOTFOUND|EAI_AGAIN|超时|网络|连接|服务暂不可用|502|503|504',diagnostic,re.I))
+        failure_kind='authentication' if auth else 'connection_timeout' if network else 'source_collection' if result.get('fetch_failures') or any(s['status']!='pass' for s in result.get('snapshots',[])) else 'invalid_output' if not ok else None
+        result=result | {'failure_kind':failure_kind}
+        retry = kind=='research_jobs' and retries<2 and result.get('retryable') is not False and network
+
         ledger.update(kind,item['id'],item['version'],{'processed_call':call_id,'result':result,
-            'requirement_ids':created,'reason':result.get('reason','')},'completed' if ok else 'failed',db)
+            'attempts':item.get('attempts', []) + [{'call_id':call_id,'at':time.time(),'status':result['status'],'reason':result.get('reason',''),'failure_kind':failure_kind}],
+            'auto_retries':retries + int(retry), 'next_attempt_at':time.time() + (60 if retries == 0 else 300) if retry else None,
+            'requirement_ids':created,'reason':result.get('reason','')},'queued' if retry else 'completed' if ok else 'failed',db)
 
 
 def notify_progress(ledger, pid):
@@ -139,6 +150,8 @@ def tick(scheduler):
                         scheduler.change(kind,item,{'processed_call':item['receipts'][-1]['call_id'],'reason':'回执处理失败：'+str(exc)},'failed')
                     continue
                 if item['status']!='queued' or not config.get('enabled',True):
+                    continue
+                if time.time() < (item.get('next_attempt_at') or 0):
                     continue
                 if kind!='chat_messages' and product['status']=='paused':
                     continue

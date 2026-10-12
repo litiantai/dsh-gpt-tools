@@ -109,12 +109,13 @@ def tick(scheduler):
                 all_items=[ledger.get('requirements',ident,db) for ident in requirement_ids]
                 ledger.update('daily_reports',report['id'],report['version'],processed | {
                     'attribution_results':report.get('attribution_results',[])+[result | {'signal_ids':ids}],
+                    'attribution_status':('pass' if all(r['status']=='pass' for r in report.get('attribution_results',[])+[result]) else 'blocked') if (index+1)*8>=len(report['attribution_signal_ids']) else 'running',
                     'requirement_ids':requirement_ids,
                     'daily_requirements':[{k:r.get(k) for k in ('id','title','classification','reason','status')} for r in all_items],
                     'reason':f'晚间归因已处理 {min((index+1)*8,len(report["attribution_signal_ids"]))}/{len(report["attribution_signal_ids"])} 条信号，已入池 {len(requirement_ids)} 个当日需求'},db=db)
         elif action == 'daily_acceptance':
             run = ledger.get('runs', report['run_ids'][len(report['audits'])])
-            scheduler.change('daily_reports', report, processed | {'audits': report['audits'] + [redact(result) | {'run_id': run['id'], 'title': run['title']} ]})
+            scheduler.change('daily_reports', report, processed | {'acceptance_status':'pass' if result['status']=='pass' and all(a['status']=='pass' for a in report['audits']) else 'blocked', 'audits': report['audits'] + [redact(result) | {'run_id': run['id'], 'title': run['title']} ]})
         else:
             statuses = [a['status'] for a in report['audits'] + report.get('attribution_results',[])] + [result['status']]
             status = 'fail' if 'fail' in statuses else 'blocked' if any(s != 'pass' for s in statuses) else 'pass'
@@ -122,15 +123,15 @@ def tick(scheduler):
             collect(ledger)
             traces = [Path(r['result']['evidence']) / 'trace.jsonl' for r in report['receipts'] if r['result'].get('evidence')]
             usage = sum(trace_tokens(path) for path in traces if path.is_file())
-            scheduler.change('daily_reports', report, processed | {'retrospective': redact(result), 'finished_at': time.time(),
+            scheduler.change('daily_reports', report, processed | {'retrospective_status':result['status'], 'retrospective': redact(result), 'finished_at': time.time(),
                 'exempt_usage': usage, 'reason': result.get('summary') or result.get('reason', '日报执行未返回说明')}, status)
         return True
     # 复验与研发模型串行，巡检可以继续；已启动的调用先收取回执。
     if any(p.get('call', {}).get('action') == 'discover' for p in ledger.list('products') if p.get('call')):
         return False
-    if any(r.get('call') or r.get('review_id') for r in ledger.list('runs') if r['status'] not in ('accepted','completed','blocked','cancelled','rolled_back')):
+    if any(r.get('call') for r in ledger.scoped('runs', product['id'])):
         return False
-    if any(r['status']=='investigating' for r in ledger.list('requirements')):
+    if any(r.get('call') for r in ledger.scoped('requirements', product['id'])):
         return False
     command = [sys.executable, str(Path(__file__).resolve().parents[1] / 'scripts/autopilot-adapter.py'), 'daily']
     remaining=report.get('attribution_signal_ids',[])[len(report.get('attribution_results',[]))*8:]

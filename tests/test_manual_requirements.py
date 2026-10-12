@@ -23,7 +23,7 @@ class ManualRequirementsTests(unittest.TestCase):
         self.store = Store(Path(temporary.name) / 'state')
         self.control = Control(self.store)
         self.ledger = self.control.ledger
-        self.product = self.ledger.create('products', {'name': '人工入池测试'}, 'active')
+        self.product = self.ledger.create('products', {'name': '人工入池测试', 'policy': {'deepseek_off_peak_only': False}}, 'active')
         self.signal = self.ledger.signal(self.product['id'], {
             'source': 'inspection', 'code': 'manual-test', 'summary': '通知能力实现',
             'evidence': {'actual': '通知没有展示', 'evidence_id': 'evidence-original'},

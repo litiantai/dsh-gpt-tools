@@ -125,6 +125,12 @@ def verification(request, root):
         instance.update(origin=origin, state=str(root/'state'), stopped=False)
         env = environment(root, port=port, origin=origin,
                           runtime=request['product'].get('worker_runtime') or independent_runtime())
+        joint_env=request.get('joint_environment',{})
+        if joint_env:
+            import re
+            if any(not re.fullmatch(r'(?:VITE_|NEXT_PUBLIC_|REACT_APP_|DSH_LINKED_|API_|BACKEND_|SERVICE_)[A-Z0-9_]+',k) or not re.fullmatch(r'http://127\.0\.0\.1:\d+',v) for k,v in joint_env.items()):
+                raise ValueError('联合环境仅允许注入受管本机服务地址')
+            env.update(joint_env)
         result['instance'] = instance
         atomic(root/'instance.json', instance)
         workspace = instance['workspace']

@@ -62,6 +62,8 @@ def enqueue_research(ledger, pid, action, db, schedule_key=None):
     if active:
         return active
     return ledger.create('research_jobs', {'product_id': pid, 'action': action, 'schedule_key': schedule_key,
+        'input_snapshot': {key: ledger.get('products', pid, db).get('intelligence', {}).get(key, [] if key == 'competitor_names' else '')
+                           for key in ('competitor_names', 'comparison_focus', 'analysis_goal')},
         'title': '发现新竞品' if action == 'find_competitors' else '竞品差距分析', 'receipts': []}, 'queued', db=db)
 
 
@@ -84,7 +86,7 @@ def save_competitor(ledger, pid, body, db, existing=None, automatic=False):
             return match  # In particular, never revive a manually disabled or merged competitor.
         raise Conflict('该竞品已存在，请编辑或合并已有记录')
     value = {'product_id': pid, 'name': name, 'reason': reason, 'urls': urls, 'identity': key,
-             'origin': 'ai' if automatic else 'human'}
+             'origin': 'ai' if automatic else 'human', 'requested_names': body.get('requested_names', [])}
     if existing:
         return ledger.update('competitors', existing['id'], existing['version'], value, db=db)
     return ledger.create('competitors', value, 'active', db=db)
@@ -104,8 +106,16 @@ def mutate(control, path, body):
             if body.get('version') != product['version']:
                 raise Conflict('项目已更新，请刷新设置')
             config = body.get('config', {})
-            if not isinstance(config, dict) or set(config) - {'enabled', 'research_enabled', 'collaboration_enabled', 'chat', 'research'}:
+            if not isinstance(config, dict) or set(config) - {'enabled', 'research_enabled', 'collaboration_enabled', 'chat', 'research', 'competitor_names', 'comparison_focus', 'analysis_goal'}:
                 raise ValueError('智能协作配置无效')
+            names = config.get('competitor_names', [])
+            if not isinstance(names, list) or len(names) > 50 or any(not isinstance(n, str) or not n.strip() or len(n) > 200 for n in names):
+                raise ValueError('竞品名称必须为非空名称列表，最多 50 项，每项最多 200 字符')
+            config['competitor_names'] = list(dict.fromkeys(n.strip() for n in names))
+            for key in ('comparison_focus', 'analysis_goal'):
+                if not isinstance(config.get(key, ''), str) or len(config.get(key, '')) > 5000:
+                    raise ValueError('比较方向和分析目标须为最多 5000 字符的文本')
+                config[key] = config.get(key, '').strip()
             for key in ('enabled', 'research_enabled', 'collaboration_enabled'):
                 if key in config and type(config[key]) is not bool:
                     raise ValueError('开关必须为布尔值')
@@ -169,7 +179,9 @@ def mutate(control, path, body):
             item = owned(ledger, parts[0], parts[1], pid, db)
             if item['version'] != body.get('version') or item['status'] != 'failed' or item.get('call'):
                 raise Conflict('当前任务不能重试')
-            return ledger.update(parts[0], item['id'], item['version'], {'reason': '', 'processed_call': None}, 'queued', db)
+            return ledger.update(parts[0], item['id'], item['version'], {'reason': '',
+                'processed_call': (item.get('receipts') or [{}])[-1].get('call_id'),
+                'next_attempt_at': 0, 'auto_retries': 0}, 'queued', db)
     raise KeyError('接口不存在')
 
 
