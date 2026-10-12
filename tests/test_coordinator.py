@@ -239,6 +239,87 @@ class CoordinatorTests(unittest.TestCase):
         launch.assert_not_called()
         self.assertEqual(self.ledger.scoped('coordinators',self.product['id']),[])
 
+    def delegate_waiting_question(self):
+        self.product=self.ledger.update('products',self.product['id'],self.product['version'],
+            {'coordinator':{'human_authority':True}})
+        self.apply(action='human')
+        return self.ledger.get('agent_messages',self.fresh()['coordinator_human'])
+
+    def test_delegated_watch_answers_and_repairs_with_durable_plan(self):
+        question=self.delegate_waiting_question()
+        run=self.fresh()
+        self.ledger.update('runs',run['id'],run['version'],{'coordination_no_progress':2})
+        material=c.snapshot(self.ledger,self.product)
+        self.assertFalse(material['tasks'][0]['protected'])
+        self.assertEqual(c.watch_summary(material)['findings'][0]['action'],'评估帮助与资源协调')
+        decision=self.apply()
+        self.assertEqual(decision['status'],'applied')
+        self.assertEqual(decision['answered_question_id'],question['id'])
+        reply=self.ledger.get('agent_messages',question['id'])
+        self.assertEqual(reply['reply_role'],'coordinator')
+        self.assertEqual(reply['status'],'replied')
+        self.assertIn('帮助方案',reply['reply'])
+        self.assertEqual(self.fresh()['coordination_plan_id'],decision['id'])
+        self.assertEqual(self.fresh()['coordination_no_progress'],2)
+        self.assertTrue(c.resume_pending(Scheduler(self.store)))
+        run=c.consume_grant(self.scheduler,self.fresh())
+        self.assertEqual((run['status'],run['revisions'],run['extra_revisions']),('developing',4,1))
+        self.assertEqual(c.apply(self.scheduler,decision,decision['result'])['status'],'applied')
+        self.assertEqual(self.fresh()['revisions'],4)
+
+    def test_delegation_keeps_pause_and_uncertain_results_protected(self):
+        question=self.delegate_waiting_question()
+        for change in ({'control':'pause'},{'uncertain':True},{'pending_result':{'status':'pass'}}):
+            run=self.fresh()
+            self.ledger.update('runs',run['id'],run['version'],{'control':None,'uncertain':False,'pending_result':None}|change)
+            self.assertEqual(self.apply()['status'],'blocked')
+            self.assertEqual(self.ledger.get('agent_messages',question['id'])['status'],'needs_human')
+
+    def test_delegation_rechecks_question_version_and_authorization(self):
+        question=self.delegate_waiting_question()
+        d,result=self.decide()
+        self.ledger.update('agent_messages',question['id'],question['version'],{'content':'问题已更新'})
+        self.assertEqual(c.apply(self.scheduler,d,result)['status'],'stale')
+        d,result=self.decide()
+        self.product=self.ledger.update('products',self.product['id'],self.product['version'],{'coordinator':{'human_authority':False}})
+        self.assertEqual(c.apply(self.scheduler,d,result)['status'],'stale')
+        self.assertEqual(self.fresh()['status'],'waiting_for_reply')
+
+    def test_revoking_delegation_holds_unconsumed_repair(self):
+        self.delegate_waiting_question()
+        self.assertEqual(self.apply()['status'],'applied')
+        self.product=self.ledger.update('products',self.product['id'],self.product['version'],{'coordinator':{'human_authority':False}})
+        self.assertFalse(c.resume_pending(self.scheduler))
+        with self.assertRaises(Conflict):
+            c.consume_grant(self.scheduler,self.fresh())
+        self.assertEqual(self.fresh()['revisions'],3)
+
+    def test_invalid_delegated_plan_or_phase_does_not_answer(self):
+        question=self.delegate_waiting_question()
+        for values in ({'help_plan':None},{'resume_phase':'deploying'},{'action':'assist','to_role':'human'}):
+            self.assertEqual(self.apply(**values)['status'],'blocked')
+            self.assertEqual(self.ledger.get('agent_messages',question['id'])['status'],'needs_human')
+            self.assertIsNone(self.fresh().get('coordination_pending'))
+
+    def test_delegated_watch_rechecks_human_wait_every_five_minutes(self):
+        self.delegate_waiting_question()
+        def finish(scheduler,decision,product):
+            self.assertTrue(decision['material']['human_authority'])
+            c.apply(scheduler,decision,{'status':'pass','action':'wait','reason':'等待补证'})
+        with patch('autopilot.coordinator.launch',side_effect=finish) as launch:
+            c.tick(self.scheduler,now=100)
+            self.assertEqual(launch.call_count,1)
+            c.tick(self.scheduler,now=400)
+            self.assertEqual(launch.call_count,2)
+
+    def test_delegation_rejects_foreign_or_unrelated_human_question(self):
+        question=self.delegate_waiting_question()
+        self.ledger.update('agent_messages',question['id'],question['version'],{'product_id':'other'})
+        self.assertTrue(c.snapshot(self.ledger,self.product)['tasks'][0]['protected'])
+        self.assertEqual(self.apply()['status'],'blocked')
+        with self.assertRaises(ValueError):
+            c.validate({'human_authority':'yes'})
+
     def test_queued_crash_recovers_without_duplicate_decision(self):
         with patch('autopilot.coordinator.launch') as launch:
             c.tick(self.scheduler,now=100)

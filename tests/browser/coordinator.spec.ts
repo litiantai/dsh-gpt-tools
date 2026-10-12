@@ -29,11 +29,13 @@ test('项目协调：决定、设置、立即评估与刷新',async({page})=>{
   await expect(page.getByText('已安排重新评估',{exact:true})).toBeVisible();
   await page.goto(`/autopilot?project=${p.id}&view=settings&tab=coordination_settings`);
   await expect(page.getByRole('button',{name:'保存协调设置',exact:true})).toBeVisible();
+  await page.getByRole('switch',{name:'授权 Watch 代行人工协调决策'}).click();
   await page.getByRole('switch',{name:'启用项目协调'}).click();
   await page.getByRole('button',{name:'保存协调设置',exact:true}).click();
   await expect(page.getByText('协调配置已保存',{exact:true})).toBeVisible();
   await page.reload();
   await expect(page.getByRole('switch',{name:'启用项目协调'})).not.toBeChecked();
+  await expect(page.getByRole('switch',{name:'授权 Watch 代行人工协调决策'})).toBeChecked();
   await page.goto(`/autopilot?project=${p.id}&view=tasks&tab=coordinator`);
   await expect(page.getByText('已停用或项目暂停',{exact:true})).toBeVisible();
   await expect(page.getByRole('cell',{name:'追加返修',exact:true})).toBeVisible();

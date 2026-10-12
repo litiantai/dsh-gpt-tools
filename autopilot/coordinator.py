@@ -16,7 +16,7 @@ WATCH_SECONDS = 300
 
 
 def config(product):
-    return {'enabled': True, 'model': None} | product.get('coordinator', {})
+    return {'enabled': True, 'model': None, 'human_authority': False} | product.get('coordinator', {})
 
 
 def selected(product):
@@ -28,8 +28,10 @@ def enabled(product):
 
 
 def validate(value):
-    if not isinstance(value, dict) or set(value) - {'enabled', 'model'} or type(value.get('enabled', True)) is not bool:
+    if not isinstance(value, dict) or set(value) - {'enabled', 'model', 'human_authority'} or type(value.get('enabled', True)) is not bool:
         raise ValueError('协调配置无效')
+    if type(value.get('human_authority', False)) is not bool:
+        raise ValueError('Watch 决策授权必须为布尔值')
     if value.get('model') is not None:
         from reviewers import selection
         selection(value['model'])
@@ -48,10 +50,28 @@ def auxiliary_busy(ledger, pid):
     return any(item.get('call') for kind in AUXILIARY for item in ledger.scoped(kind, pid))
 
 
-def protected(run):
+def protected(run, delegated=False):
     return bool(run.get('control') or run.get('uncertain') or run.get('pending_result') or run.get('call') or
                 run['status'] in TERMINAL | {'pausing', 'paused', 'cancelling', 'deploying', 'observing', 'awaiting_release'} or
-                run.get('resume_status') in ('deploying', 'observing', 'awaiting_release') or run.get('coordinator_human'))
+                run.get('resume_status') in ('deploying', 'observing', 'awaiting_release') or (run.get('coordinator_human') and not delegated))
+
+
+def delegated_question(ledger, product, run, db=None):
+    """项目显式授权后，Watch 可回答自己提交的技术协调问题；保留真实人工控制。"""
+    if not config(product)['human_authority'] or run['status'] != 'waiting_for_reply':
+        return None
+    ident = run.get('coordinator_human')
+    if not ident or ident != run.get('collaboration_wait') or run.get('collaboration_resume_status') != 'blocked':
+        return None
+    try:
+        question = ledger.get('agent_messages', ident, db)
+    except KeyError:
+        return None
+    if (question['status'] != 'needs_human' or question.get('call') or question.get('parent_message_id') or
+            question['product_id'] != product['id'] or question.get('run_id') != run['id'] or
+            question.get('from_role') != 'coordinator' or question.get('to_role') != 'human'):
+        return None
+    return {k:question.get(k) for k in ('id', 'version', 'content', 'reason')}
 
 
 def checks_snapshot(run):
@@ -84,10 +104,11 @@ def snapshot(ledger, product):
     for run in ledger.scoped('runs', product['id']):
         if run['status'] in TERMINAL:
             continue
+        question = delegated_question(ledger, product, run)
         tasks.append({k: run.get(k) for k in ('id', 'version', 'title', 'status', 'resume_status', 'reason',
             'commit', 'revisions', 'extra_revisions', 'execution_seconds', 'feedback', 'coordination_no_progress',
             'coordination_progress', 'coordination_pending', 'coordinator_human', 'requirement_id')} |
-            {'protected': protected(run), 'checks': checks_snapshot(run),
+            {'protected': protected(run, delegated=bool(question)), 'delegated_question': question, 'checks': checks_snapshot(run),
              'diagnostic': run.get('last_revision_diagnostic'),
              'recent_results': [r.get('result') for r in run.get('receipts', [])[-3:]],
              'evidence_ids': [r['evidence_id'] for r in run.get('receipts', [])[-5:] if r.get('evidence_id')]})
@@ -103,7 +124,7 @@ def snapshot(ledger, product):
                      main_capacity=1, auxiliary_capacity=1,
                      auxiliary_in_use=auxiliary_busy(ledger, product['id']))
     requirements = requirement_states(ledger, product['id'])
-    return {'product_id': product['id'], 'tasks': tasks, 'requirements': requirements, 'quota': resources,
+    return {'product_id': product['id'], 'human_authority': config(product)['human_authority'], 'tasks': tasks, 'requirements': requirements, 'quota': resources,
             'policy': DEFAULTS | product.get('policy', {}), 'model': selected(product),
             'messages': [{k:m.get(k) for k in ('id','status','run_id','topic','reply')}
                          for m in ledger.scoped('agent_messages', product['id'])[-20:]]}
@@ -147,6 +168,7 @@ def watch_summary(material):
         if task['status'] not in ('blocked','waiting_for_reply') and task['status'] in known:
             continue
         action = ('等待人工回复' if task.get('coordinator_human') else '保持人工控制或核对执行结果') if task['protected'] else (
+            '评估帮助与资源协调' if task.get('delegated_question') else
             '等待已派发协作回复' if task['status']=='waiting_for_reply' else
             '等待已批准协调的资源' if task.get('coordination_pending') else '评估帮助与资源协调')
         findings.append({'run_id':task['id'], 'requirement_id':task.get('requirement_id'),
@@ -262,7 +284,10 @@ def apply(scheduler, decision, result):
         run = ledger.get('runs', target['id'], db)
         if run['product_id'] != product['id'] or run['version'] != target['version']:
             return finish('stale', '任务已变化，等待重新评估')
-        if protected(run) or run.get('coordination_pending'):
+        question = delegated_question(ledger, product, run, db)
+        if question != target.get('delegated_question'):
+            return finish('stale', '待答问题或授权已变化，等待重新评估')
+        if protected(run, delegated=bool(question)) or run.get('coordination_pending'):
             return finish('blocked', '任务受人工控制、仍在执行或结果待核对')
         if run.get('review_id'):
             review = scheduler.store.get(run['review_id'])
@@ -272,6 +297,18 @@ def apply(scheduler, decision, result):
         if not isinstance(strategy, str) or not strategy.strip():
             return finish('blocked', '缺少具体处理策略')
         instruction = strategy + '\n帮助方案：\n' + json.dumps(changes['help_plan'], ensure_ascii=False, indent=2)
+        if question and action in ('repair', 'verify', 'assist'):
+            phase = 'verifying' if action == 'verify' else result.get('resume_phase')
+            if action == 'repair' and phase not in ('planning', 'developing'):
+                return finish('blocked', '返修阶段无效，保留待答问题')
+            if action == 'assist' and result.get('to_role') not in ('discovery','implementation','verification','acceptance'):
+                return finish('blocked', '协助角色无效，保留待答问题')
+            from .collaboration import reply
+            message = ledger.get('agent_messages', question['id'], db)
+            reply(ledger, message, instruction, db, author='coordinator')
+            run = ledger.get('runs', run['id'], db)
+            changes['answered_question_id'] = question['id']
+            changes['decision_authority'] = 'delegated_watch'
         if action == 'reprioritize':
             priority = result.get('priority')
             if run['status'] != 'queued' or type(priority) is not int or not 0 <= priority <= 10:
@@ -294,12 +331,13 @@ def apply(scheduler, decision, result):
             phase = 'verifying' if action == 'verify' else result.get('resume_phase')
             if run['status'] != 'blocked' or phase not in ('planning','developing','verifying') or (action == 'repair' and phase == 'verifying'):
                 return finish('blocked', '当前任务不能恢复到建议阶段')
-            if run.get('coordination_no_progress', 0) >= 2:
+            if run.get('coordination_no_progress', 0) >= 2 and not config(product)['human_authority']:
                 human(ledger, run, '连续两轮没有可验证进展：' + strategy, db)
                 return finish('needs_human', '停止自动追加，等待人工回复')
             ledger.update('runs', run['id'], run['version'], {'coordination_pending': {
-                'decision_id': decision['id'], 'phase': phase, 'strategy': instruction, 'action': action},
-                'coordination_reason': strategy}, db=db)
+                'decision_id': decision['id'], 'phase': phase, 'strategy': instruction, 'action': action,
+                'requires_human_authority': config(product)['human_authority']},
+                'coordination_reason': strategy, 'revision_exhausted': False}, db=db)
         latest = ledger.get('runs', run['id'], db)
         ledger.update('runs', latest['id'], latest['version'], {'coordination_plan_id':decision['id']}, db=db)
         return finish('applied', strategy)
@@ -314,6 +352,8 @@ def resume_pending(scheduler):
         for run in ledger.scoped('runs', product['id']):
             pending = run.get('coordination_pending')
             if not pending or run['status'] != 'blocked' or protected(run):
+                continue
+            if pending.get('requires_human_authority') and not config(product)['human_authority']:
                 continue
             from .retry import quota_reason
             candidate = run | {'resume_status': pending['phase']}
@@ -342,8 +382,8 @@ def consume_grant(scheduler, run):
     if not pending:
         return run
     product = scheduler.ledger.get('products', run['product_id'])
-    if not enabled(product):
-        raise Conflict('协调已停用，未消费的授权保持等待')
+    if not enabled(product) or (pending.get('requires_human_authority') and not config(product)['human_authority']):
+        raise Conflict('协调或 Watch 决策授权已停用，未消费的授权保持等待')
     revisions = run.get('revisions', 0)
     limit = (DEFAULTS | product.get('policy', {}))['max_revisions']
     changes = {'coordination_pending': None, 'coordination_last_decision': pending['decision_id']}
@@ -359,7 +399,8 @@ def runnable(scheduler, run):
     product = scheduler.ledger.get('products', run['product_id'])
     if product['status'] != 'active' and run['status'] in PHASES:
         return False
-    if run.get('coordination_pending') and not enabled(product):
+    if run.get('coordination_pending') and (not enabled(product) or
+            (run['coordination_pending'].get('requires_human_authority') and not config(product)['human_authority'])):
         return False
     if run['status'] not in PHASES:
         return True
@@ -424,7 +465,7 @@ def tick(scheduler, now=None):
                 changes = progress(run)
                 if changes:
                     run = scheduler.change('runs', run, changes)
-                if run.get('coordination_no_progress', 0) >= 2:
+                if run.get('coordination_no_progress', 0) >= 2 and not config(product)['human_authority']:
                     with ledger.store.transaction() as db:
                         human(ledger, ledger.get('runs', run['id'], db), '连续两轮没有可验证进展，请补充修复方向或新的证据。', db)
         material = snapshot(ledger, product)
