@@ -47,6 +47,37 @@ test('identity failure blocks scan requests and explains recovery',async({page})
   expect(requests).toBe(0);
 });
 
+test('identity refresh failure revokes cached scan capability until recovery',async({page})=>{
+  let unavailable=false;
+  await page.route('**/api/runtime-identity',route=>route.fulfill(unavailable
+    ? {status:503,json:{error:'unavailable'}}
+    : {json:{capabilities:{repository_scans:1}}}));
+  let reads=0;
+  await page.route('**/api/scans',route=>{
+    reads++;
+    return route.fulfill({json:[{id:'cached-scan',source:'/isolated/cached',status:'pass',version:1,updated:1}]});
+  });
+  await page.goto('/autopilot');
+  await page.getByRole('button',{name:'接入仓库',exact:true}).click();
+  const dialog=page.getByRole('dialog');
+  const submit=dialog.getByRole('button',{name:'扫描新仓库'});
+  await dialog.getByLabel('代码仓库地址').fill('/isolated/scan-fixture');
+  await expect(submit).toBeEnabled();
+  await expect(dialog.getByRole('button',{name:'重新扫描',exact:true})).toBeEnabled();
+  unavailable=true;
+  await expect(dialog.getByText('无法核对管理服务')).toBeVisible({timeout:10000});
+  await expect(submit).toBeDisabled();
+  await expect(dialog.getByRole('button',{name:'重新扫描',exact:true})).toBeDisabled();
+  const stoppedAt=reads;
+  // Observe another polling cycle: cached capability must not keep /scans active.
+  await page.waitForResponse(response=>response.url().endsWith('/api/runtime-identity') && response.status()===503);
+  expect(reads).toBe(stoppedAt);
+  unavailable=false;
+  await dialog.getByRole('button',{name:'重新核对'}).click();
+  await expect(submit).toBeEnabled();
+  await expect.poll(()=>reads).toBeGreaterThan(stoppedAt);
+});
+
 test('repository onboarding records scan requests and distinguishes startup from acceptance',async({page})=>{
   await page.goto('/autopilot');
   await page.getByRole('button',{name:'接入仓库',exact:true}).click();
