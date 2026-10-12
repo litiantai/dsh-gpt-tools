@@ -150,6 +150,7 @@ def compose(action, request, material, spec=None):
     )
     if action in ('discover','daily_attribution'):
         instruction+=' 需求判定不依赖历史 release 合并状态。相同问题（含已修复但未上线）仍在 requirements 输出完整本轮证据并填写 known_requirements 中的 existing_requirement_id；新问题该字段为空。未合并成果不代表线上问题已解决。'
+        instruction+=' 巡查执行异常有调查价值：结合原始异常、rescan_result 和检查步骤，区分执行环境障碍、覆盖缺口、实际业务缺陷与已恢复场景。超时或启动失败不能直接证明业务缺陷；证据不足形成调查或环境需求，并给出影响、处理动作与可复验条件。只保存截图的 observed 不等于验收通过；同因异常合并，已恢复且无新问题给出有依据的 no_issue 结论。'
     if action=='investigate':
         instruction=skill_rule('codex_executor-discovery-2')
     if action=='daily_attribution':

@@ -23,6 +23,7 @@ test('inspection exceptions leave the pending node and remain available as evide
   await drawer.locator('.ant-drawer-close').click();
   await page.getByRole('tab',{name:'巡查与证据',exact:true}).click();
   await page.getByRole('tab',{name:'巡检异常 (1)',exact:true}).click();
+  await expect(page.getByText(/异常每日北京时间 09:00 自动复扫/)).toBeVisible();
   const row=page.locator(`tr[data-row-key="${abnormal.id}"]`);
   await expect(row.getByText('异常',{exact:true})).toBeVisible();
   await expect(row.getByText('运行巡检超时记录',{exact:true})).toBeVisible();
@@ -30,4 +31,17 @@ test('inspection exceptions leave the pending node and remain available as evide
   await expect(page.getByRole('dialog',{name:'巡检异常记录'})).toContainText('timed out');
   await page.reload();
   await expect(row.getByText('异常',{exact:true})).toBeVisible();
+});
+
+test('manual rescan submits once and displays durable queue state',async({page})=>{
+  let calls=0;
+  const product={id:'rescan-product',name:'每日复扫',status:'active',source:'/fixture',version:1};
+  await page.route('**/api/products',r=>r.fulfill({json:[product]}));
+  await page.route('**/api/signals',r=>r.fulfill({json:[{id:'exception',product_id:product.id,source:'inspection',status:'classified',requirement_id:'environment-req',summary:'登录超时',rescan_status:'queued',evidence:{status:'blocked',reason:'timeout'}}]}));
+  await page.route(`**/api/products/${product.id}/inspection-routes/rescan`,r=>{calls++;return r.fulfill({json:{id:'rescan-round',status:'queued'}});});
+  await page.goto(`/autopilot?project=${product.id}&view=evidence&tab=inspection_exceptions`);
+  await page.getByRole('button',{name:'重新扫描',exact:true}).click();
+  await expect(page.getByText(/重新扫描已入队，轮次 rescan-r/)).toBeVisible();
+  await expect(page.getByText('已排队',{exact:true})).toBeVisible();
+  expect(calls).toBe(1);
 });
