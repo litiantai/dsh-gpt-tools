@@ -346,6 +346,8 @@ def execute(action, request):
         gh.status(head, 'pending', '代码评审已通过，正在执行合并前运行验证')
         checked = verify(request | {'record': record | {'repository': str(repo), 'git_dir': str(repo)}},
                          workspace, head, base, folder)
+        from .merge_validation import certify
+        checked = certify(request, checked, head, base)
         if checked.get('status') != 'pass':
             gh.status(head, 'failure', '交付验证：' + checked.get('reason', '必需检查未通过'))
             return checked | {'head_sha': head, 'base_sha': base, 'pr_url': record['pr_url']}

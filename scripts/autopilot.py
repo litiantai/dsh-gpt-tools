@@ -18,18 +18,31 @@ from autopilot.scheduler import serve
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=['serve','scan','onboard','status','install-service','install-runtime','migrate-records'])
+    parser.add_argument('action',choices=['serve','scan','onboard','status','rescan','install-service','install-runtime','migrate-records'])
     parser.add_argument('--state-dir',default=os.environ.get('DSH_SUPERVISOR_STATE',str(Path.home()/'.dsh/supervisor')))
     parser.add_argument('--source',default=str(ROOT))
     parser.add_argument('--model-profile',default='supervisor-review')
     parser.add_argument('--runtime-version',default='0.1.7-rc.1')
     parser.add_argument('--inherit-policy-from',help='仅继承指定项目的模型、额度及交付时间，不继承业务或运行数据')
+    parser.add_argument('--product-id',help='重新扫描的项目编号')
+    parser.add_argument('--daily',action='store_true',help='按北京时间九点到期日去重异常复扫')
     args=parser.parse_args();state=Path(args.state_dir).resolve()
     if args.action=='serve':
         serve(state);return
     control=Control(Store(state));ledger=control.ledger
     if args.action=='status':
         print(json.dumps({'products':control.get('/products'),'metrics':control.get('/autopilot/metrics')},ensure_ascii=False,indent=2));return
+    if args.action=='rescan':
+        if not args.product_id:
+            parser.error('rescan 需要 --product-id')
+        product=ledger.get('products',args.product_id)
+        if args.daily:
+            from autopilot.inspection_rescan import schedule
+            import time
+            record=schedule(ledger,product,time.time())
+        else:
+            record=control.mutate(f'/products/{product["id"]}/inspection-routes/rescan',{})
+        print(json.dumps(record or {'status':'not_due','reason':'无未复扫异常或尚未满足执行前置条件'},ensure_ascii=False,indent=2));return
     if args.action=='migrate-records':
         from autopilot.project import migrate
         migrate(ledger);print(json.dumps({'status':'pass','schema_version':1}));return

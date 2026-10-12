@@ -12,14 +12,32 @@ INTERVAL = 3600
 FAULT = re.compile(r'timed?\s*out|timeout|connection|network|temporar|ECONN|ENOTFOUND|EAI_AGAIN|超时|退出码|执行失败|运行异常|回执.*(?:读取|解析)失败|网络|连接失败|连接中断|服务不可用|rate.limit|限流|429|502|503|504', re.I)
 
 
-def manual_run_retry(ledger, ident, version):
+def repair_plan_changes(run):
+    """返修先重新制定技术方案并评审，历史方案保留在上下文与回执中。"""
+    return {'previous_plan':run.get('plan') or run.get('previous_plan'), 'plan':None,
+            'plan_approved':False, 'repair_plan_required':True, 'repair_plan_review_id':None,
+            'review_id':None, 'review_packet':None}
+
+
+def manual_run_retry(ledger, ident, version, allow_revision=False):
     """人工授权单轮重试，独立留痕且不重置或消耗自动返修次数。"""
     from review_core import Conflict, ACTIVE
     from .store import redact
     with ledger.store.transaction() as db:
         run = ledger.get('runs', ident, db)
-        if run['version'] != version or run['status'] != 'blocked':
+        allowed = ('blocked', 'waiting_for_reply') if allow_revision else ('blocked',)
+        if run['version'] != version or run['status'] not in allowed:
             raise Conflict('记录已更新，请刷新后重试')
+        original = run
+        question = None
+        if run['status'] == 'waiting_for_reply':
+            try:
+                question = ledger.get('agent_messages', run.get('collaboration_wait'), db)
+            except KeyError:
+                raise Conflict('未找到待人工确认的问题，请刷新后核对')
+            if (question['status'] != 'needs_human' or question['product_id'] != run['product_id']
+                    or question['run_id'] != ident or question.get('parent_message_id')):
+                raise Conflict('当前仍在等待角色协作，请先处理协作问题')
         if run.get('uncertain') or run.get('call') or run.get('pending_result'):
             raise Conflict('先核对未确认的进程或执行结果，不能重复执行')
         if run.get('review_id'):
@@ -30,33 +48,50 @@ def manual_run_retry(ledger, ident, version):
             if review and (review['status'] in ACTIVE or review.get('execution_done') is False):
                 raise Conflict('审查仍在执行，请等待审查结束后重试')
         phase = run.get('resume_status') or 'queued'
+        if question and run.get('collaboration_resume_status') != 'blocked':
+            phase = run.get('collaboration_resume_status')
+        if allow_revision and phase not in ('planning', 'plan_review', 'developing', 'verifying', 'acceptance_review'):
+            raise Conflict('当前阶段不支持返修，请使用原阶段重试或处理协作问题')
         exhausted = run.get('revision_exhausted') or run.get('reason', '').startswith('返修次数已用尽：')
         changes = {'control': None, 'reason': '', 'next_auto_retry_at': None, 'auto_retry_wait_reason': None,
                    'coordination_pending': None, 'coordination_wait': '', 'revision_exhausted': False}
-        if exhausted and phase in ('planning', 'plan_review', 'developing', 'verifying', 'acceptance_review'):
-            phase = 'planning' if phase in ('planning', 'plan_review') else 'developing'
+        if (exhausted or allow_revision) and phase in ('planning', 'plan_review', 'developing', 'verifying', 'acceptance_review'):
+            phase = 'planning'
+            changes.update(repair_plan_changes(run))
             feedback = run.get('feedback') or run.get('reason', '')
             diagnostic = run.get('last_revision_diagnostic')
             if diagnostic:
                 feedback += '\n技术诊断：' + json.dumps(diagnostic, ensure_ascii=False)
             changes['feedback'] = redact(feedback)
+        if allow_revision:
+            authorization = '人工允许再执行一轮返修，本轮不计入自动返修次数；先根据失败证据重新制定修复方案，方案评审通过后开发并重新验证。'
+            if question:
+                from .collaboration import human_reply
+                human_reply(ledger, run['product_id'], question['id'],
+                            {'version': question['version'], 'content': authorization}, db)
+                run = ledger.get('runs', ident, db)
+            changes.update(coordinator_human=None, coordination_no_progress=0)
+            changes['feedback'] = redact(changes.get('feedback', '') + '\n' + authorization +
+                                         ('\n待处理问题：' + question['content'] if question else ''))
         # 终态审查留在历史中；重试不得再次消费旧的 revise/blocked 结论。
         changes.update(review_id=None, review_packet=None)
         now = time.time()
         count = run.get('manual_retry_count', 0) + 1
         evidence = ledger.create('evidence', {'product_id': run['product_id'], 'run_id': ident,
-            'title': '人工阻塞重试', 'phase': 'manual_retry', 'at': now,
+            'title': '人工允许返修' if allow_revision else '人工阻塞重试', 'phase': 'manual_retry', 'at': now,
             'details': redact({'source': 'human', 'manual_retry_count': count, 'at': now,
-                'from': run['status'], 'to': phase, 'reason': run.get('reason', ''),
+                'from': original['status'], 'to': phase, 'reason': original.get('reason', ''),
+                'action': 'allow-revision' if allow_revision else 'retry',
+                'agent_message_id': question['id'] if question else None,
                 'revisions': run.get('revisions', 0), 'extra_revisions': run.get('extra_revisions', 0),
                 'source_version': version, 'review_id': run.get('review_id'),
                 'coordination_pending': run.get('coordination_pending'), 'counts_toward_revisions': False})},
             'recorded', db=db)
         changes.update(manual_retry_count=count, last_manual_retry_at=now,
                        manual_retry_pending=evidence['id'], manual_retry_evidence_id=evidence['id'])
-        updated = ledger.update('runs', ident, version, changes, phase, db)
+        updated = ledger.update('runs', ident, run['version'], changes, phase, db)
         ledger.store.event('autopilot_manual_retry', detail={'kind': 'runs', 'id': ident,
-            'evidence_id': evidence['id'], 'count': count, 'from': 'blocked', 'to': phase}, db=db)
+            'evidence_id': evidence['id'], 'count': count, 'from': original['status'], 'to': phase}, db=db)
         return updated
 
 
@@ -76,7 +111,12 @@ def abnormal(item):
 
 
 def quota_reason(scheduler, item, product, kind):
-    if not scheduler.tokens_available(product):
+    return quota_reason_for(scheduler.ledger, item, product, kind, scheduler.tokens_available(product))
+
+
+def quota_reason_for(ledger, item, product, kind, tokens_available):
+    """供调度和只读状态投影共用的当前额度判断。"""
+    if not tokens_available:
         return '每日 Token 额度不足，等待额度恢复'
     phase = item.get('resume_status')
     policy = DEFAULTS | product.get('policy', {})
@@ -84,17 +124,17 @@ def quota_reason(scheduler, item, product, kind):
         if item.get('execution_seconds', 0) >= policy['execution_seconds']:
             return '累计开发执行时间额度不足'
     if kind == 'runs' and phase == 'queued' and not item.get('budget_reserved'):
-        evaluation = scheduler.ledger.get('evaluations', item['evaluation_id']) if item.get('evaluation_id') else None
+        evaluation = ledger.get('evaluations', item['evaluation_id']) if item.get('evaluation_id') else None
         budget_kind = 'evaluation:' + evaluation['id'] if evaluation else 'development'
         limit = evaluation['target_count'] if evaluation else policy['runs_per_day']
-        if limit and scheduler.ledger.budget_used(product['id'], budget_kind) >= limit:
+        if limit and ledger.budget_used(product['id'], budget_kind) >= limit:
             return '每日需求额度不足，等待额度恢复'
     if kind == 'runs' and phase in ('plan_review', 'acceptance_review'):
-        quota = scheduler.store.state / 'quota.json'
+        quota = ledger.store.state / 'quota.json'
         if quota.exists():
             value = json.loads(quota.read_text())
             today = datetime.datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
-            if value.get('day') == today and value.get('count', 0) >= scheduler.store.settings()['max_per_day']:
+            if value.get('day') == today and value.get('count', 0) >= ledger.store.settings()['max_per_day']:
                 return '平台每日审查额度不足，等待额度恢复'
     return ''
 

@@ -6,7 +6,7 @@ from .store import redact
 
 
 KINDS = ('signals', 'requirements', 'runs', 'releases', 'deliveries',
-         'code_reviews', 'inspections', 'evidence', 'evaluations', 'daily_reports')
+         'code_reviews', 'inspections', 'evidence', 'evaluations', 'daily_reports', 'coordination_decisions')
 REFERENCES = {
     'signal_id': 'signals', 'signal_ids': 'signals',
     'requirement_id': 'requirements', 'requirement_ids': 'requirements',
@@ -18,6 +18,7 @@ REFERENCES = {
     'review_id': 'reviews', 'acceptance_review_id': 'reviews',
     'review_ids': 'reviews', 'code_review_id': 'code_reviews',
     'round_id': 'code_reviews',
+    'coordination_plan_id': 'coordination_decisions',
 }
 
 
@@ -30,6 +31,8 @@ def references(value, kind):
             return
     if isinstance(value, dict):
         for key, item in value.items():
+            if kind == 'coordination_decisions' and key == 'material':
+                continue  # 项目评估快照包含其他任务，不能冒充本方案的执行关联。
             target = REFERENCES.get(key) or ('evidence' if key == 'steps' and kind == 'inspections' else None)
             if target:
                 for ident in item if isinstance(item, list) else [item]:
@@ -74,4 +77,13 @@ def record_context(ledger, kind, ident, record=None):
         if forward or reverse or same_call:
             related.append({'kind': target, 'record': item})
     missing = [{'kind': k, 'id': i} for k, i in sorted(wanted) if (k, i) not in candidates]
+    from .run_progress import RunProgress
+    progress = RunProgress(ledger)
+    if kind == 'runs':
+        record = progress.annotate(record)
+    elif kind == 'requirements':
+        linked = next((run for run in progress.runs if run['id']==record.get('run_id') and run.get('requirement_id')==record['id'] and run['product_id']==record['product_id']), None)
+        if linked and progress.current(linked):
+            record = record | {'current_progress':progress.current(linked)}
+    related = [item | {'record':progress.annotate(item['record'])} if item['kind']=='runs' else item for item in related]
     return {'record': redact(record), 'related': redact(related), 'missing': missing}

@@ -11,6 +11,7 @@ import { ArrowRightOutlined, ReloadOutlined, PlusOutlined } from '@ant-design/ic
 import { api } from '../api';
 import { time, useData, eventLabels, labels as sharedLabels } from '../components';
 import ProjectFlow, { type FlowNodeId } from '../ProjectFlow';
+import { groupFlowRuns, type RunFlowNode } from '../projectFlowState';
 import ProjectEvidence from '../ProjectEvidence';
 import DeliveryBoard, {type DeliveryBoardData,type RepairIssue,type PullRequest} from '../DeliveryBoard';
 import DeliveryTasks from '../DeliveryTasks';
@@ -42,6 +43,7 @@ const labels: Record<string,string> = {
 };
 
 function agentExecutionError(record:RecordItem) {
+  if(record.current_progress)return false;
   const result=record.result as {failure_kind?:string;reason?:string} | undefined;
   return !activeCall(record) && record.status==='blocked' && (result?.failure_kind==='agent_execution' || /模型执行失败|Harness (执行失败|审查执行失败)|Agent 回执读取失败|最终回执解析失败|执行进程已失联|执行超时/.test(String(record.reason || result?.reason || '')));
 }
@@ -84,7 +86,7 @@ export default function AutopilotPage() {
   const reload=()=>Promise.all([products.refetch(),signals.refetch(),requirements.refetch(),runs.refetch(),releases.refetch(),deliveries.refetch(),deliveryBoard.refetch(),workbench.refetch(),...(gitUrl?[gitStatus.refetch()]:[])]);
   const act=async(kind:string,item:RecordItem,action:string)=>{
     setBusy(true);
-    try { await api(`/${kind}/${item.id}/${action}`,{version:item.version}); await reload(); message.success('操作已记录'); }
+    try { await api(`/${kind}/${item.id}/${action}`,{version:item.version}); await reload(); message.success(action==='allow-revision'?'已允许一轮返修，不计入返修次数':'操作已记录'); }
     catch(e) { message.error(errorText(e)); }
     finally { setBusy(false); }
   };
@@ -124,26 +126,28 @@ export default function AutopilotPage() {
       return Number(first(b))-Number(first(a)) || (first(a) && first(b)?Number(b.queue_first_at || 0)-Number(a.queue_first_at || 0):0);
     });
     const rows=ordered.filter(r=>(!filter.status || currentStatus(r)===filter.status) &&
-      (!filter.query || [recordTitle(r),currentReason(r),r.id].some(value=>String(value || '').toLowerCase().includes(filter.query!.toLowerCase()))));
+      (!filter.query || [recordTitle(r),currentReason(r),currentRecord(r).branch,r.id].some(value=>String(value || '').toLowerCase().includes(filter.query!.toLowerCase()))));
     return <>
     <Space wrap className="project-record-filters">
-      <Input.Search aria-label="搜索当前记录" placeholder="搜索名称、原因或编号" allowClear value={filter.query || ''} onChange={e=>updateFilter({query:e.target.value})} style={{width:260}}/>
+      <Input.Search aria-label="搜索当前记录" placeholder="搜索名称、原因、分支或编号" allowClear value={filter.query || ''} onChange={e=>updateFilter({query:e.target.value})} style={{width:280}}/>
       <Select aria-label="筛选记录状态" placeholder="全部状态" allowClear value={filter.status} onChange={status=>updateFilter({status})} style={{width:150}} options={[...new Set(data?.map(currentStatus))].filter(Boolean).map(status=>({value:status,label:labels[status] || status}))}/>
       <span className="muted">{rows.length} 条{isRequirement?'需求':'记录'}</span>
     </Space>
     <Table<RecordItem>
     style={kind==='deliveries'?{containerType:'inline-size'}:undefined}
     expandable={kind==='deliveries'?{expandedRowRender:r=><DeliveryTasks deliveryId={r.id} day={String(r.day || '')}/>,columnWidth:110,columnTitle:'当日问题',expandIcon:({expanded,onExpand,record})=><Button size="small" aria-expanded={expanded} onClick={e=>onExpand(record,e)}>{expanded?'收起问题':'展开问题'}</Button>}:undefined}
-    className="project-record-table" tableLayout="fixed" rowKey="id" dataSource={rows} size="middle" pagination={{pageSize:10,showSizeChanger:false}} scroll={{x:1050+(kind==='requirements'?450:kind==='deliveries'?180:0)}}
+    className="project-record-table" tableLayout="fixed" rowKey="id" dataSource={rows} size="middle" pagination={{pageSize:10,showSizeChanger:false}} scroll={{x:1050+(kind==='requirements'?630:kind==='runs' || kind==='deliveries'?180:0)}}
     columns={[
       {title:isRequirement?'需求名称':'名称 / 摘要',width:240,render:(_,r)=><><button className="text-link project-record-name" onClick={()=>setSelected(r,kind)}>{kind==='events'?(eventLabels[recordTitle(r)] || recordTitle(r)):recordTitle(r)}</button>{r.queue_first===true && <Tooltip title="优先于普通排队需求；多个手动需求以最近提交的优先，不打断当前执行任务"><Tag color="red">高优先级 · 插队</Tag></Tooltip>}</>},
 
       {title:kind==='requirements'?'当前进度':'状态',width:140,render:(_,r)=><Tag color={colors(currentStatus(r))}>{agentExecutionError(currentRecord(r))?'Agent 运行异常':progress(r).label}</Tag>},
-      {title:'原因',render:(_,r)=><><ErrorNotice value={currentReason(r)}/>{r.status==='blocked' && !!r.next_auto_retry_at && <div className="muted">{r.auto_retry_wait_reason?String(r.auto_retry_wait_reason):`异常自动重试：${time(Number(r.next_auto_retry_at))}（有额度且执行空闲时）`}</div>}</>},
+      {title:'原因',render:(_,r)=><><ErrorNotice value={currentReason(r)}/>{typeof currentRecord(r).failure_reason==='string' && currentRecord(r).failure_reason!==currentReason(r) && <div className="muted">阻塞原因：<ErrorNotice value={currentRecord(r).failure_reason}/></div>}{r.status==='blocked' && !!r.next_auto_retry_at && <div className="muted">{r.auto_retry_wait_reason?String(r.auto_retry_wait_reason):`异常自动重试：${time(Number(r.next_auto_retry_at))}（有额度且执行空闲时）`}</div>}</>},
+      ...(kind==='runs' || kind==='requirements'?[{title:'开发分支',width:180,render:(_:unknown,r:RecordItem)=><span className="record-text">{String(currentRecord(r).branch || '—')}</span>}]:[]),
       ...(kind==='deliveries'?[{title:'交付分支',width:180,render:(_:unknown,r:RecordItem)=>String(r.branch || '—')}]:[]),
       ...(kind==='requirements'?[{title:'处理分类',width:150,render:(_:unknown,r:RecordItem)=><RecordValue value={r.classification} field="classification"/>},{title:'下次调查',width:150,render:(_:unknown,r:RecordItem)=>r.classification!=='development' && ['pending','awaiting_external'].includes(r.status) && r.next_investigation?time(Number(r.next_investigation)):'—'},{title:'需求归属日期',width:150,render:(_:unknown,r:RecordItem)=>String(r.requirement_day || '历史需求')}]:[]),
       {title:'更新时间',width:150,render:(_,r)=>time(r.updated)},
       {title:'操作',width:200,render:(_,r)=><Space wrap>
+        {(kind==='runs' || kind==='requirements' && linkedRun(r)) && ['blocked','waiting_for_reply'].includes(currentStatus(r)) && <Tooltip title="允许再执行一轮返修，不计入自动返修次数；保留原有次数和记录"><Button size="small" type="primary" disabled={busy || currentRecord(r).uncertain===true || !!activeCall(currentRecord(r))} onClick={()=>void act('runs',currentRecord(r),'allow-revision')}>人工允许返修</Button></Tooltip>}
         {kind==='signals' && r.status==='pending' && !r.requirement_id && !(r.requirement_ids as string[]|undefined)?.length && <Button size="small" disabled={promotionBusy} onClick={()=>openPromotion(r)}>加入需求池</Button>}
         {kind==='requirements' && r.status==='pending' && (!r.classification || r.classification==='development') && <Button size="small" disabled={busy} onClick={()=>void act(kind,r,'queue')}>{r.queue_first===true?'优先加入开发队列':'加入开发队列'}</Button>}
         {kind==='runs' && !['accepted','delivered','online','completed','cancelled','rolled_back','blocked'].includes(r.status) && <>
@@ -199,7 +203,7 @@ export default function AutopilotPage() {
   const deliveryStages:Record<string,string[]>={online:['online'],merge:['awaiting_merge','syncing','merging','collecting','validating','merging_feature','syncing_release','syncing_feature']};
   const stageDeliveries=(stage:string)=>projectDeliveries.filter(r=>deliveryStages[stage]?.includes(String(r.status==='blocked'?r.resume_status:r.status)));
   const blockedDeliveries=projectDeliveries.filter(r=>r.status==='blocked');
-  const count=(...statuses:string[])=>projectRuns.filter(r=>statuses.includes(r.status)).length;
+  const flowRuns=groupFlowRuns(projectRuns);
   const observations=['probe','inspect',...((project?.git as {enabled?:boolean})?.enabled?['master_sync','final_acceptance']:[]),'discover'].map(action=>{
     const receipts=(project?.receipts ?? []) as {action:string;at:number;result:RecordItem}[];
     const receipt=[...receipts].reverse().find(r=>r.action===action || action==='probe' && r.action==='recover-runtime');
@@ -213,15 +217,14 @@ export default function AutopilotPage() {
   const counts:Partial<Record<FlowNodeId,number>>={
     product:projectRequirements.length,signals:scoped(signals.data).filter(s=>s.status==='pending').length,
     requirements:projectRequirements.filter(r=>['pending','investigating','awaiting_external'].includes(r.status)).length,
-    review:count('plan_review'),planning:count('queued','planning'),design:designRuns.length,
-    development:count('developing'),testing:count('verifying'),acceptance:count('acceptance_review','accepted'),
-    delivery:count('delivered'),online:onlineRequirements.length,
+    review:flowRuns.review.length,planning:flowRuns.planning.length,design:designRuns.length,
+    development:flowRuns.development.length,testing:flowRuns.testing.length,acceptance:flowRuns.acceptance.length,
+    delivery:flowRuns.delivery.length,online:onlineRequirements.length,
     codeReview:new Set((deliveryBoard.data?.prs || []).filter(pr=>pr.status==='unreviewed' && pr.git_status==='open' && pr.requirement_id).map(pr=>pr.requirement_id)).size,fixing:deliveryBoard.data?.issues.length ?? 0,merge:deliveryBoard.data?.release_prs?.filter(pr=>pr.git_status==='open').length ?? 0,
-    blocked:count('blocked','pausing')+blockedDeliveries.length,cancelled:count('cancelled','rolled_back'),
+    blocked:flowRuns.blocked.length+blockedDeliveries.length,cancelled:flowRuns.cancelled.length,
   };
-  const nodeStatuses:Partial<Record<FlowNodeId,string[]>>={review:['plan_review'],planning:['queued','planning'],development:['developing'],testing:['verifying'],acceptance:['acceptance_review','accepted'],delivery:['delivered'],blocked:['blocked','pausing'],cancelled:['cancelled','rolled_back']};
   const selectedKind=node==='signals'?'signals':node==='requirements'?'requirements':node==='online'?'online_requirements':node==='merge'?'deliveries':'runs';
-  const selectedData=node==='product'?projectRuns:node==='design'?designRuns:node==='signals'?scoped(signals.data).filter(s=>s.status==='pending'):node==='requirements'?projectRequirements.filter(r=>['pending','investigating','awaiting_external'].includes(r.status)):node==='online'?onlineRequirements:node==='merge'?stageDeliveries(node):projectRuns.filter(r=>nodeStatuses[node ?? 'product']?.includes(r.status));
+  const selectedData=node==='product'?projectRuns:node==='design'?designRuns:node==='signals'?scoped(signals.data).filter(s=>s.status==='pending'):node==='requirements'?projectRequirements.filter(r=>['pending','investigating','awaiting_external'].includes(r.status)):node==='online'?onlineRequirements:node==='merge'?stageDeliveries(node):flowRuns[node as RunFlowNode] ?? [];
   const primaryTabs=<Tabs className={`project-primary-tabs${section==='intelligence'?' dialogue-primary-tabs':''}`} activeKey={section} items={Object.entries(sections).map(([key,value])=>({key,label:value.label}))} onChange={key=>navigate(key as ProjectSection)}/>;
   if(section==='intelligence')return <>{primaryTabs}<ProjectIntelligence pid={project?.id} projects={products.data}/></>;
   return <>
@@ -241,7 +244,7 @@ export default function AutopilotPage() {
     <div className="project-summary-bar">
       <button onClick={()=>{setTab('sessions');document.getElementById('project-records')?.scrollIntoView({behavior:'smooth'});}}><span>执行会话</span><strong>{workbench.data?.sessions.length ?? '—'}</strong><small>当前项目的真实会话</small><ArrowRightOutlined/></button>
       <button onClick={()=>{setTab('reviews');document.getElementById('project-records')?.scrollIntoView({behavior:'smooth'});}}><span>监工审查</span><strong>{workbench.data?.reviews.length ?? '—'}</strong><small>方案 · 检查 · 验收</small><ArrowRightOutlined/></button>
-      <button onClick={()=>gitIssue?document.getElementById('project-git-issue')?.scrollIntoView({behavior:'smooth'}):issues.length?showMonitoring():setNode('blocked')}><span>需要关注</span><strong>{count('blocked','pausing')+blockedDeliveries.length+issues.length+(gitIssue?1:0)}</strong><small>{gitIssue?gitIssueSummary:(issues[0]?.result?errorText(issues[0].result,'应用服务'):'阻塞与返修任务')}</small><ArrowRightOutlined/></button>
+      <button onClick={()=>gitIssue?document.getElementById('project-git-issue')?.scrollIntoView({behavior:'smooth'}):issues.length?showMonitoring():setNode('blocked')}><span>需要关注</span><strong>{flowRuns.blocked.length+blockedDeliveries.length+issues.length+(gitIssue?1:0)}</strong><small>{gitIssue?gitIssueSummary:(issues[0]?.result?errorText(issues[0].result,'应用服务'):'阻塞、等待回复与待核对任务')}</small><ArrowRightOutlined/></button>
       <button onClick={()=>setTab('policy')}><span>运行策略</span><strong className="summary-word">{project?.status==='active'?'自主运行':project?.status==='observing'?'仅监测':'已暂停'}</strong><small>{project?.status==='active'?'检查通过后自动推进':'自动开发与发布尚未启用'}</small><ArrowRightOutlined/></button>
     </div>
     <div className="project-live-note"><span><i/>{project?.last_probe?`最近巡检 ${time(Number(project.last_probe))}`:'尚无巡检回执'}</span><span>节点数字来自当前项目台账 · 点击节点查看证据</span></div>
@@ -249,7 +252,7 @@ export default function AutopilotPage() {
     <Card className="panel project-records" id="project-records">{section==='testing'?(project?<TestChains key={project.id} pid={project.id} tab={tab} onTabChange={setTab}/>:<Alert type="info" message="请先接入项目"/>):section==='competitors'?(project?<CompetitorAnalysis key={project.id} pid={project.id}/>:<Alert type="info" message="请先接入项目"/>):section==='evidence'?<ProjectEvidence key={project?.id} productId={project?.id} tab={tab} onTabChange={setTab}/>:section==='settings'?<ProjectSettings key={project?.id} project={project} reload={reload} tab={tab} onTabChange={setTab} hasRunningTasks={projectRuns.some(r=>!['accepted','delivered','online','completed','cancelled','rolled_back','queued','blocked'].includes(r.status))}/>:<Tabs activeKey={sections[section]?.tabs.includes(tab)?tab:sections[section]?.tabs[0]} onChange={setTab} items={[
       {key:'monitoring',label:`运行状态${issues.length?` · ${issues.length} 项需关注`:''}`,children:<Space direction="vertical" style={{width:'100%'}}>{observations.map(o=><Alert key={o.action} showIcon type={o.running?'info':!o.result?'info':o.result.monitor_mode==='basic'?'warning':o.result.status==='pass'?'success':o.result.status==='blocked'?'warning':o.result.status==='busy'?'info':'error'} message={`${o.title} · ${o.running?'执行中':o.result?`上次结果：${(o.result.monitor_mode==='basic'?'基础健康正常 · 发布监测未接入':o.result.status==='busy'?'等待执行':labels[o.result.status] || o.result.status)}`:'尚未执行'}`} description={<>{o.running?<p>本轮开始于 {time(o.running.started)} · 等待执行回执</p>:<p>当前：{deliveryBoard.data?.dispatch?.reason || (project?.status==='paused'?'项目已暂停':'等待下一轮调度')}</p>}{o.result && <details><summary>上次结果 · {time(o.at)}</summary><div>{o.result.status!=='pass'?<ErrorNotice value={o.result} subject="应用服务"/>:String(o.result?.reason || (o.result?.status==='pass'?'本次检查已通过':'等待执行回执'))}</div></details>}{o.result && <Button type="link" size="small" onClick={()=>setSelection({record:o.result!,kind:'monitoring',receipt:o.receipt && JSON.stringify(o.receipt.result)===JSON.stringify(o.result)?o.receipt:{action:o.action,at:o.at,result:o.result}})}>查看回执</Button>}</>}/>)}</Space>},
       {key:'requirements',label:`需求台账 ${projectRequirements.length}`,children:table('requirements',projectRequirements)},
-      {key:'signals',label:`监测信号 ${scoped(signals.data).length}`,children:table('signals',scoped(signals.data))},
+      {key:'signals',label:`监测信号 ${scoped(signals.data).filter(s=>s.status!=='abnormal').length}`,children:table('signals',scoped(signals.data).filter(s=>s.status!=='abnormal'))},
       {key:'coordinator',label:'项目协调',children:tab==='coordinator'?<ProjectCoordinator key={project?.id} pid={project?.id}/>:null},
       {key:'requirement_groups',label:'联合需求',children:project?<ProjectGroups pid={project.id}/>:null},
       {key:'runs',label:`任务记录 ${projectRuns.length}`,children:table('runs',projectRuns)},

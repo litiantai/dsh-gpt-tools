@@ -304,7 +304,7 @@ class StagedDeliveryTests(unittest.TestCase):
             self.assertEqual(call.call_args.args[3], 'validate_release')
             self.assertEqual([r['id'] for r in call.call_args.args[5]['runs']], [run['id']])
         b = f.ledger.get('deliveries', b['id'])
-        with patch('autopilot.delivery_review.verify', return_value={'status': 'pass'}), patch('autopilot.staged_delivery.time.time', return_value=b['cutoff'] + 2):
+        with patch('autopilot.delivery_review.verify', return_value={'status': 'pass', 'checks': [{'name': 'fixture', 'status': 'pass', 'required': True}]}), patch('autopilot.staged_delivery.time.time', return_value=b['cutoff'] + 2):
             result = execute('validate_release', f.request(b))
         complete(f.scheduler, b, result, 'validate_release')
         with patch.object(f.scheduler, 'start_call') as call:
@@ -411,7 +411,7 @@ class StagedDeliveryTests(unittest.TestCase):
             'assert requirement["resolution_probes"][0]["path"]=="check:generic-projects"\n'
             'assert "+value" in Path(material["diff_file"]).read_text()\n'
             'print(json.dumps({"status":"pass","checks":['
-            '{"name":"独立业务验证","status":"pass","required":True,"evidence":{"provider":"codex"}}]}))\n')
+            '{"name":"独立业务验证","status":"pass","required":True,"evidence":{"provider":"codex","status":"pass","acceptance_results":[{"criterion_id":"candidate:0","status":"pass","evidence":"摘要一致"}],"findings":[]}}]}))\n')
         adapter.chmod(0o700)
         f.product['adapter'] = [sys.executable, str(adapter)]
         with patch.object(f.scheduler, 'start_call') as start:

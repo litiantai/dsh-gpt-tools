@@ -59,7 +59,7 @@ class DailyTests(unittest.TestCase):
         self.ledger.budget(self.product['id'],'tokens',1)
         self.ledger.budget(self.product['id'],'development',1)
         with patch('autopilot.daily.time.time',return_value=self.midnight+19*3600),patch.object(scheduler,'start_call') as start:
-            self.assertTrue(tick(scheduler))
+            self.assertFalse(tick(scheduler))
             self.assertEqual(start.call_args.args[3],'daily_retrospective')
         self.assertFalse(scheduler.tokens_available(self.product))
 
@@ -117,22 +117,36 @@ class DailyTests(unittest.TestCase):
             tick(scheduler)
             self.assertEqual(start.call_args.args[3],'daily_attribution')
 
-    def test_daily_waits_for_development_and_discovery(self):
+    def test_readonly_retrospective_runs_during_development(self):
         self.ledger.create('runs',{'product_id':self.product['id'],'call':{'action':'develop'}},'developing')
         scheduler=Scheduler(self.store)
         with patch('autopilot.daily.time.time',return_value=self.midnight+19*3600),patch.object(scheduler,'start_call') as start:
-            self.assertFalse(tick(scheduler));start.assert_not_called()
+            self.assertFalse(tick(scheduler))
+            self.assertEqual(start.call_args.args[3], 'daily_retrospective')
         self.assertEqual(len(self.ledger.list('daily_reports')),1)
 
-    def test_nightly_covers_backlog_and_failed_inspections_then_batches_all(self):
+    def test_actual_reacceptance_waits_for_development(self):
+        req=self.ledger.create('requirements',{'product_id':self.product['id']})
+        self.ledger.create('runs',{'product_id':self.product['id'], 'requirement_id':req['id'], 'accepted_at':self.midnight+3600},'accepted')
+        self.ledger.create('runs',{'product_id':self.product['id'], 'call':{'action':'develop'}},'developing')
+        scheduler=Scheduler(self.store)
+        with patch('autopilot.daily.time.time',return_value=self.midnight+19*3600),patch.object(scheduler,'start_call') as start:
+            self.assertFalse(tick(scheduler))
+            start.assert_not_called()
+
+    def test_nightly_batches_backlog_and_attributes_failed_inspections(self):
         self.product=self.ledger.update('products',self.product['id'],self.product['version'],{'nightly_attribution':True})
         with patch('autopilot.store.time.time',return_value=self.midnight-3600):
             old=[self.ledger.create('signals',{'product_id':self.product['id'],'summary':'积压'}) for _ in range(21)]
         with patch('autopilot.store.time.time',return_value=self.midnight+3600):
             inspection=self.ledger.create('inspections',{'product_id':self.product['id'],'title':'失败巡检','judgement':'页面打不开','steps':[]},'blocked')
+            abnormal=self.ledger.signal(self.product['id'],{'source':'inspection','code':'PROJECT_HEALTH','summary':'超时巡检','evidence':{'status':'blocked','reason':'timed out'}})
         report=snapshot(self.ledger,self.product,self.midnight+19*3600)
-        self.assertEqual(len(report['attribution_signal_ids']),22)
+        self.assertEqual(len(report['attribution_signal_ids']),23)
         self.assertIn('nightly-'+inspection['id'],report['attribution_signal_ids'])
+        self.assertIn(abnormal['id'],report['attribution_signal_ids'])
+        self.assertEqual(self.ledger.get('signals','nightly-'+inspection['id'])['status'],'abnormal')
+        self.assertEqual(self.ledger.get('inspections',inspection['id'])['judgement'],'页面打不开')
         scheduler=Scheduler(self.store)
         for index in range(3):
             report=self.ledger.get('daily_reports',report['id'])
@@ -146,7 +160,8 @@ class DailyTests(unittest.TestCase):
             with patch('autopilot.daily.time.time',return_value=self.midnight+19*3600):tick(scheduler)
         report=self.ledger.get('daily_reports',report['id'])
         self.assertEqual(len(report['attribution_results']),3)
-        self.assertTrue(all(self.ledger.get('signals',i)['status']=='reviewed' for i in report['attribution_signal_ids']))
+        self.assertTrue(all(self.ledger.get('signals',i).get('attribution_pending') is False for i in report['attribution_signal_ids']))
+        self.assertEqual(self.ledger.get('signals',abnormal['id'])['status'],'abnormal')
 
     def test_shared_signal_creates_all_requirements_and_replay_is_idempotent(self):
         signal=self.ledger.create('signals',{'product_id':self.product['id'],'summary':'两个问题'})

@@ -7,6 +7,11 @@ export function activeCall(record?:unknown):ActiveCall|undefined {
 }
 const queuedPhases=new Set(['preparing','syncing_feature','code_review','repairing_feature','syncing_release','reviewing_release','repairing_release','validating','merging_feature','merging','planning','plan_review','acceptance_review','syncing','repairing','developing','verifying','investigating','deploying']);
 export function currentProgress(record:RecordData, waitReason?:string, review?:RecordData) {
+  const live=record.current_progress;
+  if(live && typeof live==='object' && 'label' in live && 'reason' in live) {
+    const value=live as {label:string;reason:string;running?:boolean};
+    return {label:value.label,reason:value.reason,running:!!value.running};
+  }
   const call=activeCall(record), status=String(record.status || '');
   if(call && ['pausing','cancelling'].includes(status))return {label:`${recordLabel(status)} · 等待执行结束`,reason:String(record.reason || '等待当前调用停止并核对结果'),running:true};
   if(call)return {label:`${recordLabel(call.action)} · 执行中`,reason:'本轮执行尚未结束，等待回执',running:true};

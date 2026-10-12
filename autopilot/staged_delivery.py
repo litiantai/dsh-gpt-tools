@@ -223,6 +223,8 @@ def execute(action, request):
             _, after = load_pull_request(b)
             if before != digest(workspace) or after['head']['sha'] != pr['head']['sha'] or after['base']['sha'] != pr['base']['sha']:
                 return {'status': 'stale', 'stale': True, 'reason': '统一验证期间源码变化，证据失效'}
+            from .merge_validation import certify
+            checked = certify(request, checked, pr['head']['sha'], pr['base']['sha'])
             gh.status(pr['head']['sha'], 'success' if checked['status'] == 'pass' else 'failure',
                 'release 统一验证通过' if checked['status'] == 'pass' else '统一验证：' + checked.get('reason', '必需检查未通过'))
             return checked | {'head_sha': pr['head']['sha'], 'base_sha': pr['base']['sha']}
@@ -337,7 +339,7 @@ def complete(scheduler, b, result, action):
     if action == 'repair_release':
         return change({'head_sha': result['head_sha'], 'review_pass': None, 'validation_pass': None, 'reason': ''}, 'syncing_release')
     if action == 'validate_release':
-        return change({'validation_pass': {'head_sha': result['head_sha'], 'base_sha': result['base_sha'], 'validation_id': b['validation_id']}, 'reason': ''}, 'merging')
+        return change({'validation_pass': {'head_sha': result['head_sha'], 'base_sha': result['base_sha'], 'validation_id': b['validation_id'], 'gate': result.get('merge_gate')}, 'reason': ''}, 'merging')
     if action == 'merge_release':
         return mark_online(ledger, b, result)
 

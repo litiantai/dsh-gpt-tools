@@ -10,6 +10,13 @@ from .store import redact
 from .workspace import digest, git
 
 ZONE = ZoneInfo('Asia/Shanghai')
+READ_ONLY_ACTIONS = {'daily_attribution', 'daily_retrospective'}
+
+
+def blocks_development(report):
+    """只读归因和复盘不占研发槽；复验及未知旧调用仍保守互斥。"""
+    call = report.get('call')
+    return bool(call and call.get('action') not in READ_ONLY_ACTIONS)
 
 
 def snapshot(ledger, product, now):
@@ -40,7 +47,7 @@ def snapshot(ledger, product, now):
         attribution={}
         if product.get('nightly_attribution'):
             signals=records('signals')
-            ids=[r['id'] for r in signals if r['created']<=cutoff and (r['status']=='pending' or r.get('attribution_pending') or start<r['created']<=cutoff)]
+            ids=[r['id'] for r in signals if r['created']<=cutoff and (r['status']=='pending' or r.get('attribution_pending') or start<r['created']<=cutoff or (r['status']=='abnormal' and not r.get('attribution')))]
             for inspection in records('inspections'):
                 if not start < inspection['created'] <= cutoff:
                     continue
@@ -85,7 +92,7 @@ def tick(scheduler):
         if report.get('call'):
             result = scheduler.call_result(report)
             if result is None:
-                return True
+                return blocks_development(report)
             report = scheduler.consume('daily_reports', report, result)
         receipt = report['receipts'][-1]
         result, action = receipt['result'], receipt['action']
@@ -125,14 +132,7 @@ def tick(scheduler):
             usage = sum(trace_tokens(path) for path in traces if path.is_file())
             scheduler.change('daily_reports', report, processed | {'retrospective_status':result['status'], 'retrospective': redact(result), 'finished_at': time.time(),
                 'exempt_usage': usage, 'reason': result.get('summary') or result.get('reason', '日报执行未返回说明')}, status)
-        return True
-    # 复验与研发模型串行，巡检可以继续；已启动的调用先收取回执。
-    if any(p.get('call', {}).get('action') == 'discover' for p in ledger.list('products') if p.get('call')):
-        return False
-    if any(r.get('call') for r in ledger.scoped('runs', product['id'])):
-        return False
-    if any(r.get('call') for r in ledger.scoped('requirements', product['id'])):
-        return False
+        return action not in READ_ONLY_ACTIONS
     command = [sys.executable, str(Path(__file__).resolve().parents[1] / 'scripts/autopilot-adapter.py'), 'daily']
     remaining=report.get('attribution_signal_ids',[])[len(report.get('attribution_results',[]))*8:]
     if remaining:
@@ -145,8 +145,14 @@ def tick(scheduler):
     else:
         extra = {'daily_report': report}
         action = 'daily_retrospective'
+    # 只读归因/复盘可与研发并行；实际复验仍保护候选目录和测试实例。
+    if action == 'daily_acceptance':
+        from .resources import ResourceSlots
+        resources = ResourceSlots(ledger)
+        if resources.blocker(resources.daily_candidate(report)):
+            return False
     scheduler.start_call('daily_reports', report, product, action, command, extra, timeout=900)
-    return True
+    return action not in READ_ONLY_ACTIONS
 
 
 def execute(action, request):

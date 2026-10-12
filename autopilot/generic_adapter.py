@@ -263,6 +263,9 @@ def execute(action, request):
             if result.get('quality') or product['project_config'].get('workflow_version') == 1:
                 validate_quality(result.get('quality'), record['workspace'], product['project_config'], trusted_root=request['state_root'])
             judged = evaluate('validate', payload | {'checks': result['checks'], 'quality': result.get('quality'), 'test_instance': result.get('instance')})
+            from .verification_findings import inconsistent_pass
+            if inconsistent_pass(request, judged):
+                judged = judged | {'status': 'blocked', 'reason': '独立验证总体通过与逐项验收或问题清单不一致', 'original_status': judged['status']}
             # 失败/阻塞回执必须可离线核对：把控制器落盘的自包含差异事实并入
             # 「独立业务验证」的 evidence，与 delivery_review.verify 的字段保持一致。
             # 保留 judged 的 status/reason/summary/provider/model，字段缺失用空值占位。
@@ -282,7 +285,7 @@ def execute(action, request):
             finding = defer(request, judged)
             if finding:
                 checks[-1].update(required=False, disposition='backlog', requirement_id=finding['id'])
-                result.update(reason='必需测试通过；功能缺陷已进入高优先级需求池', findings=[finding['id']])
+                result.update(reason='本次验收通过；明确无关的新问题已进入高优先级需求池', findings=[finding['id']])
             if judged['status'] != 'pass' and not finding:
                 return result | {'status': judged['status'], 'reason': judged.get('reason', '独立验证未通过'), 'checks': checks,
                         'collaboration_requests': judged.get('collaboration_requests', [])}

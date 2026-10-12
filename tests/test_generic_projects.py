@@ -221,7 +221,7 @@ class GenericTests(unittest.TestCase):
         fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\nPath(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","reason":"","summary":"verified","plan":"implement"}))\n')
         fake.chmod(0o700)
         product=self.p|{'repository':str(self.repo),'agents':{'implementation':{'provider':'codex','model':'fixture','bin':str(fake)}}}
-        result=model('plan',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
+        result=model('plan',{'product':product,'record':{'workspace':str(self.repo)},'state_root':str(self.store.state/'autopilot')})
         self.assertEqual(result['provider'],'codex');self.assertEqual(result['plan'],'implement')
 
     def worktree_fixture(self):
@@ -909,7 +909,7 @@ class GenericTests(unittest.TestCase):
         fake.chmod(0o700)
         product=self.p|{'repository':str(self.repo),'agents':{'implementation':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
         with patch.dict(os.environ, {'CODEX_HOME':str(login)}), patch('autopilot.sandbox.restrict',side_effect=lambda argv,*a,**kw: argv) as sandbox:
-            result=model('plan',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
+            result=model('plan',{'product':product,'record':{'workspace':str(self.repo)},'state_root':str(self.store.state/'autopilot')})
         self.assertEqual(result['status'],'pass')
         self.assertIn(login/'auth.json', sandbox.call_args.kwargs['readonly_roots'])
         self.assertFalse((login/'private-state').exists())
@@ -922,7 +922,7 @@ class GenericTests(unittest.TestCase):
         fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\ntry:\n Path("unexpected-write").write_text("must be denied")\n raise RuntimeError("readonly workspace escaped through its temporary ancestor")\nexcept PermissionError: pass\nPath(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","plan":"write denied"}))\n')
         fake.chmod(0o700)
         product=self.p|{'repository':str(self.repo),'agents':{'implementation':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
-        result=model('plan',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
+        result=model('plan',{'product':product,'record':{'workspace':str(self.repo)},'state_root':str(self.store.state/'autopilot')})
         self.assertEqual(result['status'],'pass',result)
         self.assertFalse((self.repo/'unexpected-write').exists())
 
@@ -936,7 +936,7 @@ class GenericTests(unittest.TestCase):
             fake.write_text('#!'+sys.executable+'\nimport sys,json\nfrom pathlib import Path\ntry:\n Path('+repr(str(protected))+').read_text()\n raise RuntimeError("another home directory was readable")\nexcept PermissionError: pass\nPath(sys.argv[sys.argv.index("-o")+1]).write_text(json.dumps({"status":"pass","plan":"private read denied"}))\n')
             fake.chmod(0o700)
             product=self.p|{'repository':str(self.repo),'agents':{'implementation':{'provider':'codex','model':'fixture','bin':str(fake)}},'adapter_spec':{'kind':'command'}}
-            result=model('plan',{'product':product,'record':{},'state_root':str(self.store.state/'autopilot')})
+            result=model('plan',{'product':product,'record':{'workspace':str(self.repo)},'state_root':str(self.store.state/'autopilot')})
             self.assertEqual(result['status'],'pass',result)
 
     def test_python_project_scan_is_recorded_and_source_remains_unchanged(self):

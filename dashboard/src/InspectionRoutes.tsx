@@ -13,7 +13,7 @@ export default function InspectionRoutes({pid}:{pid:string}) {
   const act=async(url:string,body:Record<string,unknown>)=>{setBusy(true);try{await api(url,body);setError('');await query.refetch();}catch(e){setError(errorText(e));}finally{setBusy(false);}};
   const plan=query.data?.plans.at(-1);
   return <>
-    <Space><Button type="primary" disabled={busy||['queued','running'].includes(plan?.status||'')} onClick={()=>void act(path+'/generate',{})}>重新生成巡检路线</Button><span>首次生成，业务变化后更新；每轮执行全部启用路线。</span></Space>
+    <Space><Button type="primary" disabled={busy||['queued','running'].includes(plan?.status||'')} onClick={()=>void act(path+'/generate',{})}>重新生成巡检路线</Button><Button disabled={busy} onClick={()=>void act(path+'/rescan',{})}>重新扫描</Button><span>每轮执行全部启用路线；异常每日北京时间 09:00 复扫。</span></Space>
     {(error||query.error)&&<Alert type="error" message={error||errorText(query.error)}/>}
     {plan&&<p>路线设计：{({queued:'排队中',running:'设计中',completed:'已完成',blocked:'阻塞'} as Record<string,string>)[plan.status]||plan.status} {plan.reason}</p>}
     {!!plan?.result?.coverage_gaps?.length&&<Alert type="warning" message="覆盖缺口" description={plan.result.coverage_gaps.join('；')}/>}

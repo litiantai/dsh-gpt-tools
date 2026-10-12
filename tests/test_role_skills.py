@@ -33,6 +33,20 @@ class RoleSkillTests(unittest.TestCase):
             self.assertEqual(outputs[0],outputs[1]);self.assertEqual(outputs[0],outputs[2])
             self.assertIn('pre_release',outputs[0][0])
 
+    def test_verifier_receives_each_requirement_and_strict_scope_contract(self):
+        request = {'product': {'test_execution': 'local'}, 'record': {},
+                   'requirements': [{'id': 'one', 'acceptance': ['first']}, {'id': 'two', 'acceptance': ['second']}]}
+        instruction, material = skills.compose('validate', request, {})
+        self.assertEqual([item['criterion_id'] for item in material['acceptance_targets']], ['one:0', 'two:0'])
+        self.assertIn('unknown', instruction)
+        self.assertIn('unrelated', instruction)
+        schema = skills.output_schema('validate')
+        for key in ('acceptance_results', 'findings'):
+            self.assertIn(key, schema['required'])
+            nested = schema['properties'][key]['items']
+            self.assertFalse(nested['additionalProperties'])
+            self.assertEqual(set(nested['properties']), set(nested['required']))
+
     def test_contracts_and_computer_actions_load(self):
         for action in ('discover','validate','plan','develop','computer_generate','computer_step'):
             schema=skills.output_schema(action)

@@ -62,7 +62,7 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
   const mismatchReason='当前项目接入能力不是通用命令适配器（adapter_spec.kind 必须为 command 且包含 verify 能力），且协议版本必须为 1，无法用隔离工作区执行扫描与验收；请先在项目设置中修正接入能力。';
   // 加载中（后端身份确认中或项目能力查询中）与查询失败一律不可提交：
   // 原因未明时既不请求 /scans，也不对旧后端或未知状态发起写请求。
-  const projectChecking=!!productId && supported && capability.isPending;
+  const projectChecking=!!productId && supported && (capability.isPending || capability.isFetching);
   const projectFailed=!!productId && supported && capability.isError;
   const checking=identity.isPending || identity.isFetching || projectChecking;
   // blocked 必须显式覆盖 identity.isError（先成功后失败），即使缓存 data 仍在也要拦截扫描/重新扫描/onboard/apply。

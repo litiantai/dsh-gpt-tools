@@ -46,6 +46,49 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 10
+    },
+    "help_plan": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "basis": {
+          "type": "string"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "verification": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "stop_conditions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "basis",
+        "steps",
+        "resources",
+        "verification",
+        "stop_conditions"
+      ]
     }
   },
   "required": [
@@ -58,6 +101,7 @@
     "strategy",
     "resume_phase",
     "to_role",
-    "priority"
+    "priority",
+    "help_plan"
   ]
 }

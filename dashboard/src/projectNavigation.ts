@@ -6,7 +6,7 @@ export const projectSections = {
   overview: { label: '工作概览', tabs: ['monitoring'] },
   requirements: { label: '需求池', tabs: ['requirements', 'signals'] },
   tasks: { label: '任务流水线', tabs: ['runs', 'requirement_groups', 'coordinator', 'sessions', 'reviews', 'events'] },
-  evidence: { label: '巡查与证据', tabs: ['inspections', 'inspection_routes', 'timeline', 'evaluations', 'daily'] },
+  evidence: { label: '巡查与证据', tabs: ['inspections', 'inspection_exceptions', 'inspection_routes', 'timeline', 'evaluations', 'daily'] },
   releases: { label: '代码交付与安装', tabs: ['deliveries', 'code_reviews', 'release_prs', 'repair_issues', 'releases'] },
   testing: { label: '测试链路', tabs: ['test_chains', 'test_chain_runs', 'test_chain_settings'] },
   settings: { label: '项目设置', tabs: ['roles', 'linked_projects', 'coordination_settings', 'research', 'git', 'policy', 'environment', 'notifications'] },
