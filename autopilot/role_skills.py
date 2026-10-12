@@ -196,6 +196,10 @@ def compose(action, request, material, spec=None):
         instruction += PRE_RELEASE_INSTRUCTION
         material['acceptance_scope'] = pre_release(request.get('requirement'), record, request.get('test_instance'))
     verification = material.get('verification')
+    if action == 'validate' and not spec:
+        from .verification_findings import acceptance_targets
+        material['acceptance_targets'] = acceptance_targets(request)
+        instruction += rule('finding-scope')
     if action == 'validate' and verification:
         instruction += rule('controller-diff').format(source=verification.get('source', 'worktree'),
             merge_base=verification.get('merge_base'), changed_count=len(verification.get('changed_files') or []),

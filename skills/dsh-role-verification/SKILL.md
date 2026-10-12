@@ -2,7 +2,7 @@
 name: dsh-role-verification
 description: 核对源码与真实测试证据，生成和执行必要测试链路。
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # 独立验证
@@ -19,6 +19,8 @@ metadata:
 - [test_chain_worker-verification-1](references/test_chain_worker-verification-1.md)：由平台按对应阶段选择加载。
 - [codex_executor-verification-4](references/codex_executor-verification-4.md)：由平台按对应阶段选择加载。
 - [codex_executor-verification-1](references/codex_executor-verification-1.md)：由平台按对应阶段选择加载。
+
+- [问题归属](references/finding-scope.md)：逐项验收并区分本次未达标、回归、无关问题与归属不明。
 
 ## 测试链路契约
 

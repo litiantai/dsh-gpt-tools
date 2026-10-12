@@ -264,6 +264,10 @@ def merge(request):
         return {'status': 'busy', 'reason': '等待 GitHub 检查通过'}
     if pr.get('mergeable') is not True or pr.get('mergeable_state') != 'clean':
         return {'status': 'busy', 'reason': '等待 GitHub 确认分支保护、必需评审与合并条件满足'}
+    from .merge_validation import verify
+    reason = verify(request, pr['head']['sha'], pr['base']['sha'])
+    if reason:
+        return {'status': 'pass', 'stale': True, 'reason': reason}
     merged = gh.merge(record['pr_number'], proof['head_sha'])
     return {'status': 'pass', 'merged': True, 'merge_sha': merged['merge_commit_sha']}
 

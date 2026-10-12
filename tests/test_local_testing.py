@@ -187,7 +187,11 @@ if(guard({name:'edit',arguments:{}})) throw Error('worker cannot edit code');
         from review_core import Store
         self.request['record'].update(id='candidate', base_commit=self.base)
         self.request['product'].update(adapter_spec={'capabilities': ['verify']}, functional_findings_policy='backlog')
-        finding = {'status': 'fail', 'reason': '能力检查完成前允许提交扫描', 'evidence': 'fixture-log'}
+        self.request['requirement'] = {'id': 'req', 'acceptance': ['本次扫描入口限制正确']}
+        finding = {'status': 'fail', 'reason': '历史导出页面新发现缺陷',
+            'acceptance_results': [{'criterion_id': 'req:0', 'status': 'pass', 'evidence': '扫描入口限制检查日志通过'}],
+            'findings': [{'scope': 'unrelated', 'requirement_ids': [], 'reason': '历史导出缺陷',
+                'evidence': '基线也可复现；不涉及本次扫描入口或修改文件'}]}
         with patch('autopilot.codex_executor.execute', return_value=finding), patch('autopilot.generic_adapter.package', return_value='manifest'):
             first = execute('verify', self.request)
             second = execute('verify', self.request)
@@ -202,6 +206,26 @@ if(guard({name:'edit',arguments:{}})) throw Error('worker cannot edit code');
         self.assertEqual(items[0]['priority'], 0)
         self.assertTrue(items[0]['queue_first'])
         self.assertEqual(items[0]['verification_occurrences'][0]['commit'], self.head)
+
+    def test_current_or_unscoped_failure_never_packages_or_enters_backlog(self):
+        from autopilot.generic_adapter import execute
+        from autopilot.store import Ledger
+        from review_core import Store
+        self.request['record'].update(id='candidate', base_commit=self.base)
+        self.request['product'].update(adapter_spec={'capabilities': ['verify']}, functional_findings_policy='backlog')
+        self.request['requirement'] = {'id': 'req', 'acceptance': ['身份失败后禁用']}
+        reports = [{'status': 'fail', 'reason': '旧版验收失败'},
+            {'status': 'fail', 'reason': '本次需求未达标',
+             'acceptance_results': [{'criterion_id': 'req:0', 'status': 'fail', 'evidence': '身份失败后按钮仍可用'}],
+             'findings': [{'scope': 'current_requirement', 'requirement_ids': ['req'], 'reason': '未禁用', 'evidence': '用例失败'}]}]
+        reports.append(reports[-1] | {'status': 'pass'})
+        for report in reports:
+            with self.subTest(report=report), patch('autopilot.codex_executor.execute', return_value=report), patch('autopilot.generic_adapter.package') as package:
+                result = execute('verify', self.request)
+                self.assertIn(result['status'], ('fail', 'blocked'), result)
+                self.assertTrue(result['checks'][-1]['required'])
+                package.assert_not_called()
+        self.assertEqual(Ledger(Store(self.root)).list('requirements'), [])
 
     def test_incomplete_verification_and_feature_findings_still_block(self):
         from autopilot.verification_findings import defer
