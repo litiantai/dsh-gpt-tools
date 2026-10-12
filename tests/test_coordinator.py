@@ -394,6 +394,32 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(result['status'],'blocked')
         self.assertIn('契约',result['reason'])
 
+    def test_executor_source_context_survives_validation_and_repair_dispatch(self):
+        d,output=self.decide(reason='需要受限返修',summary='依据失败回执重新制定技术方案',
+            source_context={'workspace':str(self.root),'branch':'feat-notification','commit':'candidate'},
+            evidence=str(self.root/'evidence'),provider='codex',model='test',role_skill={},snapshot_at=123)
+        with patch('autopilot.intelligence_worker.run_model',return_value=output):
+            result=c.evaluate({'product':self.product,'record':d})
+        self.assertEqual(result['status'],'pass')
+        self.assertEqual(result['source_context'],output['source_context'])
+        decision=c.apply(self.scheduler,d,result)
+        self.assertEqual(decision['status'],'applied')
+        self.assertEqual(decision['help_plan'],output['help_plan'])
+        self.assertTrue(decision['plan_saved_at'])
+        self.assertTrue(c.resume_pending(self.scheduler))
+        self.assertEqual(self.fresh()['status'],'planning')
+        self.assertFalse(self.fresh()['plan_approved'])
+
+    def test_source_metadata_does_not_allow_unknown_decision_fields(self):
+        d,output=self.decide(reason='修复',summary='核对',source_context={'commit':'candidate'})
+        for invalid in (output | {'approve_without_review':True},
+                        output | {'help_plan':output['help_plan'] | {'skip_verification':True}}):
+            with self.subTest(fields=list(invalid)), patch('autopilot.intelligence_worker.run_model',return_value=invalid):
+                result=c.evaluate({'product':self.product,'record':d})
+            self.assertEqual(result['status'],'blocked')
+            self.assertIn('契约',result['reason'])
+        self.assertEqual(self.fresh()['status'],'blocked')
+
     def test_manual_queue_priority_is_preserved(self):
         run=self.fresh()
         self.ledger.update('runs',run['id'],run['version'],{'queue_first':True,'queue_first_at':100},'queued')

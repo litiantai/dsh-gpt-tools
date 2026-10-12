@@ -458,7 +458,8 @@ def evaluate(request):
 
     if result.get('status') == 'pass':
         try:
-            validator({k:v for k,v in result.items() if k not in ('evidence','provider','model','role_skill','snapshot_at')}, schema)
+            # 执行器来源证据保留在回执中，不属于模型的协调决策契约。
+            validator({k:v for k,v in result.items() if k not in ('evidence','provider','model','role_skill','source_context','snapshot_at')}, schema)
             help_plan(result)
         except ValueError as exc:
             return result | {'status':'blocked','reason':'协调结果不符合契约：' + str(exc)}
