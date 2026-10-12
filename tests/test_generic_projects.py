@@ -155,10 +155,13 @@ class GenericTests(unittest.TestCase):
         self.assertTrue(self.control.handles('/autopilot/capabilities'))
         declaration=self.control.get('/autopilot/capabilities')
         self.assertIs(declaration['scan_api'],True)
-        self.assertEqual(declaration['scan_api_version'],1)
-        from autopilot.project import SUPPORTED_ADAPTER_VERSION
+        from autopilot.project import REPOSITORY_SCAN_API_VERSION, SUPPORTED_ADAPTER_VERSION
+        self.assertEqual(declaration['scan_api_version'],REPOSITORY_SCAN_API_VERSION)
         self.assertEqual(declaration['adapter_version'],SUPPORTED_ADAPTER_VERSION)
         self.assertIn('repository_scans',declaration['features'])
+        # 运行身份声明与兼容声明必须共用同一契约版本，防止两处能力声明漂移。
+        from dashboard_server import runtime_identity
+        self.assertEqual(runtime_identity(self.root)['capabilities']['repository_scans'],declaration['scan_api_version'])
         # 旧后端没有该路由：其余 autopilot 两段路径仍按台账读取并抛 KeyError（HTTP 404），
         # 前端据此判定后端不支持扫描接口，这正是门控要覆盖的场景。
         with self.assertRaises(KeyError):

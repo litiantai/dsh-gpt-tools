@@ -23,13 +23,25 @@ function repositories(scans:Scan[]):Repository[] {
 export default function RepositoryScans({onClose,productId,onChanged}:{onClose:()=>void;productId?:string;onChanged:()=>unknown}) {
   const [source,setSource]=useState('');const [selected,setSelected]=useState<string>();
   const [busy,setBusy]=useState(false);const {message}=App.useApp();
-  // 后端能力预检必须先于 /scans 请求：运行身份通过 capabilities.repository_scans 声明
-  // 本管理服务已实现仓库扫描接口；旧后端没有该声明（或查询失败/加载中），前端据此禁用入口，
-  // 从而避免向不存在的接口发起请求。只有确认支持后才请求列表，且不受全局 refetchInterval 影响。
-  const identity=useQuery<{capabilities?:{repository_scans?:number}}>({queryKey:['runtime-identity'],queryFn:()=>api('/runtime-identity'),retry:false});
-  const version=identity.data?.capabilities?.repository_scans;
-  const supported=typeof version==='number' && Number.isInteger(version) && version>=1;
-  const scans=useQuery<Scan[]>({queryKey:['/scans'],queryFn:()=>api('/scans'),enabled:supported,refetchInterval:3000,retry:false});
+  // 运行身份预检：只有后端明确声明 capabilities.repository_scans>=1 才认为支持仓库扫描 API。
+  // 声明来自正在运行的代码，而不是 release marker，因此旧后端不会被新 marker 伪装成受支持。
+  // 每次打开抽屉都使用独立查询键并禁用缓存，上一次会话“受支持”的结论绝不能被复用：
+  // 先连新后端、关闭抽屉、切换到旧后端再打开时，必须重新核对，核对完成前不发送任何 /api/scans 请求。
+  const [identityKey]=useState(()=>`runtime-identity:${crypto.randomUUID()}`);
+  const identity=useQuery<{capabilities?:{repository_scans?:number}}>({queryKey:[identityKey],queryFn:()=>api('/runtime-identity'),retry:false,staleTime:0,gcTime:0,refetchInterval:false,refetchOnWindowFocus:false});
+  const scanCapability=identity.data?.capabilities?.repository_scans;
+  // 只有本次会话成功取回、且当前没有进行中的核对时才承认能力；重新核对中或查询失败一律视为未确认。
+  const capabilityConfirmed=identity.isSuccess && !identity.isFetching;
+  const supported=capabilityConfirmed && typeof scanCapability==='number' && Number.isInteger(scanCapability) && scanCapability>=1;
+  const outdated=identity.isSuccess && !identity.isFetching && !supported;
+  const unknown=identity.isError;
+  const identityReason=outdated
+    ? '当前管理服务未声明仓库扫描能力（/api/runtime-identity 缺少 capabilities.repository_scans=1），页面无法确认其支持 /api/scans，已停止发送扫描请求。请先升级并重启管理服务，然后重新核对。'
+    : '无法确认运行身份 /api/runtime-identity 声明的仓库扫描能力，页面已停止发送扫描请求。请检查管理服务后重新核对。';
+  // 兼容声明：GET /api/autopilot/capabilities 只用于可编程声明与旧客户端兼容，
+  // 传输层放行必须以上面运行身份返回的 capabilities.repository_scans 为准，禁止用它做正向门控，
+  // 否则旧后端会被“看起来存在”的声明误放行。
+  const scans=useQuery<Scan[]>({queryKey:['/scans'],queryFn:()=>api<Scan[]>('/scans'),enabled:supported,refetchInterval:3000,retry:false});
   const current=scans.data?.find(s=>s.id===selected);
   const groups=repositories(scans.data || []);
   // 只读能力预检：项目必须声明通用命令适配器且具备 verify 能力，且协议版本必须为 1，
@@ -42,8 +54,7 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
   // 原因未明时既不请求 /scans，也不对旧后端或未知状态发起写请求。
   const projectChecking=!!productId && supported && capability.isPending;
   const projectFailed=!!productId && supported && capability.isError;
-  const checking=identity.isPending || projectChecking;
-  const backendUnsupported=identity.isSuccess && !supported;
+  const checking=identity.isFetching || projectChecking;
   const blocked=!supported || mismatch || projectFailed;
   const screenshot=useQuery<{data_url:string}>({queryKey:['scan-screenshot',selected],queryFn:()=>api(`/scans/${selected}/screenshot`),enabled:supported && !!current?.result?.checks?.some(c=>c.screenshot),retry:false});
   async function act(path:string,body:Record<string,unknown>){
@@ -54,7 +65,7 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
       <Alert type="info" showIcon message="在独立工作区识别并验证项目" description="提供本地仓库绝对路径或 HTTPS Git URL。获取源码后先识别 Java、前端及模块技术栈并检测本机工具；缺少运行时会提示安装。工具就绪后再安装项目依赖、构建、测试、尝试启动并保存结果。启动验证不代表业务验收通过。"/>
       {checking && <Alert type="info" showIcon message="正在确认后端扫描接口与当前项目接入能力" description="确认完成前已禁用扫描提交，避免向不支持的后端发起请求。"/>}
       {identity.isError && <Alert type="warning" showIcon message="无法核对管理服务" description="无法读取运行身份，扫描操作已暂停。请检查服务后重新核对。" action={<Button onClick={()=>void identity.refetch()}>重新核对</Button>}/>}
-      {backendUnsupported && <Alert type="warning" showIcon message="管理服务需要升级" description="当前管理服务未声明仓库扫描能力。请升级并重启管理服务后重新核对。" action={<Button onClick={()=>void identity.refetch()}>重新核对</Button>}/>}
+      {(outdated || unknown) && <Alert type="warning" showIcon message="管理服务需要升级" description={identityReason} action={<Button size="small" onClick={()=>void identity.refetch()}>重新核对</Button>}/>}
       {projectFailed && <Alert type="error" showIcon message="当前项目接入能力查询失败" description={<ErrorNotice value={capability.error} subject="管理服务"/>} action={<Button onClick={()=>void capability.refetch()}>重新核对</Button>}/>}
       {mismatch && <Alert type="warning" showIcon message="当前项目接入能力不匹配" description={mismatchReason}/>}
       <Space.Compact style={{width:'100%'}}><Input aria-label="代码仓库地址" value={source} onChange={e=>setSource(e.target.value)} placeholder="/绝对路径/项目 或 https://…/repo.git"/><Button type="primary" loading={busy} disabled={!source.trim() || checking || blocked} onClick={()=>void act('/scans',{source:source.trim()})}>扫描新仓库</Button></Space.Compact>

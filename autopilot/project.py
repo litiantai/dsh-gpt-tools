@@ -6,6 +6,9 @@ import json
 VERSION = 1
 # 通用扫描/应用所支持的唯一适配协议版本；接入能力预检与后端兜底共用同一常量。
 SUPPORTED_ADAPTER_VERSION = VERSION
+# 仓库扫描 HTTP 能力的契约版本；/api/runtime-identity 与兼容声明 /api/autopilot/capabilities 共用，
+# 避免运行身份与兼容声明两处版本漂移。
+REPOSITORY_SCAN_API_VERSION = 1
 CAPABILITIES = {'probe', 'inspect', 'verify', 'idle', 'publish', 'observe', 'rollback',
                 'master_sync', 'final_acceptance', 'recover-runtime', 'investigate'}
 
