@@ -62,7 +62,7 @@ const values: Record<string,string> = {
   agent_execution:'Agent 运行异常（不代表代码评审结论）',
   repair_feature:'修复 feat 评审问题',repair_release:'修复 release 验证问题',repair:'问题修复',review:'代码评审',
   delivered:'已交付未上线',online:'已上线',collecting:'等待 23:30 统一验证',validating:'release 统一验证',review_failed:'代码评审失败',merging_feature:'评审通过 · 合入 release',repairing_feature:'修复评审问题',syncing_feature:'同步评审 MR',syncing_release:'同步上线 MR',reviewing_release:'release 变更复审',repairing_release:'修复验证问题',release_failed:'统一验证失败',review_feature:'Code Review · feat → release',review_release:'release 变更复审',validate_release:'release 统一验证',merge_feature:'合入 release',merge_release:'合入 master',code_review:'代码评审',repairing:'问题修复',awaiting_merge:'待合并',syncing:'同步主分支',merging:'确认合并',preparing:'整合验收成果',
-  accepted:'业务验收通过，待交付',pending:'待处理',queued:'排队等待',reviewed:'已评估',classified:'已生成需求',
+  abnormal:'异常',accepted:'业务验收通过，待交付',pending:'待处理',queued:'排队等待',reviewed:'已评估',classified:'已生成需求',
   superseded:'已被后续记录替代',planning:'制定方案',plan_review:'方案审查',verifying:'验证中',
   acceptance_review:'最终验收',awaiting_release:'等待发布条件',deploying:'正在发布',observing:'上线观察中',
   rolled_back:'已回滚',rollback_pending:'等待回滚',pausing:'正在暂停',cancelling:'正在取消',

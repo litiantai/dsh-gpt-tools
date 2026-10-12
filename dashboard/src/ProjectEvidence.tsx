@@ -22,6 +22,9 @@ export default function ProjectEvidence({productId,tab,onTabChange}:{productId?:
   const inspections=useData<Evidence[]>('/inspections');
   const evidence=useData<Evidence[]>('/evidence');
   const evaluations=useData<Evidence[]>('/evaluations');
+  const signals=useData<Evidence[]>('/signals');
+  const exceptions=signals.data?.filter(e=>e.product_id===productId && e.status==='abnormal') ?? [];
+  const [exception,setException]=useState<Evidence>();
   const [selection,setSelected]=useState<Evidence>();
   const selected=inspections.data?.find(row=>row.id===selection?.id && row.product_id===productId) || selection;
   const [image,setImage]=useState('');
@@ -42,10 +45,20 @@ export default function ProjectEvidence({productId,tab,onTabChange}:{productId?:
     {entry.details!==undefined && <details><summary>完整回执与检查明细</summary><ResultDetails value={entry.details}/></details>}
   </Card>;
   return <>
-    {(error || inspections.error || evidence.error || evaluations.error) && <Alert type="error" message={<ErrorNotice value={error || inspections.error || evidence.error || evaluations.error}/>}/>}
+    {(error || inspections.error || evidence.error || evaluations.error || signals.error) && <Alert type="error" message={<ErrorNotice value={error || inspections.error || evidence.error || evaluations.error || signals.error}/>}/>}
     <Tabs activeKey={tab} onChange={onTabChange} items={[
       {key:'inspection_routes',label:'巡检路线',children:productId?<InspectionRoutes pid={productId}/>:null},
       {key:'daily',label:'日报与复盘',children:<DailyReports productId={productId}/>},
+      {key:'inspection_exceptions',label:`巡检异常 (${exceptions.length})`,children:<>
+        <Alert type="info" showIcon message="异常仅留存记录，不进入巡检信号待处理队列。"/>
+        <Table rowKey="id" dataSource={exceptions} pagination={{pageSize:10}} columns={[
+          {title:'巡查场景',render:(_,r)=><Button type="link" onClick={()=>setException(r)}>{String(r.summary || r.title || r.id)}</Button>},
+          {title:'状态',render:()=> <Tag color="error">异常</Tag>},
+          {title:'原因',render:(_,r)=><ErrorNotice value={r.evidence || r.reason}/>},
+          {title:'时间',dataIndex:'updated',render:time},
+          {title:'证据',render:(_,r)=><Button onClick={()=>setException(r)}>详情</Button>},
+        ]}/>
+      </>},
       {key:'inspections',label:`巡查记录 (${list.length})`,children:<Table rowKey="id" dataSource={list} pagination={{pageSize:10}} scroll={{x:700}} columns={[
         {title:'巡查场景',dataIndex:'title',render:(title:string,row:Evidence)=><Button type="link" onClick={()=>setSelected(row)}>{title}</Button>},
         {title:'业务线',dataIndex:'business_line',filters:[...new Set(list.map(r=>String(r.business_line||'历史巡检')))].map(value=>({text:value,value})),onFilter:(value,row)=>String(row.business_line||'历史巡检')===value},
@@ -66,5 +79,8 @@ export default function ProjectEvidence({productId,tab,onTabChange}:{productId?:
       {selected && <RecordInspector key={selected.id} kind="inspections" record={selected}/>}
     </Modal>
     <Image style={{display:'none'}} src={image} preview={{visible:!!image,onVisibleChange:v=>{if(!v)setImage('');}}}/>
+    <Modal title="巡检异常记录" open={!!exception} onCancel={()=>setException(undefined)} footer={null} width={1000} destroyOnHidden>
+      {exception && <RecordInspector key={exception.id} kind="signals" record={exception}/>}
+    </Modal>
   </>;
 }

@@ -124,15 +124,19 @@ class DailyTests(unittest.TestCase):
             self.assertFalse(tick(scheduler));start.assert_not_called()
         self.assertEqual(len(self.ledger.list('daily_reports')),1)
 
-    def test_nightly_covers_backlog_and_failed_inspections_then_batches_all(self):
+    def test_nightly_batches_backlog_but_only_archives_failed_inspections(self):
         self.product=self.ledger.update('products',self.product['id'],self.product['version'],{'nightly_attribution':True})
         with patch('autopilot.store.time.time',return_value=self.midnight-3600):
             old=[self.ledger.create('signals',{'product_id':self.product['id'],'summary':'积压'}) for _ in range(21)]
         with patch('autopilot.store.time.time',return_value=self.midnight+3600):
             inspection=self.ledger.create('inspections',{'product_id':self.product['id'],'title':'失败巡检','judgement':'页面打不开','steps':[]},'blocked')
+            abnormal=self.ledger.signal(self.product['id'],{'source':'inspection','code':'PROJECT_HEALTH','summary':'超时巡检','evidence':{'status':'blocked','reason':'timed out'}})
         report=snapshot(self.ledger,self.product,self.midnight+19*3600)
-        self.assertEqual(len(report['attribution_signal_ids']),22)
-        self.assertIn('nightly-'+inspection['id'],report['attribution_signal_ids'])
+        self.assertEqual(len(report['attribution_signal_ids']),21)
+        self.assertNotIn('nightly-'+inspection['id'],report['attribution_signal_ids'])
+        self.assertNotIn(abnormal['id'],report['attribution_signal_ids'])
+        self.assertEqual(self.ledger.get('signals','nightly-'+inspection['id'])['status'],'abnormal')
+        self.assertEqual(self.ledger.get('inspections',inspection['id'])['judgement'],'页面打不开')
         scheduler=Scheduler(self.store)
         for index in range(3):
             report=self.ledger.get('daily_reports',report['id'])

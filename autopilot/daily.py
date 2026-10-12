@@ -40,7 +40,7 @@ def snapshot(ledger, product, now):
         attribution={}
         if product.get('nightly_attribution'):
             signals=records('signals')
-            ids=[r['id'] for r in signals if r['created']<=cutoff and (r['status']=='pending' or r.get('attribution_pending') or start<r['created']<=cutoff)]
+            ids=[r['id'] for r in signals if r['status']!='abnormal' and r['created']<=cutoff and (r['status']=='pending' or r.get('attribution_pending') or start<r['created']<=cutoff)]
             for inspection in records('inspections'):
                 if not start < inspection['created'] <= cutoff:
                     continue
@@ -50,7 +50,8 @@ def snapshot(ledger, product, now):
                     'evidence':{'status':inspection['status'],'judgement':inspection.get('judgement'),
                         'steps':[{k:step.get(k) for k in ('title','action','expected','actual','judgement','status')} for step in steps]}},
                     ident='nightly-'+inspection['id'],db=db)
-                ids.append(signal['id'])
+                if signal['status'] != 'abnormal':
+                    ids.append(signal['id'])
             attribution={'attribution_signal_ids':list(dict.fromkeys(ids)), 'attribution_results':[], 'requirement_ids':[], 'daily_requirements':[]}
         stats = {'requirements_found': sum(start <= r['created'] <= cutoff for r in records('requirements')),
                  'inspections_done': sum(start <= r['created'] <= cutoff for r in records('inspections')),
