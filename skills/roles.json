@@ -23,5 +23,6 @@
   "local-testing": "dsh-role-verification/references/local-testing.md",
   "image-evidence": "dsh-role-verification/references/image-evidence.md",
   "controller-diff": "dsh-role-verification/references/controller-diff.md",
-  "controller-diff-retry": "dsh-role-verification/references/controller-diff-retry.md"
+  "controller-diff-retry": "dsh-role-verification/references/controller-diff-retry.md",
+  "finding-scope": "dsh-role-verification/references/finding-scope.md"
 }

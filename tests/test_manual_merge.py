@@ -73,7 +73,7 @@ class ManualMergeTests(unittest.TestCase):
         self.assertEqual(next_batch['sequence'], 2)
         self.assertEqual(f.ledger.get('runs', later['id'])['delivery_id'], next_batch['id'])
         self.assertNotEqual(paths(f.request(batch))[1], paths(f.request(next_batch))[1])
-        with patch('autopilot.delivery_review.verify', return_value={'status': 'pass', 'checks': []}):
+        with patch('autopilot.delivery_review.verify', return_value={'status': 'pass', 'checks': [{'name': 'fixture', 'status': 'pass', 'required': True}]}):
             batch = self.advance(batch, 'validate_release')
         self.assertIsNone(batch.get('review_pass'))
         self.assertFalse(any(row.get('phase') == 'review_release' for row in f.ledger.list('code_reviews')))

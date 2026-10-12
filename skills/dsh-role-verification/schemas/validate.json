@@ -15,11 +15,77 @@
     },
     "summary": {
       "type": "string"
+    },
+    "acceptance_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "criterion_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "blocked"
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "criterion_id",
+          "status",
+          "evidence"
+        ]
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "current_requirement",
+              "regression",
+              "unrelated",
+              "unknown"
+            ]
+          },
+          "requirement_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "requirement_ids",
+          "reason",
+          "evidence"
+        ]
+      }
     }
   },
   "required": [
     "status",
     "reason",
-    "summary"
+    "summary",
+    "acceptance_results",
+    "findings"
   ]
 }

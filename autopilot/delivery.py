@@ -244,7 +244,7 @@ def complete(scheduler, batch, result, action):
     if action == 'review':
         return change({'review_pass': {'head_sha': result['head_sha'], 'base_sha': result['base_sha'], 'round_id': round_id}, 'validation_pass': None, 'reason': ''}, 'validating')
     if action == 'validate':
-        return change({'validation_pass': {'head_sha': result['head_sha'], 'base_sha': result['base_sha'], 'round_id': round_id}, 'reason': ''}, 'awaiting_merge')
+        return change({'validation_pass': {'head_sha': result['head_sha'], 'base_sha': result['base_sha'], 'round_id': round_id, 'gate': result.get('merge_gate')}, 'reason': ''}, 'awaiting_merge')
     if action == 'repair':
         return change({'review_pass': None, 'validation_pass': None, 'reason': '', 'head_sha': result.get('head_sha')}, 'preparing' if batch.get('resume_action') == 'prepare' else 'syncing')
     if action == 'sync':
@@ -255,7 +255,8 @@ def complete(scheduler, batch, result, action):
             'code_review' if changed or not batch.get('review_pass') else 'validating' if not batch.get('validation_pass') else 'merging')
     if action == 'merge':
         if result.get('stale'):
-            return change({'review_pass': None, 'reason': '目标版本变化，重新同步与评审'}, 'syncing')
+            return change({'review_pass': None, 'validation_pass': None,
+                'reason': result.get('reason') or '目标版本变化，重新同步与评审'}, 'syncing')
         mark_online(ledger, batch, result)
 
 
