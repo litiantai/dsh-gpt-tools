@@ -8,6 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1] / 'skills'
 READS = ContextVar('role_skill_reads', default=())
 ROLES = {
+    'design_ui':'implementation', 'design_api':'implementation', 'group_scope':'implementation',
+    'inspection_design': 'inspection-design',
     'coordinate': 'coordinator', 'discover': 'discovery', 'investigate': 'discovery',
     'daily_attribution': 'discovery', 'chat': 'clarification', 'plan': 'implementation',
     'develop': 'implementation', 'repair': 'implementation', 'validate': 'verification',
@@ -146,6 +148,8 @@ def compose(action, request, material, spec=None):
         if action in ('discover','daily_attribution') else
         skill_rule('codex_executor-verification-1')
     )
+    if action in ('discover','daily_attribution'):
+        instruction+=' 需求判定不依赖历史 release 合并状态。相同问题（含已修复但未上线）仍在 requirements 输出完整本轮证据并填写 known_requirements 中的 existing_requirement_id；新问题该字段为空。未合并成果不代表线上问题已解决。'
     if action=='investigate':
         instruction=skill_rule('codex_executor-discovery-2')
     if action=='daily_attribution':
@@ -162,7 +166,14 @@ def compose(action, request, material, spec=None):
         material['project_config']=product.get('project_config', {})
     if action in ('plan','develop'):
         material.update(plan=record.get('plan'), feedback=record.get('feedback'))
+        if record.get('design_workflow') and request.get('state_root'):
+            from .project_groups import current_designs
+            from .store import Ledger
+            from review_core import Store
+            material['designs']=current_designs(Ledger(Store(Path(request['state_root']).parent)),record)
         instruction=rule('plan') if action=='plan' else rule('develop')
+        if material.get('designs'):
+            instruction+=' 严格依据已冻结 designs 中 UI 字段、接口契约与联调服务环境变量实现；不得擅改契约。方案中引用设计版本 ID，后端必须兼容尚未更新的前端。'
     if cooperating:
         from .collaboration import INSTRUCTION
         instruction += INSTRUCTION

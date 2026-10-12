@@ -245,6 +245,10 @@ def sync(request):
 
 def merge(request):
     record = request['record']
+    from .project_groups import check_merge_request
+    waiting=check_merge_request(request,merging=True)
+    if waiting:
+        return {'status':'busy','reason':waiting}
     gh, pr = load_pull_request(record)
     proof = record.get('release_sync_pass' if record.get('flow') == 'review_before_release' else 'review_pass') or {}
     if pr.get('merged'):

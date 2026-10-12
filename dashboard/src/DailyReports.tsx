@@ -10,7 +10,7 @@ interface DailyReport {
   stats:Record<string,number>; audits:{run_id:string;title:string;status:string;reason?:string;summary?:string;checks?:string[]}[];
   attribution_signal_ids?:string[]; attribution_results?:{status:string;reason?:string;signal_ids:string[];attributions?:{signal_id:string;reason:string;outcome:string}[]}[];
   daily_requirements?:{id:string;title:string;classification:string;reason?:string}[];
-  retrospective?:unknown; exempt_usage?:number;
+  attribution_status?:string; acceptance_status?:string; retrospective_status?:string; retrospective?:unknown; exempt_usage?:number;
 }
 export default function DailyReports({productId}:{productId?:string}) {
   const reports=useData<DailyReport[]>('/daily_reports');
@@ -32,7 +32,7 @@ export default function DailyReports({productId}:{productId?:string}) {
     {!rows.length && <Empty description={enabled?'等待下一个 19:00；今天已过 19:00 则自动补跑':'开启后将在每日 19:00 生成日报'}/>}
     {rows.map(r=><Card key={r.id} title={r.title} extra={<Tag color={r.status==='pass'?'success':r.status==='running'?'processing':'warning'}>{{pass:'复盘与复验已完成',running:'正在归因、复验与复盘',fail:'复验发现问题',blocked:'有未完成的复验或复盘'}[r.status] || r.status}</Tag>}>
       <p className="muted">统计时段：{time(r.window_start)} — {time(r.cutoff)} · {r.exempt_usage===undefined?'用量在执行完成后汇总':`本报告独立用量 ${r.exempt_usage.toLocaleString()} Token（不扣开发额度）`}</p>
-      <Space wrap>{Object.entries({requirements_found:'新需求',inspections_done:'巡检',accepted_count:'待复验任务',published_count:'客户端安装版本',online_count:'已合入主分支',delivered_count:'已交付未上线',queued_count:'生成时排队任务'}).map(([key,label])=><Tag key={key}>{label} {r.stats[key] || 0}</Tag>)}</Space>
+      <Space wrap>{[['归因',r.attribution_status],['复验',r.acceptance_status],['复盘',r.retrospective_status]].map(([label,status])=>status && <Tag key={label}>{label}：{status==='pass'?'完成':status==='fail'?'发现问题':status==='blocked'?'未完成':status}</Tag>)}{Object.entries({requirements_found:'新需求',inspections_done:'巡检',accepted_count:'待复验任务',published_count:'客户端安装版本',online_count:'已合入主分支',delivered_count:'已交付未上线',queued_count:'生成时排队任务'}).map(([key,label])=><Tag key={key}>{label} {r.stats[key] || 0}</Tag>)}</Space>
       <div className="record-text"><ErrorNotice value={r}/></div>
       {r.attribution_signal_ids && <>
         <h4>晚间统一归因 · 当日需求 {r.daily_requirements?.length || 0} 项</h4>

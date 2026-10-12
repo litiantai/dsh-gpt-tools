@@ -17,6 +17,9 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def execute(action,request):
+    if action in ('design_ui','design_api'):
+        from .project_groups import model_action
+        return model_action(action,request)
     if action in ('chat','find_competitors','analyze_competitors','collaborate'):
         from .intelligence_worker import execute as intelligence
         return intelligence(action, request)

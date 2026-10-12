@@ -5,8 +5,43 @@ import ipaddress
 import socket
 import ssl
 import time
+import json
 from html.parser import HTMLParser
 from urllib.parse import urlsplit, urlunsplit, urljoin
+
+
+def is_public(address):
+    value=ipaddress.ip_address(address)
+    return value.is_global and not (value.is_multicast or value.is_reserved or value.is_unspecified or value.is_loopback or value.is_link_local)
+
+
+def public_addresses(host, port):
+    """Fake-IP 域名通过固定 DoH 服务还原；真实内网结果仍拒绝访问。"""
+    addresses = {a[4][0] for a in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)}
+    fake = ipaddress.ip_network('198.18.0.0/15')
+    if addresses and all(ipaddress.ip_address(a) in fake for a in addresses):
+        # 不接受模型提供的解析器，也不连接本机代理的 Fake-IP。
+        from urllib.parse import urlencode
+        connection = http.client.HTTPConnection('cloudflare-dns.com', 443, timeout=10)
+        try:
+            connection.sock = socket.create_connection(('1.1.1.1', 443), timeout=10)
+            connection.sock = ssl.create_default_context().wrap_socket(connection.sock, server_hostname='cloudflare-dns.com')
+            connection.request('GET', '/dns-query?' + urlencode({'name': host, 'type': 'A'}), headers={'Accept': 'application/dns-json'})
+            response = connection.getresponse()
+            if response.status != 200:
+                raise OSError('公网 DNS 解析服务暂不可用')
+            raw = response.read(65537)
+            if len(raw) > 65536:
+                raise ValueError('DNS 回执过大')
+            value = json.loads(raw)
+            if value.get('Status') != 0:
+                raise OSError('公网 DNS 未成功解析域名')
+            addresses = {a['data'] for a in value.get('Answer', []) if a.get('type') == 1}
+        finally:
+            connection.close()
+    if not addresses or any(not is_public(a) for a in addresses):
+        raise ValueError('来源解析到了非公网地址')
+    return sorted(addresses)
 
 
 class Text(HTMLParser):
@@ -39,7 +74,7 @@ def normalize_url(url):
         address = ipaddress.ip_address(parts.hostname)
     except ValueError:
         address = None
-    if address and not address.is_global:
+    if address and not is_public(str(address)):
         raise ValueError('竞品来源必须为公网地址')
     return urlunsplit((parts.scheme, parts.netloc.lower(), parts.path or '/', parts.query, ''))
 
@@ -50,15 +85,12 @@ def fetch(url):
     for _ in range(5):
         parts = urlsplit(current)
         port = parts.port or (443 if parts.scheme == 'https' else 80)
-        addresses = {a[4][0] for a in socket.getaddrinfo(parts.hostname, port, type=socket.SOCK_STREAM)}
-        if not addresses or any(not ipaddress.ip_address(a).is_global for a in addresses):
-            raise ValueError('来源解析到了非公网地址')
-        address = sorted(addresses)[0]
+        address = public_addresses(parts.hostname, port)[0]
         connection = http.client.HTTPConnection(parts.hostname, port, timeout=10)
-        connection.sock = socket.create_connection((address, port), timeout=10)
-        if parts.scheme == 'https':
-            connection.sock = ssl.create_default_context().wrap_socket(connection.sock, server_hostname=parts.hostname)
         try:
+            connection.sock = socket.create_connection((address, port), timeout=10)
+            if parts.scheme == 'https':
+                connection.sock = ssl.create_default_context().wrap_socket(connection.sock, server_hostname=parts.hostname)
             connection.request('GET', urlunsplit(('', '', parts.path or '/', parts.query, '')),
                                headers={'User-Agent': 'DshResearch/1.0', 'Accept': 'text/html,text/plain', 'Accept-Encoding': 'identity'})
             response = connection.getresponse()

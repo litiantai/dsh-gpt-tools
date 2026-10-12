@@ -1,6 +1,7 @@
 import { ErrorNotice, errorText, serializeError } from '../errors';
 import { activeCall, currentProgress } from '../currentProgress';
 import { RecordValue, recordSummary } from '../RecordDetails';
+import ProjectGroups from '../ProjectGroups';
 import RecordInspector from '../RecordInspector';
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -250,6 +251,7 @@ export default function AutopilotPage() {
       {key:'requirements',label:`需求台账 ${projectRequirements.length}`,children:table('requirements',projectRequirements)},
       {key:'signals',label:`监测信号 ${scoped(signals.data).length}`,children:table('signals',scoped(signals.data))},
       {key:'coordinator',label:'项目协调',children:tab==='coordinator'?<ProjectCoordinator key={project?.id} pid={project?.id}/>:null},
+      {key:'requirement_groups',label:'联合需求',children:project?<ProjectGroups pid={project.id}/>:null},
       {key:'runs',label:`任务记录 ${projectRuns.length}`,children:table('runs',projectRuns)},
       {key:'deliveries',label:`代码交付 ${projectDeliveries.length}`,children:table('deliveries',projectDeliveries)},
       {key:'code_reviews',label:'代码评审 · 需求 PR',children:<DeliveryBoard key={`prs-${project?.id}`} data={deliveryBoard.data} kind="prs" loading={deliveryBoard.isLoading} busy={busy} onRetry={retryIssue} onManualMerge={manualMerge} onRetryRelease={retryRelease}/>},

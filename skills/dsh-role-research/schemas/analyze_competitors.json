@@ -16,29 +16,56 @@
     "summary": {
       "type": "string"
     },
-    "competitors": {
+    "drafts": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "name": {
+          "title": {
             "type": "string"
           },
-          "reason": {
+          "goal": {
             "type": "string"
           },
-          "urls": {
+          "scenario": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "acceptance": {
             "type": "array",
             "items": {
               "type": "string"
             }
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "impact": {
+            "type": "string"
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "target_requirement_id": {
+            "type": "string"
           }
         },
         "required": [
-          "name",
-          "reason",
-          "urls"
+          "title",
+          "goal",
+          "scenario",
+          "scope",
+          "acceptance",
+          "evidence",
+          "impact",
+          "questions",
+          "target_requirement_id"
         ]
       }
     }
@@ -47,6 +74,6 @@
     "status",
     "reason",
     "summary",
-    "competitors"
+    "drafts"
   ]
 }

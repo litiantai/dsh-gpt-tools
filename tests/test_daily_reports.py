@@ -106,6 +106,17 @@ class DailyTests(unittest.TestCase):
         with patch('autopilot.codex_executor.execute',side_effect=edit):
             self.assertEqual(execute('daily_acceptance',{'audit_run':run})['status'],'fail')
 
+    def test_unmerged_release_does_not_block_attribution(self):
+        self.product=self.ledger.update('products',self.product['id'],self.product['version'],{'nightly_attribution':True})
+        with patch('autopilot.store.time.time',return_value=self.midnight+3600):
+            self.ledger.signal(self.product['id'],{'source':'inspection','code':'new','summary':'新问题','evidence':'新的证据'})
+        self.ledger.create('deliveries',{'product_id':self.product['id'],'reason':'昨日 release 失败'},'blocked')
+        self.ledger.create('runs',{'product_id':self.product['id'],'review_id':'old-review'},'awaiting_release')
+        scheduler=Scheduler(self.store)
+        with patch('autopilot.daily.time.time',return_value=self.midnight+19*3600),patch.object(scheduler,'start_call') as start:
+            tick(scheduler)
+            self.assertEqual(start.call_args.args[3],'daily_attribution')
+
     def test_daily_waits_for_development_and_discovery(self):
         self.ledger.create('runs',{'product_id':self.product['id'],'call':{'action':'develop'}},'developing')
         scheduler=Scheduler(self.store)

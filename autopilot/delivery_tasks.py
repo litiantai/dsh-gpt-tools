@@ -60,6 +60,8 @@ def delivery_tasks(ledger, batch):
         if batch.get('pr_url'):
             prs.append({'label': '上线 PR', 'pr_url': batch['pr_url']})
         prs = list({p['pr_url']: p for p in prs if p.get('pr_url')}.values())
+        product=ledger.get('products',product_id)
+        prs=[p | {'project_id':product_id,'project_name':product.get('name',product_id),'repository':product.get('git',{}).get('url'),'group_id':run.get('group_id')} for p in prs]
         result.append({'run': run, 'requirement': requirement, 'signals': sources,
                        'inspections': found, 'evidence': steps, 'prs': prs})
     return {'tasks': redact(result), 'day': batch.get('day'), 'missing_ids': sorted(ids - {r['id'] for r in runs})}

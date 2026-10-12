@@ -77,7 +77,8 @@ class Scheduler:
         # Delivery checks before allocating its review round; other calls enter here.
         if kind != 'deliveries' and self.wait_for_off_peak(kind,item,product,action):
             return self.ledger.get(kind,item['id'])
-        if action in ('plan','develop','verify') and not self.tokens_available(product):
+        budget_product=self.ledger.get('products',self.ledger.get('requirement_groups',item['group_id'])['product_id']) if action in ('design_ui','design_api') and item.get('group_id') else product
+        if action in ('plan','develop','verify','design_ui','design_api','group_scope') and not self.tokens_available(budget_product):
             if kind=='runs' and item.get('reason')!='每日 Token 额度已用尽，等待次日或调整额度':
                 return self.change(kind,item,{'reason':'每日 Token 额度已用尽，等待次日或调整额度'})
             return item
@@ -202,6 +203,16 @@ class Scheduler:
             test_chain_tick(self)
         except (OSError, ValueError, KeyError, Conflict) as exc:
             self.store.event('test_chain_error', detail={'reason':str(exc)})
+        from .project_groups import tick as group_tick
+        try:
+            group_tick(self)
+        except (OSError, ValueError, KeyError, Conflict) as exc:
+            self.store.event('autopilot_group_error', detail={'reason':str(exc)})
+        from .inspection_routes import tick as inspection_tick
+        try:
+            inspection_tick(self)
+        except (OSError, ValueError, KeyError, Conflict) as exc:
+            self.store.event('autopilot_inspection_error', detail={'reason':str(exc)})
         self.reconcile_evaluations()
         from .delivery import tick as delivery_tick
         try:
@@ -240,7 +251,8 @@ class Scheduler:
             return
         runs=[r for r in reversed(self.ledger.list('runs')) if r['status'] in ('cancelling','pausing') or not self.ledger.get('products',r['product_id']).get('automation_disabled')]
         from .coordinator import runnable
-        current=next((r for r in runs if r['status'] not in TERMINAL | {'queued','blocked','waiting_for_reply'} and runnable(self, r)),None)
+        from .project_groups import runnable as group_runnable
+        current=next((r for r in runs if r['status'] not in TERMINAL | {'queued','blocked','waiting_for_reply'} and runnable(self, r) and group_runnable(self.ledger, r)),None)
         if current:
             product=self.ledger.get('products',current['product_id'])
             if (product.get('call') or {}).get('action')=='discover':
@@ -257,7 +269,7 @@ class Scheduler:
             return
         # 人工插队始终先于普通排队；后一次插队排在前一次之前，不抢占正在执行的任务。
         for run in sorted(runs,key=lambda r:(0,-r.get('queue_first_at',r['created'])) if r.get('queue_first') else (1,-r.get('coordination_priority',0),r['created'])):
-            if run['status']=='queued':
+            if run['status']=='queued' and group_runnable(self.ledger,run):
                 product=self.ledger.get('products',run['product_id'])
                 if product['status']=='active' and (product.get('call') or {}).get('action')!='discover':
                     self.advance(run)
@@ -313,11 +325,11 @@ class Scheduler:
             self.start_call('products',product,product,'probe',product['adapter'],timeout=30)
         elif self.master_step(product):
             return
-        elif time.time()-product.get('last_inspect',0)>=policy['inspection_seconds']:
+        elif time.time()-product.get('last_inspect',0)>=policy['inspection_seconds'] and not self.ledger.scoped('inspection_routes',product['id']):
             self.start_call('products',product,product,'inspect',product['adapter'],timeout=600)
         elif allow_discovery and product['status']=='active' and product.get('executor') and not product.get('nightly_attribution'):
             signals=[s for s in self.ledger.list('signals') if s['product_id']==product['id'] and s['status']=='pending']
-            executing=any(r['product_id']==product['id'] and r['status'] not in TERMINAL | {'queued','blocked','waiting_for_reply'} for r in self.ledger.list('runs'))
+            executing=any(r['product_id']==product['id'] and r.get('call') for r in self.ledger.list('runs'))
             retry_due=time.time()-product.get('last_discover',0)>=policy['inspection_seconds']
             if signals and retry_due and not executing and not self.wait_for_off_peak('products',product,product,'discover') and self.ledger.budget(product['id'],'discovery',policy['discovery_per_day']):
                 self.start_call('products',product,product,'discover',product['executor'],{'signals':signals[:20]},timeout=300)
@@ -381,6 +393,22 @@ class Scheduler:
             if not ids or any(i not in known or i not in eligible for i in ids) or not all(candidate.get(k) for k in ('title','evidence','acceptance','impact','reproduction')):
                 continue
             title=candidate['title'].strip().casefold()
+            existing=titles.get(title)
+            target=candidate.get('existing_requirement_id')
+            if target:
+                existing=next((r for r in titles.values() if r['id']==target),existing)
+            if existing:
+                combined=list(dict.fromkeys(existing.get('signal_ids',[])+ids))
+                added=[i for i in ids if i not in existing.get('signal_ids',[])]
+                if added:
+                    existing=self.ledger.update('requirements',existing['id'],existing['version'],{
+                        'signal_ids':combined,'additional_evidence':existing.get('additional_evidence',[])+[{
+                            'signal_ids':added,'evidence':redact(candidate['evidence']),'at':time.time(),'report_id':report_id}]},db=db)
+                    titles[title]=existing
+                    for ident in added:
+                        signal=self.ledger.get('signals',ident,db)
+                        links=list(dict.fromkeys(signal.get('requirement_ids',[])+[existing['id']]))
+                        self.ledger.update('signals',ident,signal['version'],{'requirement_id':links[0],'requirement_ids':links},'classified',db)
             if title in titles:
                 if titles[title].get('confirmation_required'):
                     items.append(titles[title])
@@ -428,7 +456,7 @@ class Scheduler:
                 return
             action=run['call']['action']
             run=self.consume('runs',run,result)
-            if action in ('plan','develop'):
+            if action in ('plan','develop','design_ui','design_api'):
                 run=self.change('runs',run,{'execution_seconds':run.get('execution_seconds',0)+result.get('elapsed',0)})
             try:
                 if result.get('status') == 'waiting_for_reply':
@@ -493,11 +521,16 @@ class Scheduler:
                 run=self.change('runs',run,workspace | {'worker_id':worker['id'],'worker_home':str(worker_home),'reason':''},'planning')
             except Exception as exc:
                 return self.block(run,str(exc))
+        if run.get('design_workflow') and run['status'] in ('plan_review','developing'):
+            from .project_groups import current_designs
+            if sorted(run.get('plan_design_ids',[]))!=sorted(d['id'] for d in current_designs(self.ledger,run)):
+                return self.change('runs',run,{'plan_approved':False,'review_id':None,'reason':'设计版本已变化，重新核对完整方案'},'planning')
         if run['status'] in ('planning','developing'):
             remaining=policy['execution_seconds']-run.get('execution_seconds',0)
             if remaining<=0:
                 return self.block(run,'累计开发执行时间已用尽')
-            action='plan' if run['status']=='planning' else 'develop'
+            from .project_groups import design_action
+            action=(design_action(self.ledger,run,product) or 'plan') if run['status']=='planning' else 'develop'
             return self.start_call('runs',run,product,action,product['executor'],{'requirement':requirement},timeout=remaining)
         if run['status'] in ('plan_review','acceptance_review'):
             return self.review(run,product,requirement)
@@ -555,10 +588,17 @@ class Scheduler:
             if action in ('develop','verify') and result['status']=='fail':
                 return self.revise(run,product,result.get('reason','验证失败'),result.get('diagnostic'))
             return self.block(run,result.get('reason','阶段被阻塞'),result.get('uncertain',False))
+        if action in ('design_ui','design_api'):
+            from .project_groups import save_design
+            try:
+                return save_design(self.ledger,run,action,result)
+            except (ValueError,KeyError) as exc:
+                return self.block(self.ledger.get('runs',run['id']),'设计产物无效：'+str(exc))
         if action=='plan':
             if not result.get('plan'):
                 return self.block(run,'执行器未提交开发方案')
-            return self.change('runs',run,{'plan':redact(result['plan'])},'plan_review')
+            from .project_groups import current_designs
+            return self.change('runs',run,{'plan':redact(result['plan']),'plan_design_ids':[d['id'] for d in current_designs(self.ledger,run)]},'plan_review')
         if action=='develop':
             commit_id=commit(run['workspace'])
             return self.change('runs',run,{'commit':commit_id,'source_digest':digest(run['workspace']),'summary':redact(result.get('summary',''))},'verifying')
@@ -674,7 +714,7 @@ class Scheduler:
                         self.change('runs',run,{'acceptance_review_id':review['id'],'accepted_at':time.time(),'review_id':None,'reason':''},'accepted')
                         self.change('requirements',requirement,{},'accepted')
                         return
-                return self.change('runs',run,{'review_id':None} | ({'accepted_at':time.time(),'acceptance_review_id':review['id']} if expected=='done' else {}),'developing' if expected=='approve' else 'awaiting_release')
+                return self.change('runs',run,{'review_id':None, **({'plan_approved':True} if expected=='approve' else {})} | ({'accepted_at':time.time(),'acceptance_review_id':review['id']} if expected=='done' else {}),'developing' if expected=='approve' else 'awaiting_release')
             if result.get('decision')=='revise':
                 return self.revise(run,product,result.get('instruction','审查要求修改'))
             return self.block(self.change('runs',run,{'review_id':None}),result.get('summary','审查未通过'))
@@ -714,11 +754,13 @@ class Scheduler:
         from .collaboration import context as collaboration_context
         collaboration = collaboration_context(self.ledger,run)
         from .acceptance_scope import PRE_RELEASE_INSTRUCTION, pre_release
+        from .project_groups import review_designs
+        designs=review_designs(self.ledger,run) if run.get('design_workflow') else []
         packet={'request_id':rid,'session_id':run['id'],'cwd':run['workspace'],'scope':['.'],
                 'phase':'plan' if run['status']=='plan_review' else 'acceptance',
                 'summary':json.dumps(redact({'acceptance_protocol':PRE_RELEASE_INSTRUCTION,
                        'acceptance_scope':pre_release(requirement,run),
-                       'requirement':requirement,'plan':run.get('plan'),'checks':run.get('checks'),
+                       'designs':designs,'design_protocol':'读取 designs 中各 path 的完整设计文件，核对 UI、字段需求与接口契约版本，再审查完整方案；后端保持对旧前端兼容。','requirement':requirement,'plan':run.get('plan'),'checks':run.get('checks'),
                        'summary':run.get('summary'),'collaboration':collaboration,'collaboration_protocol':('需要补充信息时 decision=blocked，instruction 填写 JSON 字符串 {"collaboration_requests":[{"to_role":"verification","topic":"主题","content":"问题","evidence_ids":[]}]}，回复不能替代正式审查。' if product.get('intelligence',{}).get('collaboration_enabled') else None),'execution':'独立执行进程已退出；控制器冻结工作区等待审查'}),ensure_ascii=False)[:20000]}
         from .role_skills import bind, rule
         from review_core import SCHEMA

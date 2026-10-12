@@ -118,7 +118,7 @@ def execute(action, request):
             return {'status':'blocked','reason':'当前对话累计图片超过 20 张，请建立新对话'}
         return run_model(action, request, role, material,
             skill_rule('intelligence_worker-research-1'),
-            output_schema('find_competitors')['properties'], images=images)
+            output_schema('chat')['properties'], images=images)
     if action == 'collaborate':
         from .collaboration import REQUEST_SCHEMA
         run = ledger.get('runs', record['run_id'])
@@ -130,6 +130,12 @@ def execute(action, request):
             output_schema('collaborate')['properties'])
     from .research import collect, fetch
     competitors = [r for r in ledger.scoped('competitors', pid) if r['status']=='active']
+    inputs = record.get('input_snapshot', {k:product.get('intelligence', {}).get(k, [] if k=='competitor_names' else '')
+                                          for k in ('competitor_names','comparison_focus','analysis_goal')})
+    material['research_preferences'] = inputs
+    names = {n.casefold() for n in inputs.get('competitor_names', [])}
+    if names:
+        competitors = [c for c in competitors if c['name'].casefold() in names or names.intersection(n.casefold() for n in c.get('requested_names', []))]
     material['competitors'] = competitors
     if action == 'find_competitors':
         capability = capabilities(role)
@@ -137,35 +143,44 @@ def execute(action, request):
             return {'status':'blocked','reason':'搜索能力不可用：'+capability['reason']}
         material['excluded_competitors'] = [r for r in ledger.scoped('competitors', pid) if r['status']!='active']
         result = run_model(action, request, role, material,
-            skill_rule('intelligence_worker-research-2'),
-            output_schema('analyze_competitors')['properties'], search=True)
+            skill_rule('intelligence_worker-research-2') + ' research_preferences 中竞品名单非空时仅研究这些名称；用 requested_names 标明对应输入名，歧义在 summary 说明。比较方向和分析目标分别优先采用用户输入，空值根据项目目标判断。',
+            output_schema('find_competitors')['properties'], search=True)
         if result.get('status') != 'pass':
             return result
         verified, failures = [], []
-        for candidate in result.get('competitors', [])[:5]:
+        cached={s['url']:s for c in record.get('result',{}).get('competitors',[]) for s in c.get('verified_sources',[])}
+        for candidate in result.get('competitors', [])[:50 if names else 5]:
+            if names and not (names.intersection(n.casefold() for n in candidate.get('requested_names',[])) or candidate.get('name','').casefold() in names):
+                continue
             sources = []
             for url in candidate.get('urls', [])[:10]:
                 try:
-                    sources.append(fetch(url))
+                    sources.append(cached[url] if url in cached else fetch(url))
                 except Exception as exc:
                     failures.append({'url':url,'reason':str(exc)})
             if sources:
-                verified.append(candidate | {'urls':[s['url'] for s in sources], 'verified_sources':sources})
-        return result | {'competitors':verified,'fetch_failures':failures,
+                verified.append(candidate | {'verified_sources':sources})
+        return result | {'competitors':verified,'fetch_failures':failures,'coverage':'partial' if failures else 'complete',
+                         'outcome':'partial_failure' if failures and verified else 'all_failed' if failures else 'found' if verified else 'no_competitors',
                          **({'status':'blocked','reason':'候选竞品均缺少可读取来源'} if result.get('competitors') and not verified else {})}
     if action != 'analyze_competitors':
         raise ValueError('未知研究动作')
-    snapshots = collect(competitors)
+    if not competitors:
+        return {'status':'blocked', 'reason':'暂无可分析竞品，请先发现竞品或补充名单', 'summary':'暂无可分析竞品',
+                'outcome':'no_competitors', 'snapshots':[], 'drafts':[], 'retryable':False}
+    cached={s['url']:s for s in record.get('result',{}).get('snapshots',[]) if s['status']=='pass'}
+    snapshots=list(cached.values())+collect([c | {'urls':[u for u in c['urls'] if u not in cached]} for c in competitors])
     previous = ledger.scoped('source_snapshots', pid)
     known = {r['url']:r for r in previous if r['status']=='pass' and r.get('analyzed')}
     changed = [s for s in snapshots if s['status']=='pass' and s['fingerprint'] != known.get(s['url'], {}).get('fingerprint')]
     if not changed:
         failed = any(s['status']!='pass' for s in snapshots)
         return {'status':'blocked' if failed else 'pass','summary':'没有可分析的新内容' if failed else '来源无变化，未生成新需求',
-                'reason':'部分来源采集失败，详见来源快照' if failed else '', 'snapshots':snapshots,'drafts':[]}
+                'reason':('全部来源采集失败' if all(s['status']!='pass' for s in snapshots) else '部分来源采集失败')+'，详见来源快照' if failed else '', 'snapshots':snapshots,'drafts':[], 'coverage':'partial' if failed and any(s['status']=='pass' for s in snapshots) else 'none' if failed else 'complete',
+                'outcome':'partial_failure' if failed and any(s['status']=='pass' for s in snapshots) else 'all_failed' if failed else 'no_changes'}
     material['sources'] = changed
     material['previous_sources'] = [known[s['url']] for s in changed if s['url'] in known]
     result = run_model(action, request, role, material,
-        skill_rule('intelligence_worker-clarification-1'),
-        output_schema('chat')['properties'])
-    return result | {'snapshots':snapshots}
+        skill_rule('intelligence_worker-clarification-1') + ' 按 research_preferences 中的比较方向和分析目标分析；各字段留空时独立根据项目目标判断。',
+        output_schema('analyze_competitors')['properties'])
+    return result | {'snapshots':snapshots, 'outcome':'partial_failure' if any(s['status']!='pass' for s in snapshots) else 'analyzed', 'coverage': 'partial' if any(s['status']!='pass' for s in snapshots) else 'complete'}

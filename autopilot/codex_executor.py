@@ -103,7 +103,7 @@ def execute(action,request):
     from review_core import Store
     from .store import Ledger
     from .usage import register
-    register(Ledger(Store(Path(request['state_root']).parent)),product['id'],root/'trace.jsonl',budget_kind='daily_report_tokens' if action.startswith('daily_') else request.get('budget_kind','tokens'),record_id=record.get('id'),action=action)
+    register(Ledger(Store(Path(request['state_root']).parent)),request.get('usage_product_id',product['id']),root/'trace.jsonl',budget_kind='daily_report_tokens' if action.startswith('daily_') else request.get('budget_kind','tokens'),record_id=record.get('id'),action=action)
     result_schema = spec['schema'] if spec else schema(action)
     cooperating = not spec and action in ('plan','develop','validate') and product.get('intelligence',{}).get('collaboration_enabled')
     if cooperating:
@@ -322,6 +322,11 @@ def execute(action,request):
     while True:
         result,proc=run_model(attempt,current_prompt)
         if result is None:
+            if provider == 'codex':
+                from .failures import codex_failure
+                failure = codex_failure(root, proc.returncode)
+                if failure:
+                    return failure
             return {'status':'blocked','reason':f'Codex {action} 未成功返回（{proc.returncode}）','evidence':str(root)}
         retryable=(attempt==1 and action=='validate' and controller_evidence
             and result.get('status')=='blocked' and required_checks_pass(request.get('checks'))

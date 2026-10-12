@@ -7,7 +7,11 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/'dsh-gpt-supervisor/scripts')]
 try:
-    if sys.argv[1]=='scan':
+    if sys.argv[1]=='groups':
+        from autopilot.project_groups import execute as main
+    elif sys.argv[1]=='inspection':
+        from autopilot.inspection_routes import execute as main
+    elif sys.argv[1]=='scan':
         from autopilot.onboarding import execute as main
     elif sys.argv[1]=='command':
         from autopilot.generic_adapter import execute as main

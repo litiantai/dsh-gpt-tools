@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from review_core import Conflict
 
-KINDS = ('products', 'signals', 'requirements', 'runs', 'releases', 'workers', 'inspections', 'evidence', 'evaluations', 'daily_reports', 'deliveries', 'code_reviews', 'scans', 'conversations', 'chat_messages', 'attachments', 'competitors', 'research_jobs', 'source_snapshots', 'agent_messages', 'notifications', 'problems', 'test_chains', 'test_chain_versions', 'test_chain_runs', 'test_chain_baselines', 'coordinators', 'coordination_decisions')
+KINDS = ('products', 'signals', 'requirements', 'runs', 'releases', 'workers', 'inspections', 'evidence', 'evaluations', 'daily_reports', 'deliveries', 'code_reviews', 'scans', 'conversations', 'chat_messages', 'attachments', 'competitors', 'research_jobs', 'source_snapshots', 'agent_messages', 'notifications', 'problems', 'test_chains', 'test_chain_versions', 'test_chain_runs', 'test_chain_baselines', 'coordinators', 'coordination_decisions', 'inspection_plans', 'inspection_routes', 'inspection_route_versions', 'inspection_rounds', 'requirement_groups', 'design_versions')
 TERMINAL = {'completed', 'accepted', 'cancelled', 'rolled_back', 'delivered', 'online'}
 DEFAULTS = dict(probe_seconds=60,inspection_seconds=21600, discovery_per_day=4, runs_per_day=2,
                 tokens_per_day=0, deepseek_off_peak_only=True,
