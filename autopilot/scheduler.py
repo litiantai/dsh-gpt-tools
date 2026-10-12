@@ -76,6 +76,11 @@ class Scheduler:
             return self._start_call(kind,item,product,action,command,extra,timeout)
 
     def _start_call(self,kind,item,product,action,command,extra=None,timeout=600):
+        # 派发锁内再次核对占用；等待不消费 Watch 授权、额度或启动进程。
+        if kind == 'runs':
+            from .resources import ResourceSlots, ACTION_PHASES
+            if item.get('call') or ResourceSlots(self.ledger).blocker(item | {'status':ACTION_PHASES.get(action,item['status'])}):
+                return item
         # Delivery checks before allocating its review round; other calls enter here.
         if kind != 'deliveries' and self.wait_for_off_peak(kind,item,product,action):
             return self.ledger.get(kind,item['id'])
@@ -118,6 +123,11 @@ class Scheduler:
                          stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
         self.children.append(child)
         atomic(directory/'launch.json', {'pid':child.pid,'request':str(path),'started':time.time()})
+        if kind == 'runs':
+            from .resources import ResourceSlots, slot
+            self.store.event('autopilot_resource_dispatch', detail={'product_id':product['id'], 'run_id':item['id'],
+                'call_id':call_id, 'action':action, 'resource':slot(item),
+                'coordination_plan_id':item.get('coordination_plan_id'), 'resources':ResourceSlots(self.ledger).snapshot()})
         return item
 
     def call_result(self,item):
@@ -254,29 +264,34 @@ class Scheduler:
         runs=[r for r in reversed(self.ledger.list('runs')) if r['status'] in ('cancelling','pausing') or not self.ledger.get('products',r['product_id']).get('automation_disabled')]
         from .coordinator import runnable
         from .project_groups import runnable as group_runnable
-        current=next((r for r in runs if r['status'] not in TERMINAL | {'queued','blocked','waiting_for_reply'} and runnable(self, r) and group_runnable(self.ledger, r)),None)
-        if current:
-            product=self.ledger.get('products',current['product_id'])
+        from .resources import ResourceSlots
+        # 每轮处理全部在途回执；一个慢验证不能挡住其他阶段的派发与回收。
+        for run in runs:
+            if run['status'] in TERMINAL | {'queued','blocked','waiting_for_reply'}:
+                continue
+            if not runnable(self, run) or not group_runnable(self.ledger, run):
+                continue
+            product=self.ledger.get('products',run['product_id'])
             if (product.get('call') or {}).get('action')=='discover':
-                return
-            self.advance(current)
-            if current['status']=='awaiting_release' and not self.ledger.get('runs',current['id']).get('call'):
-                investigate(self)
-            return
+                continue
+            if not run.get('call') and not run.get('review_id') and ResourceSlots(self.ledger).blocker(run):
+                continue
+            self.advance(run)
         from .coordinator import resume_pending
-        if resume_pending(self):
-            return
+        resumed = resume_pending(self)
         from .progress import recover_review, investigate
-        if recover_review(self):
-            return
-        # 人工插队始终先于普通排队；后一次插队排在前一次之前，不抢占正在执行的任务。
+        recover_review(self)
+        # 插队改变空闲资源的候选顺序，不抢占在途调用。
         for run in sorted(runs,key=lambda r:(0,-r.get('queue_first_at',r['created'])) if r.get('queue_first') else (1,-r.get('coordination_priority',0),r['created'])):
-            if run['status']=='queued' and group_runnable(self.ledger,run):
+            if not resumed and run['status']=='queued' and group_runnable(self.ledger,run):
                 product=self.ledger.get('products',run['product_id'])
-                if product['status']=='active' and (product.get('call') or {}).get('action')!='discover':
+                if (product['status']=='active' and (product.get('call') or {}).get('action')!='discover'
+                        and not ResourceSlots(self.ledger).blocker(run)):
                     self.advance(run)
-                    return
-        investigate(self)
+                    break
+        owners = ResourceSlots(self.ledger).owners
+        if not owners or all(r['status']=='awaiting_release' and not r.get('call') and not r.get('review_id') for r in owners):
+            investigate(self)
 
     def monitor(self,product,allow_discovery=True):
         policy=DEFAULTS | product.get('policy',{})
@@ -472,6 +487,9 @@ class Scheduler:
         if previous.get('result',{}).get('status') == 'waiting_for_reply' and previous.get('call_id') != run.get('collaboration_processed_call'):
             from .collaboration import wait_run
             return wait_run(self,run,previous['action'],previous['result'],previous['call_id'])
+        from .resources import ResourceSlots
+        if not run.get('review_id') and ResourceSlots(self.ledger).blocker(run):
+            return
         requirement=self.ledger.get('requirements',run['requirement_id'])
         if run['status']=='queued':
             if self.wait_for_off_peak('runs',run,product,'plan'):
@@ -666,6 +684,9 @@ class Scheduler:
                 validate_quality(run.get('quality'), run['workspace'], product.get('project_config', {}), trusted_root=self.root)
             except (OSError, ValueError) as exc:
                 return self.block(run, str(exc))
+        from .resources import ResourceSlots
+        if not run.get('review_id') and ResourceSlots(self.ledger).blocker(run):
+            return
         home=Path(run['worker_home'])
         scoped=WorkerStore(self.store.state,home,product.get('agents',{}).get('acceptance'))
         engine=self.engines.setdefault(run['id'],Engine(scoped))

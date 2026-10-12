@@ -10,33 +10,14 @@ ACTIONS = {'queued':'plan', 'planning':'plan', 'developing':'develop', 'verifyin
 
 
 class RunProgress:
-    """一次 API 读取内复用项目、额度和主执行槽快照，不改变台账版本。"""
+    """一次 API 读取内复用项目、额度和阶段资源快照，不改变台账版本。"""
     def __init__(self, ledger):
         self.ledger = ledger
         self.products = {p['id']:p for p in ledger.list('products')}
         self.runs = ledger.list('runs')
         self.quotas = {}
-        self.owner = None
-        from .coordinator import PHASES as scheduled_phases
-        from .project_groups import runnable
-        for run in reversed(self.runs):
-            product = self.products.get(run['product_id'])
-            if product is None:
-                continue
-            if run['status'] in TERMINAL | {'queued','blocked','waiting_for_reply'}:
-                continue
-            if product.get('automation_disabled') and run['status'] not in ('pausing','cancelling'):
-                continue
-            if run.get('call') or run.get('review_id') or run['status'] in ('pausing','cancelling'):
-                self.owner = run
-                break
-            if run['status'] in scheduled_phases and (product['status'] != 'active' or self.admission(run, product, run['status'])):
-                continue
-            if run.get('coordination_pending') and self.authority_wait(run, product):
-                continue
-            if runnable(ledger, run):
-                self.owner = run
-                break
+        from .resources import ResourceSlots
+        self.resources = ResourceSlots(ledger)
 
     def authority_wait(self, run, product):
         from .coordinator import enabled, config
@@ -114,11 +95,9 @@ class RunProgress:
                 if item.get('call') and item['status'] in ('running','investigating'):
                     return result('main_slot',f'等待主执行槽：{title}“{item.get("title") or item["id"]}”正在执行',
                                   blocking_id=item['id'],blocking_kind=kind)
-        if self.owner and self.owner['id'] != run['id']:
-            owner = self.owner
-            owner_phase = (self.current(owner) or {}).get('label',PHASES.get(owner['status'],owner['status']))
-            return result('main_slot',f'等待主执行槽：任务“{owner.get("title") or owner["id"]}”处于{owner_phase}',
-                          blocking_id=owner['id'],blocking_kind='runs')
+        blocker = self.resources.blocker(run)
+        if blocker:
+            return result(blocker['kind'],blocker['reason'], **{k:v for k,v in blocker.items() if k not in ('kind','reason')})
         if (product.get('call') or {}).get('action') == 'discover':
             return result('discovery','等待当前项目需求发现调用完成')
         return result('dispatch','条件已满足，等待调度器派发'+('新的技术修复方案' if pending.get('action')=='repair' else '下一阶段'))

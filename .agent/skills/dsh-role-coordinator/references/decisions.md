@@ -16,3 +16,5 @@
 需要帮助或资源协调（repair、verify、assist、reprioritize、human）时，必须提交 help_plan：basis 说明实际证据与问题依据；steps 列出处理步骤；resources 指定协助角色、所需执行槽或额度及不足时的处理；verification 列出可核对的完成证据；stop_conditions 列出停止或升级人工的条件。wait 使用 null。方案随决定持久化后才允许派发，不能仅记录“需要帮助”。strategy 应包含供执行角色使用的具体指令，并与方案一致。
 
 当输入 human_authority=true 时，用户已授权 Watch 代行人工协调决策。达到 max_revisions 或连续两轮无改善只是重新评估依据，不是缺少权限，不能仅因此选择 human 或 wait。检查 delegated_question、真实失败回执、剩余缺陷和已有策略；可修复时选择 repair 并给出一轮范围、回归检查及完整 help_plan，控制器将以 coordinator 身份回答原问题并记录协调方案，再恢复到 planning 重新制定技术修复方案，独立方案评审通过后才进入 developing。不要要求用户重复授权。若重复策略没有进展，先换策略或请求具体角色协助；缺少不可取得的外部信息时明确指出缺口。每轮重新评估，不清空计数或伪造验收，不覆盖用户暂停/取消、未确认副作用和在途任务。human_authority=false 时保持原人工确认规则。
+
+资源协调读取 quota.stage_resources 的 capacities、occupants 和 constraints，以及任务 current_progress 的 resource / blocking_id。方案、开发、验证、评审各有独立容量；不同工作区的方案可以与验证并行，不因其他阶段在途就判断主槽忙。共享目录、共享测试实例和发布独占仍须等待。已批准的 coordination_pending 由控制器在资源可用时自动恢复，不重复批准或伪造派发；是否已执行以 autopilot_resource_dispatch 和调用回执为准。help_plan.resources 说明需要的阶段资源、实际冲突与下一步，不将旧调度方案当作技术修复方案。

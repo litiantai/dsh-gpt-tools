@@ -123,8 +123,10 @@ def snapshot(ledger, product):
     review_usage = json.loads(quota_file.read_text()) if quota_file.is_file() else {}
     resources.update(review_used=review_usage.get('count', 0) if review_usage.get('day') == usage['day'] else 0,
                      review_limit=ledger.store.settings()['max_per_day'],
-                     main_capacity=1, auxiliary_capacity=1,
+                     auxiliary_capacity=1,
                      auxiliary_in_use=auxiliary_busy(ledger, product['id']))
+    from .resources import ResourceSlots
+    resources['stage_resources'] = ResourceSlots(ledger).snapshot()
     requirements = requirement_states(ledger, product['id'])
     return {'product_id': product['id'], 'human_authority': config(product)['human_authority'], 'tasks': tasks, 'requirements': requirements, 'quota': resources,
             'policy': DEFAULTS | product.get('policy', {}), 'model': selected(product),
@@ -348,7 +350,7 @@ def apply(scheduler, decision, result):
 
 
 def resume_pending(scheduler):
-    """在主研发槽可用时恢复一项授权，额度仍由原调度器执行。"""
+    """按所需阶段资源恢复一项授权，独立验证不占方案槽。"""
     ledger = scheduler.ledger
     for product in ledger.list('products'):
         if not enabled(product):
@@ -358,6 +360,14 @@ def resume_pending(scheduler):
             if not pending or run['status'] != 'blocked' or protected(run):
                 continue
             if pending.get('requires_human_authority') and not config(product)['human_authority']:
+                continue
+            from .resources import ResourceSlots
+            from .project_groups import runnable as group_runnable
+            blocker = ResourceSlots(ledger).blocker(run)
+            if blocker or not group_runnable(ledger, run):
+                reason = blocker['reason'] if blocker else '等待关联项目完成前置设计或方案评审'
+                if run.get('coordination_wait') != reason:
+                    scheduler.change('runs',run,{'coordination_wait':reason})
                 continue
             from .retry import quota_reason
             candidate = run | {'resume_status': pending['phase']}
@@ -379,6 +389,9 @@ def resume_pending(scheduler):
                 ledger.update('runs', run['id'], run['version'], planning | {'feedback': pending['strategy'] + '\n原失败原因：' + run.get('reason', ''),
                     'review_id': None, 'review_packet': None, 'reason': '', 'coordination_wait': '',
                     'next_auto_retry_at': None, 'coordination_baseline': checks_snapshot(run)}, pending['phase'], db)
+            scheduler.store.event('autopilot_resource_reservation', detail={'product_id':product['id'],
+                'run_id':run['id'], 'decision_id':pending['decision_id'], 'phase':pending['phase'],
+                'resources':ResourceSlots(ledger).snapshot(), 'reason':'已批准协调按空闲阶段资源恢复；实际派发仍复查额度和占用'})
             return True
     return False
 

@@ -108,7 +108,7 @@ class ManualRequirementsTests(unittest.TestCase):
             'product_id': self.product['id'], 'title': title})
         return self.control.queue(requirement)
 
-    def dispatch(self):
+    def dispatch(self, all_calls=False):
         # Keep actual queue selection and persistent records; isolate unrelated background work.
         scheduler = Scheduler(self.store)
         with ExitStack() as stack:
@@ -118,7 +118,8 @@ class ManualRequirementsTests(unittest.TestCase):
             stack.enter_context(patch.object(scheduler, 'monitor'))
             advance = stack.enter_context(patch.object(scheduler, 'advance'))
             scheduler.tick()
-            return advance.call_args.args[0] if advance.called else None
+            calls = [entry.args[0] for entry in advance.call_args_list]
+            return calls if all_calls else (calls[-1] if calls else None)
 
     def test_manual_requirements_stay_ahead_of_older_and_newer_normal_runs(self):
         ordinary = self.normal_run('较早普通任务')
@@ -141,8 +142,12 @@ class ManualRequirementsTests(unittest.TestCase):
     def test_manual_priority_does_not_preempt_running_task(self):
         running = self.normal_run('执行中的任务')
         self.ledger.update('runs', running['id'], running['version'], {}, 'developing')
-        self.control.queue(self.promote())
-        self.assertEqual(self.dispatch()['id'], running['id'])
+        waiting = self.control.queue(self.promote())
+        calls = self.dispatch(all_calls=True)
+        # 跨阶段方案可以获得空闲槽，但必须先推进已有开发，不能暂停或取消它。
+        self.assertEqual([r['id'] for r in calls], [running['id'], waiting['id']])
+        self.assertEqual(self.ledger.get('runs',running['id'])['status'],'developing')
+        self.assertIsNone(self.ledger.get('runs',running['id']).get('control'))
 
     def test_paused_project_does_not_dispatch_manual_requirement(self):
         self.control.queue(self.promote())
