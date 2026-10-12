@@ -122,3 +122,32 @@ test('project policy refresh replaces historical wait in requirement list and op
   await modal.getByText('上次结果',{exact:true}).click();
   await expect(modal.getByText('旧高峰等待18:00',{exact:true}).first()).toBeVisible();
 });
+
+test('requirements and task lists show their development branch and actual blocking cause', async ({page})=>{
+  const product={id:'branch-live',name:'分支与原因验证',status:'active',version:1};
+  const requirement={id:'branch-need',product_id:product.id,title:'通知返修',status:'queued',run_id:'branch-run'};
+  const cause='方案审查未通过：目标测试已经存在，第二次更新必须使用最新版本';
+  let run:any={id:'branch-run',requirement_id:requirement.id,product_id:product.id,title:requirement.title,
+    branch:'feat-notifications-repair',status:'blocked',version:9,revisions:5,extra_revisions:2,
+    reason:cause,failure_reason:cause,current_progress:{kind:'coordinator',label:'方案审查 · 等待 Watch 协调',reason:cause,running:false}};
+  await page.route('**/api/products',r=>r.fulfill({json:[product]}));
+  await page.route('**/api/requirements',r=>r.fulfill({json:[requirement]}));
+  await page.route('**/api/runs',r=>r.fulfill({json:[run]}));
+  await page.goto('/autopilot?project=branch-live&view=requirements&tab=requirements');
+  const row=()=>page.getByRole('row').filter({has:page.getByRole('button',{name:requirement.title,exact:true})});
+  await expect(page.getByRole('columnheader',{name:'开发分支',exact:true})).toBeVisible();
+  await expect(row()).toContainText(run.branch);
+  await expect(row()).toContainText(cause);
+  await expect(row()).not.toContainText('次数已用尽');
+  await page.getByRole('tab',{name:'任务流水线',exact:true}).click();
+  await expect(row()).toContainText(run.branch);
+  await page.getByRole('searchbox',{name:'搜索当前记录'}).fill(run.branch);
+  await expect(row()).toHaveCount(1);
+  await page.getByRole('searchbox',{name:'搜索当前记录'}).fill('其他分支');
+  await expect(row()).toHaveCount(0);
+  await page.getByRole('searchbox',{name:'搜索当前记录'}).fill('');
+  run={...run,current_progress:{kind:'platform_update',label:'方案审查 · 等待执行',reason:'等待平台更新完成，当前暂缓派发',running:false}};
+  await expect(row()).toContainText('等待平台更新完成',{timeout:12000});
+  await expect(row()).toContainText('阻塞原因：'+cause);
+  await page.screenshot({path:'.playwright/branch-and-blocking-reason.png'});
+});

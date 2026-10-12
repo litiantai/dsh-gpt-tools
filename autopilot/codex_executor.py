@@ -112,10 +112,10 @@ def execute(action,request):
         result_schema['properties']['collaboration_requests'] = {'type':'array','items':REQUEST_SCHEMA}
         result_schema['required'].append('collaboration_requests')
     (root/'schema.json').write_text(json.dumps(result_schema))
-    workspace=record.get('workspace',product.get('inspection_workspace',product.get('repository',product['source'])))
-    if product.get('test_execution') == 'local' and action not in ('develop', 'validate', 'computer_step') and not record.get('conflict_resolution'):
-        from .master import source_workspace
-        workspace = source_workspace(request)
+    from .workspace import execution_source
+    source = execution_source(action, request)
+    workspace = source['workspace']
+    (root/'source.json').write_text(json.dumps(source, ensure_ascii=False))
     ledger=Ledger(Store(Path(request['state_root']).parent))
     from .project import generic
     verification=None
@@ -144,6 +144,7 @@ def execute(action,request):
         material['verification']=verification
     from .role_skills import compose
     instruction, material = compose(action, request, material, spec)
+    material['source_context'] = source
     from .project import generic
     from .role_skills import bind
     correction = skill_rule('controller-diff-retry') if action == 'validate' else ''
@@ -339,7 +340,7 @@ def execute(action,request):
         from .intelligence_worker import search_receipt
         if not search_receipt(root/'trace.jsonl'):
             return {'status':'blocked','reason':'没有实际联网搜索工具回执，不能认定完成竞品发现','evidence':str(root)}
-    result.update(evidence=str(root),provider=provider,model=role['model'],role_skill=skill_snapshot)
+    result.update(evidence=str(root),provider=provider,model=role['model'],role_skill=skill_snapshot,source_context=source)
     from .role_workflows import reported
     workflow_summary = reported(skill_snapshot, result)
     if workflow_summary:

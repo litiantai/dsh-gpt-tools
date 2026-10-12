@@ -74,6 +74,51 @@ class WaitTests(unittest.TestCase):
         run=self.change(self.run_record('blocked'),reason='真实业务验证失败')
         self.assertNotIn('current_progress',self.control.get('/runs/'+run['id']))
 
+    def test_revision_limit_preserves_failure_and_watch_authority(self):
+        run=self.change(self.run_record('plan_review'),revisions=5,extra_revisions=2)
+        reason='方案审查未通过：测试已存在，必须更新任务版本后再次写入'
+        run=self.scheduler.revise(run,self.product,reason)
+        self.assertEqual(run['reason'],reason)
+        self.assertTrue(run['revision_exhausted'])
+        current=self.control.get('/runs/'+run['id'])
+        self.assertEqual(current['failure_reason'],reason)
+        self.assertEqual(current['current_progress']['kind'],'coordinator')
+        self.assertIn('等待 Watch 协调',current['current_progress']['label'])
+        self.assertEqual((current['revisions'],current['extra_revisions']),(5,2))
+
+    def test_legacy_limit_reason_is_projected_without_changing_history(self):
+        reason='测试版本冲突，必须接收第一次更新返回的记录'
+        run=self.change(self.run_record('blocked'),reason='返修次数已用尽：'+reason,
+                        resume_status='verifying',revision_exhausted=True)
+        current=self.control.get('/runs/'+run['id'])
+        self.assertEqual(current['reason'],reason)
+        self.assertEqual(current['failure_reason'],reason)
+        self.assertEqual(current['current_progress']['reason'],reason)
+        self.assertEqual(self.ledger.get('runs',run['id']),run)
+        drain=self.store.state/'autopilot/update-drain.json'
+        drain.parent.mkdir(exist_ok=True);drain.write_text('{}')
+        current=self.control.get('/runs/'+run['id'])
+        self.assertEqual(current['current_progress']['kind'],'platform_update')
+        self.assertEqual(current['failure_reason'],reason)
+
+    def test_legacy_limit_keeps_failure_when_watch_is_disabled(self):
+        self.ledger.update('products',self.product['id'],self.product['version'],{'coordinator':{'enabled':False}})
+        run=self.change(self.run_record('blocked'),reason='返修次数已用尽：方案引用了错误源码版本')
+        current=self.control.get('/runs/'+run['id'])
+        self.assertEqual(current['reason'],'方案引用了错误源码版本')
+        self.assertNotIn('current_progress',current)
+
+    def test_review_cause_is_separate_from_repair_instruction(self):
+        run=self.change(self.run_record('plan_review'),revisions=5,extra_revisions=2)
+        run=self.scheduler.revise(run,self.product,'请读取候选分支后修订方案',cause='方案引用 master，与候选源码不一致')
+        self.assertEqual(run['reason'],'方案引用 master，与候选源码不一致')
+        self.assertEqual(run['feedback'],'请读取候选分支后修订方案')
+        legacy=self.change(run,reason='返修次数已用尽：请重新提交方案',
+            last_review_result={'decision':'revise','issues':['目标测试存在，方案却声称不存在']})
+        current=self.control.get('/runs/'+legacy['id'])
+        self.assertEqual(current['reason'],'目标测试存在，方案却声称不存在')
+        self.assertEqual(self.ledger.get('runs',legacy['id']),legacy)
+
     def test_watch_reports_resource_evidence_without_changing_task_version(self):
         from autopilot.coordinator import snapshot,watch_summary
         self.product=self.ledger.update('products',self.product['id'],self.product['version'],

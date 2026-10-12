@@ -9,6 +9,18 @@ PHASES = {'queued':'排队', 'planning':'制定方案', 'plan_review':'方案审
 ACTIONS = {'queued':'plan', 'planning':'plan', 'developing':'develop', 'verifying':'verify'}
 
 
+def blocking_reason(run):
+    """兼容历史额度前缀，保留审查或测试的实际失败原因。"""
+    reason = str(run.get('reason') or '')
+    prefix = '返修次数已用尽：'
+    if reason.startswith(prefix):
+        reason = reason[len(prefix):].strip() or str(run.get('feedback') or '')
+        review = run.get('last_review_result') or {}
+        if run.get('resume_status') in ('plan_review','acceptance_review') and review.get('decision') == 'revise':
+            reason = review.get('summary') or '；'.join(review.get('issues', [])) or reason
+    return reason
+
+
 class RunProgress:
     """一次 API 读取内复用项目、额度和阶段资源快照，不改变台账版本。"""
     def __init__(self, ledger):
@@ -38,7 +50,12 @@ class RunProgress:
 
     def annotate(self, run):
         current = self.current(run)
-        return run | {'current_progress':current} if current else run
+        fields = {'reason':blocking_reason(run)}
+        if run['status'] == 'blocked':
+            fields['failure_reason'] = blocking_reason(run)
+        if current:
+            fields['current_progress'] = current
+        return run | fields
 
     def current(self, run):
         status = run['status']
@@ -46,7 +63,7 @@ class RunProgress:
         if product is None:
             return {'kind':'reconcile','label':'等待核对项目','reason':'任务关联项目不存在，等待核对','running':False}
         pending = run.get('coordination_pending') or {}
-        phase = pending.get('phase', status)
+        phase = pending.get('phase') or (run.get('resume_status') if status == 'blocked' else status) or status
         label = PHASES.get(phase, phase)
         def result(kind, reason, state='等待执行', running=False, **extra):
             return {'kind':kind, 'label':label+' · '+state, 'reason':reason, 'running':running, **extra}
@@ -73,10 +90,15 @@ class RunProgress:
             return result('review',reason,state,review['status']=='running',review_id=review['id'])
         if status == 'waiting_for_reply':
             return result('reply',run.get('reason') or '等待协作回复','等待回复')
-        if not pending and status not in PHASES:
-            return None
-        if (self.ledger.store.state/'autopilot/update-drain.json').exists():
+        coordinated = status == 'blocked' and (run.get('revision_exhausted') or str(run.get('reason', '')).startswith('返修次数已用尽：'))
+        if (pending or status in PHASES or coordinated) and (self.ledger.store.state/'autopilot/update-drain.json').exists():
             return result('platform_update','等待平台更新完成，当前暂缓派发')
+        if not pending and status not in PHASES:
+            if coordinated:
+                from .coordinator import enabled
+                if enabled(product) and not run.get('coordinator_human'):
+                    return result('coordinator',blocking_reason(run),'等待 Watch 协调')
+            return None
         if product.get('automation_disabled') or product['status'] != 'active':
             return result('project_paused','项目已暂停或停用自动运行，等待恢复')
         if self.authority_wait(run, product):

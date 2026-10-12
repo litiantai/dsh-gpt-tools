@@ -18,6 +18,31 @@ def git(root, *args):
     return subprocess.check_output(['git','-C',str(root),*args], text=True, stderr=subprocess.PIPE).strip()
 
 
+def execution_source(action, request):
+    """按执行阶段选择源码，并核对任务分支；只读权限不改变源码版本。"""
+    product, record = request['product'], request['record']
+    task_actions = {'plan', 'develop', 'validate', 'design_ui', 'design_api', 'computer_step'}
+    master_actions = {'discover', 'investigate', 'daily_acceptance', 'daily_retrospective',
+                      'daily_attribution', 'chat', 'find_competitors', 'analyze_competitors', 'coordinate'}
+    if action in task_actions and not record.get('workspace'):
+        raise ValueError('任务缺少开发分支工作区，不能使用主分支代替')
+    workspace = record.get('workspace') or product.get('inspection_workspace') or product.get('repository') or product['source']
+    if (product.get('test_execution') == 'local' and action in master_actions
+            and not record.get('conflict_resolution')):
+        from .master import source_workspace
+        workspace = source_workspace(request)
+    source = {'workspace': str(Path(workspace).resolve())}
+    try:
+        source.update(branch=git(workspace, 'branch', '--show-current'), commit=git(workspace, 'rev-parse', 'HEAD'))
+    except (OSError, subprocess.CalledProcessError):
+        if action in task_actions and record.get('branch'):
+            raise ValueError('无法核对任务开发分支，请检查工作区')
+    expected = record.get('branch') if action in task_actions else None
+    if expected and source.get('branch') != expected:
+        raise ValueError(f'任务必须读取开发分支 {expected}，当前分支为 {source.get("branch") or "游离提交"}')
+    return source
+
+
 def metadata(workspace):
     """返回 (git_dir, common_dir) 的绝对只读元数据路径。
 
@@ -121,7 +146,7 @@ def checkout(repository, destination, run_id):
     base = git(repository,'rev-parse','refs/heads/codex/autonomous')
     if not destination.exists():
         git(repository,'worktree','add','-b',f'codex/auto-{run_id}',str(destination),base)
-    return {'workspace':str(destination),'base_commit':base}
+    return {'workspace':str(destination),'base_commit':base,'branch':git(destination,'branch','--show-current')}
 
 
 def commit(workspace):

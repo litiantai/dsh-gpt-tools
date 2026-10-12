@@ -126,22 +126,23 @@ export default function AutopilotPage() {
       return Number(first(b))-Number(first(a)) || (first(a) && first(b)?Number(b.queue_first_at || 0)-Number(a.queue_first_at || 0):0);
     });
     const rows=ordered.filter(r=>(!filter.status || currentStatus(r)===filter.status) &&
-      (!filter.query || [recordTitle(r),currentReason(r),r.id].some(value=>String(value || '').toLowerCase().includes(filter.query!.toLowerCase()))));
+      (!filter.query || [recordTitle(r),currentReason(r),currentRecord(r).branch,r.id].some(value=>String(value || '').toLowerCase().includes(filter.query!.toLowerCase()))));
     return <>
     <Space wrap className="project-record-filters">
-      <Input.Search aria-label="搜索当前记录" placeholder="搜索名称、原因或编号" allowClear value={filter.query || ''} onChange={e=>updateFilter({query:e.target.value})} style={{width:260}}/>
+      <Input.Search aria-label="搜索当前记录" placeholder="搜索名称、原因、分支或编号" allowClear value={filter.query || ''} onChange={e=>updateFilter({query:e.target.value})} style={{width:280}}/>
       <Select aria-label="筛选记录状态" placeholder="全部状态" allowClear value={filter.status} onChange={status=>updateFilter({status})} style={{width:150}} options={[...new Set(data?.map(currentStatus))].filter(Boolean).map(status=>({value:status,label:labels[status] || status}))}/>
       <span className="muted">{rows.length} 条{isRequirement?'需求':'记录'}</span>
     </Space>
     <Table<RecordItem>
     style={kind==='deliveries'?{containerType:'inline-size'}:undefined}
     expandable={kind==='deliveries'?{expandedRowRender:r=><DeliveryTasks deliveryId={r.id} day={String(r.day || '')}/>,columnWidth:110,columnTitle:'当日问题',expandIcon:({expanded,onExpand,record})=><Button size="small" aria-expanded={expanded} onClick={e=>onExpand(record,e)}>{expanded?'收起问题':'展开问题'}</Button>}:undefined}
-    className="project-record-table" tableLayout="fixed" rowKey="id" dataSource={rows} size="middle" pagination={{pageSize:10,showSizeChanger:false}} scroll={{x:1050+(kind==='requirements'?450:kind==='deliveries'?180:0)}}
+    className="project-record-table" tableLayout="fixed" rowKey="id" dataSource={rows} size="middle" pagination={{pageSize:10,showSizeChanger:false}} scroll={{x:1050+(kind==='requirements'?630:kind==='runs' || kind==='deliveries'?180:0)}}
     columns={[
       {title:isRequirement?'需求名称':'名称 / 摘要',width:240,render:(_,r)=><><button className="text-link project-record-name" onClick={()=>setSelected(r,kind)}>{kind==='events'?(eventLabels[recordTitle(r)] || recordTitle(r)):recordTitle(r)}</button>{r.queue_first===true && <Tooltip title="优先于普通排队需求；多个手动需求以最近提交的优先，不打断当前执行任务"><Tag color="red">高优先级 · 插队</Tag></Tooltip>}</>},
 
       {title:kind==='requirements'?'当前进度':'状态',width:140,render:(_,r)=><Tag color={colors(currentStatus(r))}>{agentExecutionError(currentRecord(r))?'Agent 运行异常':progress(r).label}</Tag>},
-      {title:'原因',render:(_,r)=><><ErrorNotice value={currentReason(r)}/>{r.status==='blocked' && !!r.next_auto_retry_at && <div className="muted">{r.auto_retry_wait_reason?String(r.auto_retry_wait_reason):`异常自动重试：${time(Number(r.next_auto_retry_at))}（有额度且执行空闲时）`}</div>}</>},
+      {title:'原因',render:(_,r)=><><ErrorNotice value={currentReason(r)}/>{typeof currentRecord(r).failure_reason==='string' && currentRecord(r).failure_reason!==currentReason(r) && <div className="muted">阻塞原因：<ErrorNotice value={currentRecord(r).failure_reason}/></div>}{r.status==='blocked' && !!r.next_auto_retry_at && <div className="muted">{r.auto_retry_wait_reason?String(r.auto_retry_wait_reason):`异常自动重试：${time(Number(r.next_auto_retry_at))}（有额度且执行空闲时）`}</div>}</>},
+      ...(kind==='runs' || kind==='requirements'?[{title:'开发分支',width:180,render:(_:unknown,r:RecordItem)=><span className="record-text">{String(currentRecord(r).branch || '—')}</span>}]:[]),
       ...(kind==='deliveries'?[{title:'交付分支',width:180,render:(_:unknown,r:RecordItem)=>String(r.branch || '—')}]:[]),
       ...(kind==='requirements'?[{title:'处理分类',width:150,render:(_:unknown,r:RecordItem)=><RecordValue value={r.classification} field="classification"/>},{title:'下次调查',width:150,render:(_:unknown,r:RecordItem)=>r.classification!=='development' && ['pending','awaiting_external'].includes(r.status) && r.next_investigation?time(Number(r.next_investigation)):'—'},{title:'需求归属日期',width:150,render:(_:unknown,r:RecordItem)=>String(r.requirement_day || '历史需求')}]:[]),
       {title:'更新时间',width:150,render:(_,r)=>time(r.updated)},

@@ -66,10 +66,10 @@ def execute(action,request):
     home=Path(record.get('worker_home',root/'home'))
     source=product['model_source']
     runtime=Path(product['worker_runtime'])
-    workspace=Path(record.get('workspace',product['repository'])).resolve()
-    if product.get('test_execution') == 'local' and action != 'develop' and not record.get('conflict_resolution'):
-        from .master import source_workspace
-        workspace = Path(source_workspace(request))
+    from .workspace import execution_source
+    source_context = execution_source(action, request)
+    workspace = Path(source_context['workspace'])
+    (root/'source.json').write_text(json.dumps(source_context, ensure_ascii=False))
     from .project import generic
     if action=='develop' and not generic(product):
         from .thsoctop import bind_runtime_sdk
@@ -86,6 +86,7 @@ def execute(action,request):
                   'dependencies':'按项目配置在隔离工作区安装依赖，禁止更改固定执行运行时或正式服务。'}}
     from .role_skills import bind, output_schema, compose
     instruction, material = compose(action, request, material)
+    material['source_context'] = source_context
     result_schema = output_schema(action)
     if product.get('intelligence', {}).get('collaboration_enabled'):
         from .collaboration import REQUEST_SCHEMA
@@ -151,7 +152,7 @@ def execute(action,request):
     workflow_summary = reported(skill_snapshot, result)
     if workflow_summary:
         result['workflow'] = workflow_summary
-    result.update(provider='harness',model=implementation.get('model') if implementation else 'inherited')
+    result.update(provider='harness',model=implementation.get('model') if implementation else 'inherited',source_context=source_context)
     return result
 
 

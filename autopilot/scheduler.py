@@ -667,11 +667,11 @@ class Scheduler:
                 req=self.ledger.get('requirements',run['requirement_id'])
                 self.change('requirements',req,{},'completed')
 
-    def revise(self,run,product,reason,diagnostic=None):
+    def revise(self,run,product,reason,diagnostic=None,cause=None):
         manual = bool(run.get('manual_retry_pending'))
         if not manual and run.get('revisions',0)>=(DEFAULTS | product.get('policy',{}))['max_revisions']:
             run = self.change('runs', run, {'feedback': redact(reason), 'last_revision_diagnostic': redact(diagnostic), 'revision_exhausted': True})
-            return self.block(run,'返修次数已用尽：'+reason)
+            return self.block(run,cause or reason)
         # Human copy must not remove compiler/tool evidence from the next repair prompt.
         feedback=reason+('\n技术诊断：'+json.dumps(diagnostic,ensure_ascii=False) if diagnostic else '')
         from .retry import repair_plan_changes
@@ -723,7 +723,8 @@ class Scheduler:
                     from .collaboration import wait_run
                     return wait_run(self,run,'review',question,review['id'])
             run = self.change('runs', run, {'last_review_result': {'review_id':review['id'],
-                'decision':result.get('decision'), 'issues':result.get('issues', []), 'checks':result.get('checks', [])}})
+                'decision':result.get('decision'), 'summary':result.get('summary'), 'instruction':result.get('instruction'),
+                'issues':result.get('issues', []), 'checks':result.get('checks', [])}})
             expected='approve' if run['status']=='plan_review' else 'done'
             if result.get('decision')==expected and result.get('pause_proof',{}).get('pause_verified'):
                 from .delivery import configured
@@ -744,7 +745,8 @@ class Scheduler:
                         return
                 return self.change('runs',run,{'review_id':None, **({'plan_approved':True,'repair_plan_required':False,'repair_plan_review_id':review['id']} if expected=='approve' else {})} | ({'accepted_at':time.time(),'acceptance_review_id':review['id']} if expected=='done' else {}),'developing' if expected=='approve' else 'awaiting_release')
             if result.get('decision')=='revise':
-                return self.revise(self.change('runs',run,{'review_id':None,'review_packet':None}),product,result.get('instruction','审查要求修改'))
+                cause=result.get('summary') or '；'.join(result.get('issues', [])) or '审查要求修改'
+                return self.revise(self.change('runs',run,{'review_id':None,'review_packet':None}),product,result.get('instruction','审查要求修改'),cause=cause)
             return self.block(self.change('runs',run,{'review_id':None}),result.get('summary','审查未通过'))
         from reviewers import snapshot as reviewer_snapshot
         selected = reviewer_snapshot(scoped.settings(),'plan' if run['status']=='plan_review' else 'acceptance')
