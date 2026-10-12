@@ -1,6 +1,5 @@
 import {test,expect,type Page} from '@playwright/test';
 const json=(body:unknown)=>({status:200,contentType:'application/json',body:JSON.stringify(body)});
-const capabilities={scan_api:true,scan_api_version:1,adapter_version:1,features:['repository_scans']};
 // 收集所有 /api/scans 请求，用于证明预检未完成或失败时不会触达扫描接口。
 function trackScanRequests(page:Page){
   const requests:string[]=[];
@@ -176,7 +175,8 @@ test('repository rows group history, prefer running scans and keep retry ancestr
 test('repository scan blocks submission when the runtime capability mismatches',async({page})=>{
   const legacy={id:'legacy-product',name:'遗留项目',goal:'fixture',status:'paused',version:1,
     adapter_spec:{version:1,kind:'legacy',capabilities:[]}};
-  await page.route('**/api/autopilot/capabilities',route=>route.fulfill(json(capabilities)));
+  // 放行唯一来源是运行身份声明；/api/autopilot/capabilities 仅作兼容声明，不作为门控依据。
+  await page.route('**/api/runtime-identity',route=>route.fulfill(json({capabilities:{repository_scans:1}})));
   await page.route(url=>url.pathname.startsWith('/api/products'),route=>{
     const path=new URL(route.request().url()).pathname;
     if(path==='/api/products')return route.fulfill(json([legacy]));
@@ -189,7 +189,7 @@ test('repository scan blocks submission when the runtime capability mismatches',
   await page.getByRole('button',{name:'接入仓库',exact:true}).click();
   const dialog=page.getByRole('dialog');
   await dialog.getByLabel('代码仓库地址').fill('/isolated/scan-fixture');
-  await expect(dialog.getByText('当前后端不支持仓库扫描接口')).toBeHidden();
+  await expect(dialog.getByText('管理服务需要升级')).toBeHidden();
   await expect(dialog.getByText('当前项目接入能力不匹配')).toBeVisible();
   await expect(dialog.getByText('adapter_spec.kind 必须为 command 且包含 verify 能力')).toBeVisible();
   await expect(dialog.getByRole('button',{name:'扫描新仓库'})).toBeDisabled();
@@ -198,7 +198,8 @@ test('repository scan blocks submission when the runtime capability mismatches',
 test('repository scan blocks submission when the adapter protocol version mismatches',async({page})=>{
   const future={id:'future-product',name:'版本错配项目',goal:'fixture',status:'paused',version:1,
     adapter_spec:{version:2,kind:'command',capabilities:['verify']}};
-  await page.route('**/api/autopilot/capabilities',route=>route.fulfill(json(capabilities)));
+  // 放行唯一来源是运行身份声明；/api/autopilot/capabilities 仅作兼容声明，不作为门控依据。
+  await page.route('**/api/runtime-identity',route=>route.fulfill(json({capabilities:{repository_scans:1}})));
   await page.route(url=>url.pathname.startsWith('/api/products'),route=>{
     const path=new URL(route.request().url()).pathname;
     if(path==='/api/products')return route.fulfill(json([future]));
@@ -211,7 +212,7 @@ test('repository scan blocks submission when the adapter protocol version mismat
   await page.getByRole('button',{name:'接入仓库',exact:true}).click();
   const dialog=page.getByRole('dialog');
   await dialog.getByLabel('代码仓库地址').fill('/isolated/scan-fixture');
-  await expect(dialog.getByText('当前后端不支持仓库扫描接口')).toBeHidden();
+  await expect(dialog.getByText('管理服务需要升级')).toBeHidden();
   await expect(dialog.getByText('当前项目接入能力不匹配')).toBeVisible();
   await expect(dialog.getByText('协议版本必须为 1')).toBeVisible();
   await expect(dialog.getByRole('button',{name:'扫描新仓库'})).toBeDisabled();
@@ -231,5 +232,53 @@ test('repository scan warns and sends no scan request when the backend predates 
   await dialog.getByLabel('代码仓库地址').fill('/isolated/scan-fixture');
   await expect(dialog.getByRole('button',{name:'扫描新仓库'})).toBeDisabled();
   await page.waitForTimeout(300);
+  expect(scanRequests).toEqual([]);
+});
+
+test('repository scan blocks submission when runtime identity cannot be read',async({page})=>{
+  // 身份查询失败同样属于“能力未确认”：必须提示并停发扫描请求，不能沿用任何“受支持”印象。
+  await page.route('**/api/runtime-identity',route=>route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({error:'identity unavailable'})}));
+  const scanRequests:string[]=[];
+  page.on('request',request=>{const path=new URL(request.url()).pathname;if(path==='/api/scans'||path.startsWith('/api/scans/'))scanRequests.push(request.url());});
+  await page.goto('/autopilot');
+  await page.getByRole('button',{name:'接入仓库',exact:true}).click();
+  const dialog=page.getByRole('dialog');
+  await expect(dialog.getByText('管理服务需要升级')).toBeVisible();
+  await expect(dialog.getByText(/无法读取运行身份/)).toBeVisible();
+  await dialog.getByLabel('代码仓库地址').fill('/isolated/scan-fixture');
+  await expect(dialog.getByRole('button',{name:'扫描新仓库'})).toBeDisabled();
+  await page.waitForTimeout(300);
+  expect(scanRequests).toEqual([]);
+});
+test('repository scan re-checks capability after the backend is downgraded instead of reusing the cached verdict',async({page})=>{
+  // 版本切换回归：先连接声明能力的后端让前端缓存“受支持”，关闭抽屉后换成旧后端再打开。
+  // 新会话不得复用缓存结论，必须重新核对；核对完成前不能发送任何 /api/scans 请求。
+  const json=(body:unknown)=>({status:200,contentType:'application/json',body:JSON.stringify(body)});
+  let identity:Record<string,unknown>={product_id:'legacy-product',commit:'new',release_id:'new',capabilities:{repository_scans:1}};
+  await page.route('**/api/runtime-identity',route=>route.fulfill(json(identity)));
+  const scanRequests:string[]=[];
+  page.on('request',request=>{const path=new URL(request.url()).pathname;if(path==='/api/scans'||path.startsWith('/api/scans/'))scanRequests.push(path);});
+  await page.goto('/autopilot');
+  await page.getByRole('button',{name:'接入仓库',exact:true}).click();
+  let dialog=page.getByRole('dialog');
+  await dialog.getByLabel('代码仓库地址').fill('/isolated/scan-fixture');
+  await expect(dialog.getByRole('button',{name:'扫描新仓库'})).toBeEnabled();
+  await expect(dialog.getByText('管理服务需要升级')).toHaveCount(0);
+  // 证明受支持路径确实会向 /api/scans 发起请求，且该结论已进入前端查询缓存。
+  await expect.poll(()=>scanRequests.length).toBeGreaterThan(0);
+  // antd Drawer 的关闭按钮沿用 zh-CN 无障碍名称（只有 Modal 硬编码成 Close），
+  // 因此这里按抽屉关闭按钮的固定类名点击，避免语言差异让关闭步骤永远等不到元素。
+  await dialog.locator('.ant-drawer-close').click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  // 等待超过全局 staleTime，使缓存结论在重新打开时看起来“可复用”。
+  await page.waitForTimeout(1700);
+  identity={product_id:'legacy-product',commit:'old',release_id:'old'};
+  scanRequests.length=0;
+  await page.getByRole('button',{name:'接入仓库',exact:true}).click();
+  dialog=page.getByRole('dialog');
+  await expect(dialog.getByText('管理服务需要升级')).toBeVisible();
+  await dialog.getByLabel('代码仓库地址').fill('/isolated/scan-fixture');
+  await expect(dialog.getByRole('button',{name:'扫描新仓库'})).toBeDisabled();
+  await page.waitForTimeout(500);
   expect(scanRequests).toEqual([]);
 });

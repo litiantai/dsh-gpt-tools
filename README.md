@@ -40,7 +40,7 @@ python3 -B scripts/autopilot.py install-runtime --runtime-version 0.1.7-rc.1
 python3 -B scripts/autopilot.py migrate-records
 ```
 
-新增 `GET/POST /api/scans`、`GET /api/scans/<id>`、`POST /api/scans/<id>/retry|onboard|apply`；写入沿用 Cookie、CSRF、操作 UUID 与版本控制。应用扫描结果额外核对项目版本。项目配置包含 `schema_version`、`adapter_spec`（协议版本、类型和能力）、`project_config` 及扫描引用；不支持的能力明确阻塞。`automation_disabled` 停止该项目的后台工作，历史记录只读保留，不转入其他项目。
+新增 `GET/POST /api/scans`、`GET /api/scans/<id>`、`POST /api/scans/<id>/retry|onboard|apply`；写入沿用 Cookie、CSRF、操作 UUID 与版本控制。`GET /api/runtime-identity` 返回 `capabilities.repository_scans`（当前版本 1）；前端在调用 `/api/scans` 前据此核对，版本错配时显示升级提示且不发送扫描请求。应用扫描结果额外核对项目版本。项目配置包含 `schema_version`、`adapter_spec`（协议版本、类型和能力）、`project_config` 及扫描引用；不支持的能力明确阻塞。`automation_disabled` 停止该项目的后台工作，历史记录只读保留，不转入其他项目。
 
 `dsh-gpt-tools` 使用独立版本目录运行，稳定更新器位于状态目录的 `platform/updater`，不会随普通候选版本覆盖。首次用 `scripts/install-platform.py --state-dir … --manifest …` 准备已验证基线与用户级服务。后续更新经 Git 交付、候选校验后排队；独立更新器停止派发、等待执行进程退出、备份数据库、切换版本、检查 API 与调度心跳，并完成健康观察。只允许向后兼容的数据迁移；失败回滚代码并保留新增历史，不用旧数据库覆盖新记录。更新日志保存于 `autopilot/updates`。
 
