@@ -69,6 +69,73 @@ class LocalTestingTests(unittest.TestCase):
             self.assertEqual(result['instance']['instance_role'], 'feature')
         self.assert_stopped(result['instance'])
 
+    def test_inspection_preparation_uses_business_start_without_regression_commands(self):
+        config = self.request['product']['project_config']
+        config['test_start'] = [[sys.executable, '-c', 'raise SystemExit(17)']]
+        marker = self.root/'regression-started'
+        failing = [sys.executable, '-c', f'from pathlib import Path; Path({str(marker)!r}).touch(); raise SystemExit(9)']
+        config['commands']['test'] = [failing]
+        config['commands']['browser'] = [failing]
+        with verification(self.request, self.root/'inspection', inspection=True) as result:
+            self.assertEqual(result['status'], 'pass', result)
+            self.assertEqual(result['purpose'], 'inspection_prepare')
+            self.assertEqual([c['name'] for c in result['checks']], ['startup'])
+            self.assertFalse(marker.exists())
+            with urlopen(result['instance']['origin']) as response:
+                self.assertEqual(response.read(), b'release')
+            self.assertEqual(config['test_start'][0][-1], 'raise SystemExit(17)')
+        self.assert_stopped(result['instance'])
+
+    def test_normal_verification_still_requires_browser_checks(self):
+        config = self.request['product']['project_config']
+        config['commands']['browser'] = [[sys.executable, '-c', 'raise SystemExit(9)']]
+        with verification(self.request, self.root/'browser-failed') as result:
+            self.assertEqual(result['status'], 'fail', result)
+            self.assertEqual(result['checks'][-1]['exit_code'], 9)
+            self.assertEqual(result['checks'][-1]['name'], 'browser-0')
+        self.assert_stopped(result['instance'])
+
+    def test_business_start_failure_blocks_inspection(self):
+        config = self.request['product']['project_config']
+        config['test_start'] = config['commands']['start']
+        config['commands']['start'] = [[sys.executable, '-c', 'raise SystemExit(8)']]
+        with verification(self.request, self.root/'business-failed', inspection=True) as result:
+            self.assertEqual(result['status'], 'blocked', result)
+            self.assertEqual(result['checks'][-1]['name'], 'startup')
+            self.assertEqual(result['checks'][-1]['status'], 'blocked')
+        self.assert_stopped(result['instance'])
+
+    def test_inspection_build_failure_never_starts_instance(self):
+        self.request['product']['project_config']['commands']['build'] = [[sys.executable, '-c', 'raise SystemExit(7)']]
+        with verification(self.request, self.root/'build-failed', inspection=True) as result:
+            self.assertEqual(result['status'], 'fail', result)
+            self.assertEqual(result['checks'][-1]['exit_code'], 7)
+            self.assertNotIn('pid', result['instance'])
+
+    def test_isolated_inspection_receipt_cannot_replace_acceptance_and_reclaims_worktree(self):
+        from autopilot.inspection_routes import isolated_instance
+        from autopilot.quality import validate
+        config = self.request['product']['project_config']
+        config['test_start'] = [[sys.executable, '-c', 'raise SystemExit(17)']]
+        request = self.request | {'product': self.request['product'] | {
+            'adapter_spec': {'kind': 'command'}}, 'record': {'id': 'isolated', 'target_commit': self.head}}
+        folder = self.root/'isolated'
+        with isolated_instance(request, folder) as instance:
+            self.assertEqual(instance['instance_role'], 'isolated')
+            self.assertEqual(instance['commit'], self.head)
+            with urlopen(instance['origin']) as response:
+                self.assertEqual(response.read(), b'release')
+            proof = json.loads(next((folder/'instance').glob('quality-*/receipt.json')).read_text())
+            path = next((folder/'instance').glob('quality-*/receipt.json'))
+            from autopilot.quality import file_hash
+            proof.update(receipt=str(path), receipt_hash=file_hash(path))
+            with self.assertRaisesRegex(ValueError, '未覆盖'):
+                validate(proof, folder/'workspace', config)
+        receipt = json.loads((folder/'instance/local-verification.json').read_text())
+        self.assert_stopped(receipt['instance'])
+        self.assertFalse((folder/'workspace').exists())
+        self.assertNotIn('feat-inspection-isolated', git(self.repo, 'branch', '--list'))
+
     def test_termination_closes_instance_and_restores_handler(self):
         import signal
         previous=signal.getsignal(signal.SIGTERM)

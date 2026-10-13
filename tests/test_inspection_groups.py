@@ -168,8 +168,9 @@ class Cases(unittest.TestCase):
         snapshots=[{'id':str(i),'route_id':str(i),'definition':route()} for i in range(2)]
         record=self.ledger.create('inspection_rounds',{'product_id':self.product['id'],'target_commit':'c','snapshots':snapshots},'running')
         results=[{'route_id':str(i),'inspection_id':str(i),'status':'blocked' if i==0 else 'pass'} for i in range(2)]
-        with patch('autopilot.inspection_routes.isolated_instance',return_value=nullcontext({'commit':'c'})),patch('autopilot.inspection_routes.execute_route',side_effect=results) as run:
+        with patch('autopilot.inspection_routes.isolated_instance',return_value=nullcontext({'commit':'c'})) as start,patch('autopilot.inspection_routes.execute_route',side_effect=results) as run:
             execute_round({'state_root':str(self.store.state/'autopilot'),'product':self.product,'record':record})
+        start.assert_called_once()
         self.assertEqual(run.call_count,2);self.assertEqual(len(self.ledger.get('inspection_rounds',record['id'])['route_results']),2)
 
     def test_partial_merge_keeps_success_and_completes_only_after_final_acceptance(self):

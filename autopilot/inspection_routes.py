@@ -248,8 +248,7 @@ def isolated_instance(request, root):
     try:
         if generic(product):
             record={'workspace':str(workspace),'branch':branch,'commit':commit}
-            configuration=dict(product.get('project_config',{}),test_start=product.get('project_config',{}).get('commands',{}).get('start',[]))
-            with verification(request | {'record':record,'product':product | {'project_config':configuration}},root/'instance') as checked:
+            with verification(request | {'record':record},root/'instance',inspection=True) as checked:
                 if checked['status']!='pass':
                     raise ValueError(checked.get('reason','隔离巡检环境不可用'))
                 yield checked['instance'] | {'instance_role':'isolated'}

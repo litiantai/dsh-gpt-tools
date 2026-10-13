@@ -115,10 +115,15 @@ class RescanTests(unittest.TestCase):
         self.assertEqual(call.args[1]['target_commit'],'updated')
 
     def test_shared_instance_failure_is_recorded_without_rebuilding_for_every_route(self):
+        from contextlib import contextmanager
         from autopilot.inspection_routes import execute_round
+        @contextmanager
+        def unavailable(*args):
+            raise ValueError('启动测试失败')
+            yield
         snapshots = [{'id':str(i),'route_id':str(i),'definition':{'title':str(i),'business_line':'业务','environment':'isolated'}} for i in range(3)]
         record = self.ledger.create('inspection_rounds',{'product_id':self.product['id'],'target_commit':'abc','snapshots':snapshots},'running')
-        with patch('autopilot.inspection_routes.isolated_instance',side_effect=ValueError('启动测试失败')) as start:
+        with patch('autopilot.inspection_routes.isolated_instance',side_effect=unavailable) as start:
             result = execute_round({'state_root':str(self.ledger.store.state/'autopilot'),'product':self.product,'record':record})
         start.assert_called_once()
         self.assertEqual(len(result['routes']),3)
