@@ -53,6 +53,9 @@ def validate(config):
     if not isinstance(spec.get('capabilities'), list) or not set(spec['capabilities']) <= CAPABILITIES:
         raise ValueError('项目能力声明无效')
     settings = config.get('project_config', {})
+    if 'session_bootstrap' in settings:
+        from .inspection_session import validate as validate_session
+        validate_session(settings['session_bootstrap'])
     if settings.get('version', VERSION) != VERSION:
         raise ValueError('不支持的项目配置版本')
     if 'workflow_version' in settings and (type(settings['workflow_version']) is not int or settings['workflow_version'] != 1):

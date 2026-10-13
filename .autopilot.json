@@ -1,5 +1,9 @@
 {
   "version": 1,
+  "session_bootstrap": {
+    "path": "/api/bootstrap",
+    "probe_path": "/api/products"
+  },
   "commands": {
     "install": [
       [
