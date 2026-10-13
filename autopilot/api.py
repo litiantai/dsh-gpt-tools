@@ -202,6 +202,10 @@ class Control:
             return self.enqueue_scan({'source': source, 'product_id': product_id, 'title': '仓库接入扫描'})
         if parts == ['products']:
             config = body.get('config',{})
+            if isinstance(config, dict) and 'notifications' in config:
+                from .notifications import initialize_configuration
+                config = dict(config)
+                config['notifications'] = initialize_configuration(config['notifications'])
             self.validate_product(config)
             if config.get('git'):
                 from .github import GitHub
@@ -407,6 +411,10 @@ class Control:
         changes=body.get('config',{})
         if not isinstance(changes,dict):
             raise ValueError('项目配置必须为对象')
+        changes = dict(changes)
+        if 'notifications' in changes:
+            from .notifications import validate_public_changes
+            validate_public_changes(changes['notifications'])
         current = self.ledger.get('products', ident)
         if 'related_projects' in changes or 'project_role' in changes:
             from .project_groups import validate_links
@@ -426,6 +434,10 @@ class Control:
                     raise Conflict('项目配置已被其他操作修改；当前草稿已保留，请核对后放弃修改以载入最新配置')
             elif body.get('version')!=old['version']:
                 raise Conflict('记录已更新，请刷新后重试')
+            if 'notifications' in changes:
+                from .notifications import check_configuration_versions, prepare_configuration
+                check_configuration_versions(old, body)
+                changes['notifications'] = prepare_configuration(old, changes['notifications'])
             runs=db.execute('SELECT status FROM auto_runs WHERE product_id=?',(ident,))
             changed={key for key,value in changes.items() if value!=old.get(key)}
             live_limits={'runs_per_day','discovery_per_day','tokens_per_day','deepseek_off_peak_only','execution_seconds','execution_call_seconds'}
@@ -448,7 +460,14 @@ class Control:
                     'attempts':(old.get('runtime_recovery_state') or {}).get('attempts',0),'next_check_at':0}
             if 'git' in changed:
                 changes['git_migration'] = {'status': 'required'}
-            return self.ledger.update('products',ident,old['version'],changes,db=db)
+            if 'notifications' in changes:
+                from .notifications import stage_configuration_credential, version_configuration, configuration_effects
+                notification_config = stage_configuration_credential(old, changes['notifications'])
+                changes['notifications'] = version_configuration(old, notification_config)
+            result = self.ledger.update('products',ident,old['version'],changes,db=db)
+            if 'notifications' in changes:
+                configuration_effects(self.ledger, ident, changes['notifications'], db)
+            return result
 
     def promote_signal(self, ident, body):
         """将待处理信号原子登记为高优先级需求，保留来源并防止重复入池。"""

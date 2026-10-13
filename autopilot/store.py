@@ -101,6 +101,12 @@ class Ledger:
             f'SELECT * FROM {self._table(kind)} WHERE product_id=? ORDER BY created,id', (product_id,))]
         return [row for row in rows if all(row.get(k) == v for k, v in filters.items())]
 
+    def by_status(self, kind, status):
+        """按状态全量查询（不套用 list 的 1000 条上限），供后台投递等场景使用。"""
+        with self.store.connect() as db:
+            return [self.decode(row) for row in db.execute(
+                f'SELECT * FROM {self._table(kind)} WHERE status=? ORDER BY created,id', (status,))]
+
     def page(self, kind, product_id, cursor='', limit=50, **filters):
         limit = max(1, min(int(limit), 100))
         clauses, parameters = ['product_id=?'], [product_id]
