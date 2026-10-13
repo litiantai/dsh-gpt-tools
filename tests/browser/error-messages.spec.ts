@@ -38,3 +38,14 @@ test('management fetch failure shows a Chinese message without native Error pref
   await expect(page.getByText('管理服务暂时不可用。请稍后重试。',{exact:true})).toBeVisible();
   expect(await page.locator('body').innerText()).not.toContain('HTTP Error');
 });
+
+test('completed business verdict with source references stays specific in evidence receipts',async ({page})=>{
+  const reason='RepositoryScans.tsx:29 缺少 identity.isError 门控，查询失败后仍可提交 /scans';
+  await page.route('**/api/products',r=>r.fulfill({json:[{id:'verdict-copy',name:'验收结论验证',status:'active',version:1,
+    last_probe:1791515515,last_probe_result:{status:'fail',reason,error_info:{code:'BUSINESS',message:reason,suggestion:''}}}]}));
+  await page.goto('/autopilot?project=verdict-copy&view=overview&tab=monitoring');
+  const alert=page.getByRole('alert').filter({hasText:'运行监测 · 上次结果：失败'});
+  await alert.locator('summary').first().click();
+  await expect(alert.getByText(reason,{exact:true})).toBeVisible();
+  expect(await alert.innerText()).not.toContain('具体原因暂未识别');
+});

@@ -62,3 +62,29 @@ test('deferred validation finding shows its requirement and never retries the me
   await drawer.getByRole('button',{name:'查看关联需求',exact:true}).click();
   await expect(page.locator('.ant-modal-content').getByText('需求关联的原始失败证据',{exact:true})).toBeVisible();
 });
+
+test('repair issues distinguish failed checks from source defects and expose redacted diagnostics', async ({ page }) => {
+  const product={id:'issue-kinds',name:'问题分类验证',status:'active',version:1,created:1,updated:1};
+  const common={pr_url:'https://github.com/example/repo/pull/2',path:'',severity:'',status:'pending',created:2,updated:9,batch_title:'历史交付'};
+  const issues=[
+    {...common,id:'check',issue_kind:'check_failure',title:"test-1：KeyError: 'state_root'",
+      diagnostic:{reason:"Traceback\nKeyError: 'state_root'",api_key:'canary-secret'}},
+    {...common,id:'defect',issue_kind:'code_defect',title:'RepositoryScans.tsx:29 缺少 identity.isError 门控，查询失败后仍可提交 /scans'},
+  ];
+  await page.route('**/api/products',r=>r.fulfill({json:[product]}));
+  await page.route('**/api/products/issue-kinds/delivery-board',r=>r.fulfill({json:{prs:[],release_prs:[],issues}}));
+  await page.route('**/api/products/issue-kinds/workbench',r=>r.fulfill({json:{sessions:[],reviews:[],events:[]}}));
+  await page.goto('/autopilot?project=issue-kinds');
+  await page.getByRole('button',{name:'问题修复 2',exact:true}).click();
+  const drawer=page.locator('.ant-drawer-content');
+  await expect(drawer.getByText('检查失败',{exact:true})).toBeVisible();
+  await expect(drawer.getByText('代码缺陷',{exact:true})).toBeVisible();
+  await expect(drawer.getByText(issues[1].title,{exact:true})).toBeVisible();
+  await expect(drawer.getByText(issues[0].title,{exact:true})).toBeVisible();
+  expect(await drawer.innerText()).not.toContain('具体原因暂未识别');
+  expect(await drawer.innerText()).not.toContain('Traceback');
+  await drawer.getByText('技术详情',{exact:true}).click();
+  expect(await drawer.innerText()).toContain('Traceback');
+  expect(await drawer.innerText()).not.toContain('canary-secret');
+  await page.screenshot({path:'.playwright/repair-issue-kinds.png',fullPage:true});
+});

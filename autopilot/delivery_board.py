@@ -1,12 +1,41 @@
 """按 PR 汇总代码交付，并从不可变轮次证据还原尚未完成的问题。"""
 import hashlib
 import json
+import re
 import threading
 import time
 from datetime import datetime
 
 from .call import atomic
 from .github import GitHub
+from error_messages import source_text, sanitize
+
+
+def execution_failure(value):
+    """执行环境故障不进入缺陷池；界面断言失败仍需修复。"""
+    return value.get('failure_kind') not in (None, '', 'ui_acceptance')
+
+
+def check_key(check):
+    """按步骤与命令标识机器检查，避免同名但命令不同的结果相互收口。"""
+    if not check.get('name') or not check.get('command'):
+        return None
+    return json.dumps([check.get('step_id'), check['name'], check.get('module'), check['command']], ensure_ascii=False)
+
+
+def check_title(check):
+    """提供具体检查失败摘要，保留完整日志供展开核对。"""
+    raw = source_text(check)
+    error = re.search(r'\b\w*(?:Error|Exception):[^\n]+', raw)
+    if error:
+        description = error.group(0)
+    elif 'locator.' in raw and re.search(r'timeout', raw, re.I):
+        description = '浏览器测试等待页面元素超时'
+    elif raw and not re.search(r'Traceback|\n', raw):
+        description = raw
+    else:
+        description = '检查未通过' + (f"（退出码 {check['exit_code']}）" if check.get('exit_code') is not None else '')
+    return sanitize(f"{check['name']}：{description}")
 
 
 def pr_url(value):
@@ -29,23 +58,36 @@ def pending_issues(deliveries, rounds, dispatch=None, requirements=()):
             deferred = action.startswith('validate') and any(
                 check.get('status') == 'fail' and check.get('disposition') == 'backlog'
                 for check in result.get('checks', []))
-            if result.get('status') == 'fail' or deferred:
-                events.append({'id': receipt['call_id'], 'delivery_id': b['id'], 'phase': action,
+            if (result.get('status') == 'fail' or deferred
+                    or action.startswith('validate') and result.get('status') in ('pass', 'blocked')):
+                events.append({'id': receipt.get('call_id') or f"{b['id']}:{action}:{receipt['at']}", 'delivery_id': b['id'], 'phase': action,
                     'pr_url': b.get('feature_pr_url') if action in ('prepare', 'sync_feature') else b.get('pr_url'),
                     'created': receipt['at'], 'finished_at': receipt['at'], 'updated': receipt['at'],
-                    'status': 'fail', 'result': result})
+                    'started_at': min((c['started'] for c in result.get('checks', []) if isinstance(c.get('started'), (int, float))), default=receipt['at']),
+                    'status': result.get('status'), 'result': result})
     for row in sorted(events, key=lambda r: (r.get('finished_at') or r['updated'], r['created'], r['id'])):
         b = batches.get(row['delivery_id'], {})
         url = pr_url(row.get('pr_url'))
         # 没有 PR 的准备冲突只归属于该批次，不能误挂到之后的另一个 PR。
         target = url or 'delivery:' + row['delivery_id'] + (':feature' if row.get('phase', '').endswith('feature') or row.get('phase') == 'prepare' else ':release')
         phase, status = row.get('phase', ''), row['status']
+        result = row.get('result') or {}
         is_repair = phase.startswith('repair')
+        if phase.startswith('validate') and status in ('pass', 'fail', 'blocked') and result.get('head_sha'):
+            passed = {check_key(c) for c in result.get('checks', [])
+                      if c.get('status') == 'pass' and check_key(c)
+                      and c.get('commit', result['head_sha']) == result['head_sha']}
+            before = row.get('started_at', row['created'])
+            opened = {k: v for k, v in opened.items() if not (
+                v['target'] == target and v['delivery_id'] == row['delivery_id']
+                and v.get('source_phase') == phase and v.get('check_key') in passed
+                and v['detected_at'] <= before and not v.get('requirement'))}
         if status == 'pass' and (is_repair or phase.startswith('review')):
             before = row.get('started_at', row['created'])
-            opened = {k: v for k, v in opened.items() if v['target'] != target or v['created'] > before}
-        if status == 'fail' and not is_repair:
-            result = row.get('result') or {}
+            opened = {k: v for k, v in opened.items() if v['target'] != target or v['created'] > before
+                      or v.get('requirement') or v.get('check_key')}
+        deferred = phase.startswith('validate') and any(c.get('status') == 'fail' and c.get('disposition') == 'backlog' for c in result.get('checks', []))
+        if (status == 'fail' or deferred) and not is_repair and not execution_failure(result):
             issues = result.get('issues')
             if not issues and phase.startswith('validate'):
                 issues = []
@@ -54,9 +96,16 @@ def pending_issues(deliveries, rounds, dispatch=None, requirements=()):
                         continue
                     proof = check.get('evidence')
                     proof = proof if isinstance(proof, dict) else {}
-                    issues.append({'content': proof.get('reason') or check.get('reason') or check.get('name') or '检查未通过',
-                                   'verification': proof})
-            issues = issues or [{'content': result.get('reason') or row.get('reason') or result.get('summary') or '检查未通过'}]
+                    if execution_failure(check) or execution_failure(proof):
+                        continue
+                    issues.append({'content': source_text(proof) or (check_title(check) if check_key(check) else source_text(check)) or check.get('name') or '检查未通过',
+                                   'verification': proof, 'check_key': check_key(check),
+                                   'issue_kind': 'check_failure' if check_key(check) or check.get('failure_kind') == 'ui_acceptance' else 'code_defect',
+                                   'diagnostic': sanitize(check)})
+                # 明确的执行异常不补成代码缺陷。
+                if not issues and result.get('checks'):
+                    continue
+            issues = issues or [{'content': source_text(result) or source_text(row) or source_text(result, 'summary') or '检查未通过'}]
             for issue in issues:
                 if not isinstance(issue, dict):
                     issue = {'content': str(issue)}
@@ -64,13 +113,13 @@ def pending_issues(deliveries, rounds, dispatch=None, requirements=()):
                 old = opened.get(key)
                 linked = []
                 proof = issue.get('verification') or {}
-                if proof.get('status') == 'fail' and proof.get('reason') and result.get('head_sha'):
+                if proof.get('status') == 'fail' and source_text(proof) and result.get('head_sha'):
                     for requirement in requirements:
                         if requirement.get('source') != 'verification_finding' or requirement.get('product_id') != b.get('product_id'):
                             continue
                         if any(occurrence.get('delivery_id') == row['delivery_id']
                                and occurrence.get('commit') == result['head_sha']
-                               and ' '.join((occurrence.get('verification', {}).get('reason') or '').split()) == ' '.join(proof['reason'].split())
+                               and ' '.join(source_text(occurrence.get('verification', {})).split()) == ' '.join(source_text(proof).split())
                                for occurrence in requirement.get('verification_occurrences', [])):
                             linked.append(requirement)
                 requirement = max(linked, key=lambda r: r.get('created', 0), default=None)
@@ -83,6 +132,9 @@ def pending_issues(deliveries, rounds, dispatch=None, requirements=()):
                 opened[key] = {'id': key, 'target': target, 'delivery_id': row['delivery_id'], 'pr_url': url,
                     'title': issue.get('content', '检查未通过'), 'path': issue.get('path', ''), 'start_line': issue.get('start_line'),
                     'severity': issue.get('severity', ''), 'status': 'pending', 'review_id': row['id'],
+                    'issue_kind': issue.get('issue_kind', 'code_defect'), 'source_phase': phase,
+                    'check_key': issue.get('check_key'), 'diagnostic': issue.get('diagnostic'),
+                    'detected_at': row.get('finished_at') or row['updated'],
                     'created': old['created'] if old else row['updated'], 'updated': row['updated'],
                     'evidence': proof.get('evidence') or result.get('report_url') or result.get('evidence'), 'batch_title': b.get('title', ''),
                     **({'requirement': {k: requirement[k] for k in ('id', 'title', 'status', 'updated') if k in requirement}}
