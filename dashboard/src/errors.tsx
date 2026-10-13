@@ -15,7 +15,7 @@ export function describeError(value:unknown,subject='相关服务'):ErrorInfo {
   if(value && typeof value==='object') {
     const r=value as Record<string,unknown>;
     const info=r.error_info as ErrorInfo | undefined;
-    if(info?.code && info.message && !technical.test(info.message))return {...info,suggestion:info.suggestion || ''};
+    if(info?.code && info.message && (info.code==='BUSINESS' || !technical.test(info.message)))return {...info,message:String(sanitizeDiagnostic(info.message)),suggestion:info.suggestion || ''};
     if(value instanceof Error)return describeError(value.message,subject);
     return describeError(r.reason ?? r.error ?? r.summary ?? r.message ?? '',subject);
   }

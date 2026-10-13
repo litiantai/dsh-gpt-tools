@@ -221,9 +221,10 @@ def design(request):
     product = request['product']
     workspace = source_workspace(request) if product.get('git', {}).get('enabled') else product.get('repository') or product['source']
     commit = git(workspace, 'rev-parse', 'HEAD')
+    from .inspection_session import configuration
     ledger = Ledger(Store(Path(request['state_root']).parent))
     material = {'goal':product.get('goal'), 'project_config':product.get('project_config', {}),
-        'source_commit':commit, 'history':[{k:r.get(k) for k in ('title','method','judgement','environment')}
+        'source_commit':commit, 'session_bootstrap':configuration(workspace, product), 'history':[{k:r.get(k) for k in ('title','method','judgement','environment')}
                                         for r in ledger.scoped('inspections', product['id'])[-20:]],
         'existing_routes':[ledger.get('inspection_route_versions', r['current_version_id'])['definition']
             for r in ledger.scoped('inspection_routes', product['id']) if r.get('current_version_id')],
@@ -231,7 +232,7 @@ def design(request):
                         for r in ledger.scoped('requirements', product['id'])[-50:]]}
     result = run_model('inspection_design', request | {'record':request['record'] | {'workspace':workspace},
                        'budget_kind':'inspection_design_tokens'}, request['record'].get('selection') or role(product), material,
-        '只读源码并设计覆盖各业务线的真实巡检路线。保留已有路线 key；只输出可由浏览器定位器及受控接口执行的步骤；接口写入必须在隔离环境。',
+        '只读源码并设计覆盖各业务线的真实巡检路线。保留已有路线 key；只输出可由浏览器定位器及受控接口执行的步骤；接口写入必须在隔离环境。session_bootstrap 表示实例可自动建立本机会话，不需要人工账号登录或 storage_state。不能要求控制器注入未实现的合成数据、网络 mock 或步骤回调；需要数据时用隔离实例支持的实际界面/接口步骤准备，并登记可执行断言。',
         output_schema('inspection_design')['properties'])
     return result | {'source_commit':commit}
 
@@ -247,11 +248,12 @@ def isolated_instance(request, root):
     git(repo,'worktree','add','-b',branch,str(workspace),commit)
     try:
         if generic(product):
+            from .inspection_session import configuration
             record={'workspace':str(workspace),'branch':branch,'commit':commit}
             with verification(request | {'record':record},root/'instance',inspection=True) as checked:
                 if checked['status']!='pass':
                     raise ValueError(checked.get('reason','隔离巡检环境不可用'))
-                yield checked['instance'] | {'instance_role':'isolated'}
+                yield checked['instance'] | {'instance_role':'isolated', 'session_bootstrap':configuration(workspace, product)}
         else:
             with desktop_instance(request,workspace,root/'instance') as instance:
                 yield instance
@@ -297,6 +299,8 @@ def execute_route(ledger, product, round_record, snapshot, instance, root, drive
     api_only=all(s['action'] in ('read_api','request_api') for s in definition['steps'])
     driver = None if api_only else (driver_factory or BrowserDriver)(root)
     config = dict(product.get('computer_use') or {})
+    if definition['environment']=='isolated' and instance.get('session_bootstrap'):
+        config['session_bootstrap'] = instance['session_bootstrap']
     config.update(entry_url=instance.get('entry_url'),full_page=True, read_only=definition['environment']=='master', readonly_paths=product.get('project_config', {}).get('readonly_paths', []))
     status = 'observed'; reason = '巡检证据已保存，等待独立归因'; asserted = False
     def capture(step, phase, state='observed', actual=None):
@@ -308,10 +312,15 @@ def execute_route(ledger, product, round_record, snapshot, instance, root, drive
     try:
         if instance.get('commit') != round_record['target_commit']:
             raise ValueError('巡检实例与当轮提交不一致')
-        if definition.get('requires_auth') and not config.get('storage_state') and not instance.get('auth_ready'):
+        if definition.get('requires_auth') and not config.get('storage_state') and not instance.get('auth_ready') and not (driver and config.get('session_bootstrap')):
             raise ValueError('前置条件不足：请在项目隔离配置中提供测试登录状态')
         if driver:
-            driver.open(instance['origin'], config)
+            opened = driver.open(instance['origin'], config)
+            if config.get('session_bootstrap'):
+                if not opened or not opened.get('session_ready'):
+                    raise ValueError('本机会话初始化未通过，尚未开始业务巡查')
+                recorder.step('本机会话初始化', '同源初始化并探测受保护接口', '无需人工账号登录即可建立本机会话',
+                    '初始化及受保护接口探测通过', status='pass', details={'phase':'session','session':opened})
         for step in definition['steps']:
             if step['action'] in ('read_api','request_api'):
                 result = api_evidence(instance,step) if api_only else driver.send({'command':'inspect_api','step':step,'path':step['path'],'method':step.get('api_method','GET') if step['action']=='request_api' else 'GET','body':step.get('api_body')})

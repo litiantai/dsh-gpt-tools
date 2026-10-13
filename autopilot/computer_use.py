@@ -60,7 +60,7 @@ class BrowserDriver(ComputerUseDriver):
                                      stdout=subprocess.PIPE, stderr=self.log, text=True, bufsize=1)
         return self.send({'command':'open', 'origin':origin, 'allowed_origins':config.get('allowed_origins', []),
                           'entry_url':config.get('entry_url'), 'storage_state':config.get('storage_state'), 'full_page':config.get('full_page',False), 'read_only':config.get('read_only',False),
-                          'readonly_paths':config.get('readonly_paths',[])})
+                          'readonly_paths':config.get('readonly_paths',[]), 'session_bootstrap':config.get('session_bootstrap')})
 
     def screenshot(self, path):
         return self.send({'command':'screenshot', 'path':str(path)})

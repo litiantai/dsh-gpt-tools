@@ -1,4 +1,4 @@
-import { ErrorNotice } from './errors';
+import { ErrorNotice, TechnicalDetails } from './errors';
 import { Alert, Button, Input, Modal, Select, Space, Table, Tag, Tooltip } from 'antd';
 import { useState } from 'react';
 import { activeCall, currentProgress, type ActiveCall } from './currentProgress';
@@ -21,6 +21,7 @@ export interface RepairIssue {
   delivery_id?:string; delivery_status?:string; delivery_version?:number; call?:ActiveCall; retryable?:boolean; retry_reason?:string;
   last_attempt?:{status:string;reason?:string;updated:number};
   id:string; pr_url:string; title:string; path:string; start_line?:number; severity:string;
+  issue_kind?:'code_defect'|'check_failure'; diagnostic?:unknown;
   status:string; created:number; updated:number; reason?:string; evidence?:string; batch_title:string;
 }
 export interface DeliveryBoardData {
@@ -66,9 +67,10 @@ export default function DeliveryBoard({data,kind,loading,onRetry,onManualMerge,o
         {(r.requirement_id || r.delivery_id) && <Button size="small" onClick={()=>setSelected({kind:r.requirement_id?'requirements':'deliveries',record:{id:r.requirement_id || r.delivery_id,title:r.requirement_title || r.title}})}>查看证据</Button>}
       </Space>},
     ]}/>:<>
-      <p className="muted">仅显示尚未修复完成的问题；同一 PR 可有多条。转入需求池的问题显示关联需求进度，完成后移出；PR 合并不代表缺陷已修复。</p>
+      <p className="muted">显示未完成的代码缺陷与检查失败；执行异常在「异常阻塞」中处理。同一检查复验通过后移出，已转需求的缺陷以关联需求进度为准。历史回执保留在证据中。</p>
       <Table<RepairIssue> rowKey="id" dataSource={issues} loading={loading} pagination={{pageSize:10,showSizeChanger:false}} scroll={{x:1450}} columns={[
-        {title:'问题',width:320,render:(_,r)=><><div>{r.title}</div>{r.path && <small className="muted">{r.path}{r.start_line?`:${r.start_line}`:''}</small>}</>},
+        {title:'问题',width:320,render:(_,r)=><><div className="record-text">{r.title}</div>{r.path && <small className="muted">{r.path}{r.start_line?`:${r.start_line}`:''}</small>}{!!r.diagnostic && <TechnicalDetails value={r.diagnostic}/>}</>},
+        {title:'问题类型',width:110,render:(_,r)=><Tag color={r.issue_kind==='check_failure'?'orange':'blue'}>{r.issue_kind==='check_failure'?'检查失败':'代码缺陷'}</Tag>},
         {title:'关联 PR',width:150,render:(_,r)=>safeLink(r.pr_url)?<a href={r.pr_url} target="_blank" rel="noreferrer">PR #{r.pr_url.split('/').pop()}</a>:<span title={r.batch_title}>尚未创建 PR</span>},
         {title:'当前进度',width:200,render:(_,r)=><Tag color={activeCall(r)?'processing':r.status==='blocked'?'error':'default'}>{r.requirement?`已转需求 · ${recordLabel(r.requirement.status)}`:activeCall(r)?`${recordLabel(r.call!.action)} · 执行中`:r.status==='waiting'?`${recordLabel(r.delivery_status)} · 等待执行`:issueLabels[r.status] || r.status}</Tag>},
         {title:'严重程度',width:110,render:(_,r)=>({critical:'严重',high:'高',medium:'中',low:'低'}[r.severity] || '—')},

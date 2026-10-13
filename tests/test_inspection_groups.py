@@ -34,6 +34,29 @@ class Cases(unittest.TestCase):
             with self.assertRaises(ValueError):validate_routes([definition],self.product)
         valid=route('observe');valid['environment']='master';validate_routes([valid],self.product)
 
+    def test_local_session_satisfies_route_auth_without_claiming_business_pass(self):
+        class Driver:
+            def __init__(self,root):pass
+            def open(self,origin,config):
+                assert config['session_bootstrap']['path']=='/api/bootstrap'
+                return {'session_ready':True,'bootstrap_status':200,'probe_status':200}
+            def screenshot(self,path):path.write_bytes(b'fixture');return {'text':'local session ready'}
+            def send(self,value):return {'settled':True,'matched':True}
+            def close(self):pass
+        definition=route('observe');definition['requires_auth']=True
+        instance={'origin':'http://127.0.0.1:9','commit':'c','session_bootstrap':{'path':'/api/bootstrap','probe_path':'/api/products'}}
+        result=execute_route(self.ledger,self.product,{'id':'round','target_commit':'c'},{'id':'version','route_id':'route','definition':definition},instance,self.root/'session',Driver)
+        self.assertEqual(result['status'],'observed',result)
+        evidence=self.ledger.scoped('evidence',self.product['id'])
+        self.assertEqual(evidence[0]['details']['phase'],'session')
+
+    def test_other_projects_still_require_actual_account_login_state(self):
+        from unittest.mock import Mock
+        driver=Mock();definition=route('observe');definition['requires_auth']=True
+        result=execute_route(self.ledger,self.product,{'id':'round','target_commit':'c'},{'id':'version','route_id':'route','definition':definition},
+            {'origin':'http://127.0.0.1:9','commit':'c'},self.root/'account',lambda root:driver)
+        self.assertEqual(result['status'],'blocked');driver.open.assert_not_called()
+
     def test_failed_design_keeps_previous_immutable_version(self):
         plan=self.ledger.create('inspection_plans',{'product_id':self.product['id'],'receipts':[{'call_id':'1'}]},'running')
         finish_plan(self.ledger,plan,{'status':'pass','source_commit':'abc','routes':[route()]})

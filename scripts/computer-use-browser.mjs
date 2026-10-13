@@ -16,6 +16,23 @@ async function command(input) {
     browser = await chromium.launch({ headless: true });
     context = await browser.newContext({ viewport, serviceWorkers: 'block', acceptDownloads: false,
       ...(input.storage_state ? { storageState: input.storage_state } : {}) });
+    let session = {};
+    if (input.session_bootstrap) {
+      if (readOnly) throw Error('本机会话初始化仅支持隔离实例');
+      const localPath = value => {
+        if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || Array.from(value).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 92)) throw Error('本机会话路径必须为同源绝对路径');
+        const url = new URL(value, origin);
+        if (url.origin !== origin || url.username || url.password || url.hash) throw Error('本机会话路径超出实例范围');
+        return url.href;
+      };
+      const bootstrapUrl = localPath(input.session_bootstrap.path);
+      const probeUrl = localPath(input.session_bootstrap.probe_path);
+      const initialized = await context.request.get(bootstrapUrl, {maxRedirects:0, timeout:10000});
+      if (!initialized.ok()) throw Error(`本机会话初始化失败：HTTP ${initialized.status()}`);
+      const probe = await context.request.get(probeUrl, {maxRedirects:0, timeout:10000});
+      if (!probe.ok()) throw Error(`本机会话探测失败：HTTP ${probe.status()}`);
+      session = {session_ready:true, bootstrap_status:initialized.status(), probe_status:probe.status()};
+    }
     await context.route('**/*', route => {
       const request = route.request(); const url = new URL(request.url());
       const safe = !readOnly || (['GET','HEAD'].includes(request.method()) &&
@@ -36,7 +53,7 @@ async function command(input) {
     const entry=new URL(input.entry_url || origin);
     if (entry.origin!==origin || entry.username || entry.password) throw Error('登录入口超出实例范围');
     await page.goto(entry.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    return { viewport };
+    return { viewport, ...session };
   }
   if (input.command === 'close') { await browser?.close(); return { closed: true }; }
   if (!page || page.isClosed()) throw Error('浏览器会话丢失');
