@@ -427,14 +427,16 @@ class CoordinatorTests(unittest.TestCase):
         self.assertTrue(self.fresh()['queue_first'])
         self.assertEqual(self.fresh()['queue_first_at'],100)
 
-    def test_off_peak_and_execution_budget_prevent_consumption(self):
+    def test_off_peak_waits_but_approved_repair_renews_execution_budget(self):
         self.apply()
         with patch('autopilot.off_peak.waiting',return_value={'reason':'等待错峰'}):
             self.assertFalse(c.resume_pending(self.scheduler))
         run=self.fresh()
         self.ledger.update('runs',run['id'],run['version'],{'execution_seconds':3600})
-        self.assertFalse(c.resume_pending(self.scheduler))
+        self.assertTrue(c.resume_pending(self.scheduler))
         self.assertEqual(self.fresh()['revisions'],3)
+        self.assertEqual(self.fresh()['execution_seconds'],3600)
+        self.assertEqual(self.fresh()['extra_execution_seconds'],3600)
 
     def test_failed_call_uncertainty_is_never_replayed(self):
         run=self.fresh()

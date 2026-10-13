@@ -34,7 +34,7 @@ const names: Record<string, string> = {
   problem_resolved:'原需求效果已验证',uncertain:'执行结果尚待核对',pause_verified:'暂停证据已核实',
   observation:'仅作观察',source_unchanged:'源码未发生变化',processes_stopped:'执行进程已停止',
   signals:'发现的信号',source:'信号来源',component:'影响模块',classification:'处理分类',in_scope:'属于项目范围',
-  priority:'优先级',queue_first:'优先排队',queue_first_at:'手动入池时间',manual_requirement_id:'手动关联需求',count:'累计出现次数',extra_revisions:'额外返修次数',coordination_no_progress:'连续无进展轮数',coordination_progress:'修复进展',coordination_pending:'待执行协调授权',coordination_reason:'协调依据',coordination_wait:'协调等待原因',role_skill:'角色技能快照',revisions:'累计返修次数',execution_seconds:'累计执行耗时',failure_reason:'实际阻塞原因',source_context:'本轮读取源码',
+  priority:'优先级',queue_first:'优先排队',queue_first_at:'手动入池时间',manual_requirement_id:'手动关联需求',count:'累计出现次数',extra_revisions:'额外返修次数',coordination_no_progress:'连续无进展轮数',coordination_progress:'修复进展',coordination_pending:'待执行协调授权',coordination_reason:'协调依据',coordination_wait:'协调等待原因',role_skill:'角色技能快照',revisions:'累计返修次数',execution_seconds:'累计执行耗时',extra_execution_seconds:'授权追加执行时间',execution_grants:'执行时间授权记录',execution_budget:'当前执行预算',used_seconds:'已执行秒数',initial_seconds:'每轮预算秒数',extra_seconds:'追加预算秒数',limit_seconds:'累计授权秒数',remaining_seconds:'剩余秒数',call_seconds:'下次调用最多秒数',grant_id:'授权编号',added_seconds:'本次追加秒数',failure_reason:'实际阻塞原因',source_context:'本轮读取源码',
   passed:'通过数量',blocked:'阻塞数量',target:'目标数量',target_count:'评测任务数',target_phase:'评测终点',
   method:'巡查方式',environment:'执行环境',results:'各项结果',steps:'巡查步骤',
   at:'记录时间',created:'创建时间',updated:'更新时间',started:'开始时间',finished:'结束时间',

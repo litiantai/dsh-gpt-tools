@@ -50,7 +50,11 @@ class RunProgress:
 
     def annotate(self, run):
         current = self.current(run)
+        from .execution_budget import snapshot as execution_budget
+        product = self.products.get(run['product_id'])
         fields = {'reason':blocking_reason(run)}
+        if product:
+            fields['execution_budget'] = execution_budget(run, product)
         if run['status'] == 'blocked':
             fields['failure_reason'] = blocking_reason(run)
         if current:

@@ -550,12 +550,14 @@ class Scheduler:
         if run['status'] == 'developing' and run.get('repair_plan_required'):
             return self.change('runs',run,{'reason':'返修等待新修复方案及方案评审'},'planning')
         if run['status'] in ('planning','developing'):
-            remaining=policy['execution_seconds']-run.get('execution_seconds',0)
+            from .execution_budget import snapshot, pending_changes
+            budget = snapshot(run | pending_changes(run, product), product)
+            remaining = budget['remaining_seconds']
             if remaining<=0:
                 return self.block(run,'累计开发执行时间已用尽')
             from .project_groups import design_action
             action=(design_action(self.ledger,run,product) or 'plan') if run['status']=='planning' else 'develop'
-            return self.start_call('runs',run,product,action,product['executor'],{'requirement':requirement},timeout=remaining)
+            return self.start_call('runs',run,product,action,product['executor'],{'requirement':requirement},timeout=budget['call_seconds'])
         if run['status'] in ('plan_review','acceptance_review'):
             return self.review(run,product,requirement)
         if run['status']=='verifying':
@@ -675,7 +677,10 @@ class Scheduler:
         # Human copy must not remove compiler/tool evidence from the next repair prompt.
         feedback=reason+('\n技术诊断：'+json.dumps(diagnostic,ensure_ascii=False) if diagnostic else '')
         from .retry import repair_plan_changes
-        return self.change('runs',run,repair_plan_changes(run) | {'revisions':run.get('revisions',0)+int(not manual),'feedback':redact(feedback),
+        from .execution_budget import renew
+        # 人工已补足过的同一轮不再续时；自动返修使用递增轮次作为幂等授权。
+        budget = renew(run, product, f"manual:{run['id']}:{run.get('manual_retry_count',0)}", 'human') if manual else renew(run, product, f"revision:{run.get('revisions',0)+1}", 'automatic')
+        return self.change('runs',run,repair_plan_changes(run) | budget | {'revisions':run.get('revisions',0)+int(not manual),'feedback':redact(feedback),
                            'review_id':None,'review_packet':None,'revision_exhausted':False,'manual_retry_pending':None},
                            'planning')
 

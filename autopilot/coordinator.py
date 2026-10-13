@@ -114,7 +114,7 @@ def snapshot(ledger, product):
             continue
         question = delegated_question(ledger, product, run)
         tasks.append({k: run.get(k) for k in ('id', 'version', 'title', 'status', 'resume_status', 'reason',
-            'commit', 'revisions', 'extra_revisions', 'execution_seconds', 'feedback', 'coordination_no_progress',
+            'commit', 'revisions', 'extra_revisions', 'execution_seconds', 'extra_execution_seconds', 'execution_grants', 'feedback', 'coordination_no_progress',
             'coordination_progress', 'coordination_pending', 'coordinator_human', 'requirement_id')} |
             {'current_progress':progress_view.current(run), 'protected': protected(run, delegated=bool(question)), 'delegated_question': question, 'checks': checks_snapshot(run),
              'diagnostic': run.get('last_revision_diagnostic'),
@@ -390,11 +390,14 @@ def resume_pending(scheduler):
                 continue
             with ledger.store.transaction() as db:
                 current = ledger.get('runs', run['id'], db)
-                if current['version'] != run['version']:
+                current_product = ledger.get('products', product['id'], db)
+                if current['version'] != run['version'] or current_product['version'] != product['version']:
                     continue
                 from .retry import repair_plan_changes
+                from .execution_budget import pending_changes
+                budget = pending_changes(current, product)
                 planning = repair_plan_changes(run) if pending['action'] == 'repair' else {}
-                ledger.update('runs', run['id'], run['version'], planning | {'feedback': pending['strategy'] + '\n原失败原因：' + run.get('reason', ''),
+                ledger.update('runs', run['id'], run['version'], planning | budget | {'feedback': pending['strategy'] + '\n原失败原因：' + run.get('reason', ''),
                     'review_id': None, 'review_packet': None, 'reason': '', 'coordination_wait': '',
                     'next_auto_retry_at': None, 'coordination_baseline': checks_snapshot(run)}, pending['phase'], db)
             scheduler.store.event('autopilot_resource_reservation', detail={'product_id':product['id'],
@@ -413,7 +416,8 @@ def consume_grant(scheduler, run):
         raise Conflict('协调或 Watch 决策授权已停用，未消费的授权保持等待')
     revisions = run.get('revisions', 0)
     limit = (DEFAULTS | product.get('policy', {}))['max_revisions']
-    changes = {'coordination_pending': None, 'coordination_last_decision': pending['decision_id']}
+    from .execution_budget import pending_changes
+    changes = pending_changes(run, product) | {'coordination_pending': None, 'coordination_last_decision': pending['decision_id']}
     if pending['action'] == 'repair':
         changes.update(revisions=revisions + 1, extra_revisions=run.get('extra_revisions', 0) + int(revisions >= limit))
     return scheduler.change('runs', run, changes)

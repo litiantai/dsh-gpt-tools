@@ -9,7 +9,7 @@ import { currentProgress } from './currentProgress';
 
 type Item = {id:string;title?:string;name?:string;status:string;[key:string]:unknown};
 type Task = {run:Item;requirement:Partial<Item>;signals:Item[];inspections:Item[];evidence:Item[];prs:{label:string;pr_url:string;project_name?:string}[]};
-type Usage = {tokens:number;sources:{id:string;action:string;tokens:number;collected:boolean;budget_kind:string}[];day:string;project_tokens_used:number;project_tokens_limit:number;execution_seconds?:number;receipts:unknown[];evidence:Item[];reviews:Item[]};
+type Usage = {tokens:number;sources:{id:string;action:string;tokens:number;collected:boolean;budget_kind:string}[];day:string;project_tokens_used:number;project_tokens_limit:number;execution_seconds?:number;execution_budget?:{remaining_seconds:number;extra_seconds:number};receipts:unknown[];evidence:Item[];reviews:Item[]};
 const title = (task:Task)=>task.run.title || task.run.name || task.requirement.title || task.run.id;
 
 function TaskUsage({runId}:{runId:string}) {
@@ -25,6 +25,7 @@ function TaskUsage({runId}:{runId:string}) {
       <Descriptions column={2} items={[
         {key:'tokens',label:'任务已记录消耗',children:recorded?`${data.tokens.toLocaleString()} Token`:'尚无可归属的用量记录'},
         {key:'duration',label:'累计执行耗时',children:data.execution_seconds==null?'未记录':`${Math.round(data.execution_seconds)} 秒`},
+        ...(data.execution_budget?[{key:'remaining',label:'剩余执行预算',children:`${Math.round(data.execution_budget.remaining_seconds)} 秒`},{key:'extra',label:'授权累计追加',children:`${Math.round(data.execution_budget.extra_seconds)} 秒`}]:[]),
         {key:'budget',label:`项目开发额度 · ${data.day}（北京时间）`,span:2,children:`${data.project_tokens_used.toLocaleString()} / ${data.project_tokens_limit?data.project_tokens_limit.toLocaleString():'不限'} Token`},
       ]}/>
       <p className="muted">任务消耗包含已归属的执行与审查用量；共享巡检、发现及整批交付消耗不分摊。数据以用量账本采集结果为准，缺失记录不代表零消耗。</p>

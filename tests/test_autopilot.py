@@ -387,6 +387,19 @@ for(const command of ['node test.js &','nohup node test.js','node test.js & node
         self.control.mutate(f'/products/{product["id"]}/configure',{'version':saved['version'],
             'config':{'policy':saved['policy'] | {'tokens_per_day':2000}}})
 
+    def test_execution_limits_can_change_while_a_call_is_running(self):
+        product=self.ledger.get('products',self.product['id'])
+        run=self.control.queue(self.requirement())
+        self.ledger.update('runs',run['id'],run['version'],{'call':{'id':'existing','action':'plan'}},'planning')
+        saved=self.control.mutate(f'/products/{product["id"]}/configure',{'version':product['version'],
+            'config':{'policy':product['policy'] | {'execution_seconds':7200,'execution_call_seconds':1200}}})
+        self.assertEqual(saved['policy']['execution_seconds'],7200)
+        self.assertEqual(saved['policy']['execution_call_seconds'],1200)
+        self.assertEqual(self.ledger.get('runs',run['id'])['call']['id'],'existing')
+        for value in (0,-1,True):
+            with self.assertRaises(ValueError):
+                self.control.validate_product(saved | {'policy':saved['policy'] | {'execution_call_seconds':value}})
+
     def test_daily_task_limit_keeps_queue_and_midnight_restores_it(self):
         import datetime
         from zoneinfo import ZoneInfo
