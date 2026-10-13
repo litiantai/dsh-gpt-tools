@@ -506,6 +506,8 @@ class Control:
             run=self.ledger.create('runs',{'product_id':latest['product_id'],'requirement_id':latest['id'],
                  'group_id':latest.get('group_id'),'design_workflow':True,
                  'priority':latest.get('priority',2),'queue_first':latest.get('queue_first',False),
+                 'coordination_priority':latest.get('coordination_priority',0),
+                 'coordination_plan_id':latest.get('coordination_plan_id'),
                  'queue_first_at':latest.get('queue_first_at',0),
                  'title':latest['title'],'budget_reserved':bool(latest.get('investigation_budget_reserved')),'revisions':0,'execution_seconds':0,'reason':'','receipts':[],
                  **({'evaluation_id':evaluation['id']} if evaluation else {})},'queued',db=db)

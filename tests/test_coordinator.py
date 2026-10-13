@@ -333,6 +333,163 @@ class CoordinatorTests(unittest.TestCase):
             c.tick(self.scheduler,now=100)
         self.assertTrue(call.called)
 
+    def waiting_requirement(self, **values):
+        return self.ledger.create('requirements', {'product_id':self.product['id'], 'title':'恢复归因回执',
+            'classification':'environment', 'in_scope':True, 'next_investigation':9999999999,
+            'reason':'归因超时，需要补充实际回执'} | values, 'awaiting_external')
+
+    def proposal(self):
+        return {'kind':'process', 'title':'补齐归因回执', 'evidence':'实际归因调用超时且未记录回执',
+            'reproduction':'运行归因并核对回执', 'impact':'流程无法形成判定', 'acceptance':['回执完整且可判定'],
+            'resolution_probes':[{'path':'/ths-octop/api/attribution','pointer':'/complete','operator':'equals','expected':True}]}
+
+    def test_waiting_requirement_is_watched_without_task_and_can_be_rechecked(self):
+        self.ledger.update('runs',self.run['id'],self.run['version'],{},'accepted')
+        req=self.waiting_requirement()
+        with patch('autopilot.coordinator.launch') as launch:
+            c.tick(self.scheduler,now=100)
+        self.assertTrue(launch.called)
+        material=c.snapshot(self.ledger,self.product)
+        self.assertEqual(material['tasks'],[])
+        self.assertEqual(c.watch_summary(material)['findings'][0]['requirement_id'],req['id'])
+        decision,result=self.decide(action='investigate_requirement', requirement_id=req['id'],requirement_version=req['version'])
+        self.assertEqual(c.apply(self.scheduler,decision,result)['status'],'applied')
+        latest=self.ledger.get('requirements',req['id'])
+        self.assertEqual(latest['status'],'pending')
+        self.assertEqual(latest['next_investigation'],0)
+        self.assertIn('修复拒收',latest['investigation_guidance'])
+        d,r=self.decide(action='investigate_requirement',requirement_id=req['id'],requirement_version=latest['version'])
+        self.assertEqual(c.apply(self.scheduler,d,r)['status'],'blocked')
+
+    def test_promote_existing_environment_requirement_preserves_id_and_prioritizes_run(self):
+        req=self.waiting_requirement()
+        d,r=self.decide(action='propose_requirement',requirement_id=req['id'],requirement_version=req['version'],requirement=self.proposal())
+        self.assertEqual(c.apply(self.scheduler,d,r)['status'],'applied')
+        latest=self.ledger.get('requirements',req['id'])
+        self.assertEqual(latest['status'],'queued')
+        run=self.ledger.get('runs',latest['run_id'])
+        self.assertEqual(run['coordination_priority'],10)
+        self.assertEqual(run['requirement_id'],req['id'])
+        self.assertEqual(len(self.ledger.scoped('requirements',self.product['id'])),2)
+        c.apply(self.scheduler,d,r)
+        self.assertEqual(len(self.ledger.scoped('runs',self.product['id'])),2)
+
+    def test_new_process_requirement_is_deduplicated_and_missing_probes_investigates(self):
+        value=self.proposal() | {'resolution_probes':[]}
+        d,r=self.decide(action='propose_requirement',requirement=value)
+        result=c.apply(self.scheduler,d,r)
+        self.assertEqual(result['status'],'applied')
+        req=self.ledger.get('requirements',result['requirement_id'])
+        self.assertEqual(req['classification'],'investigation')
+        self.assertEqual(req['coordination_priority'],10)
+        self.assertFalse(req.get('run_id'))
+        d,r=self.decide(action='propose_requirement',requirement=value)
+        self.assertEqual(c.apply(self.scheduler,d,r)['requirement_id'],req['id'])
+        self.assertEqual(len(self.ledger.scoped('requirements',self.product['id'])),2)
+
+    def test_requirement_actions_reject_stale_confirmation_and_unsafe_probe(self):
+        req=self.waiting_requirement()
+        d,r=self.decide(action='investigate_requirement',requirement_id=req['id'],requirement_version=req['version'])
+        req=self.ledger.update('requirements',req['id'],req['version'],{'reason':'新证据'})
+        self.assertEqual(c.apply(self.scheduler,d,r)['status'],'stale')
+        req=self.ledger.update('requirements',req['id'],req['version'],{'confirmation_required':True,'confirmation_status':'pending'})
+        d,r=self.decide(action='propose_requirement',requirement_id=req['id'],requirement_version=req['version'],requirement=self.proposal())
+        self.assertEqual(c.apply(self.scheduler,d,r)['status'],'blocked')
+        value=self.proposal();value['resolution_probes'][0]['path']='https://external/api/write'
+        d,r=self.decide(action='propose_requirement',requirement=value)
+        self.assertEqual(c.apply(self.scheduler,d,r)['status'],'blocked')
+        self.assertEqual(len(self.ledger.scoped('requirements',self.product['id'])),2)
+
+    def test_plan_atomically_schedules_investigation_and_new_development(self):
+        req=self.waiting_requirement()
+        d,r=self.decide(action='execute_plan',operations=[
+            {'action':'investigate_requirement','requirement_id':req['id'],'requirement_version':req['version'],'strategy':'补充归因证据'},
+            {'action':'propose_requirement','run_id':self.run['id'],'run_version':self.run['version'],
+             'strategy':'开发流程回执','requirement':self.proposal()}])
+        applied=c.apply(self.scheduler,d,r)
+        self.assertEqual(applied['status'],'applied')
+        self.assertEqual(len(applied['operation_decision_ids']),2)
+        self.assertEqual(self.ledger.get('requirements',req['id'])['status'],'pending')
+        self.assertEqual(len(self.ledger.scoped('runs',self.product['id'])),2)
+        c.apply(Scheduler(self.store),d,r)
+        self.assertEqual(len(self.ledger.scoped('runs',self.product['id'])),2)
+
+    def test_plan_rolls_back_all_actions_if_later_source_version_is_stale(self):
+        req=self.waiting_requirement()
+        d,r=self.decide(action='execute_plan',operations=[
+            {'action':'investigate_requirement','requirement_id':req['id'],'requirement_version':req['version'],'strategy':'补证'},
+            {'action':'propose_requirement','run_id':self.run['id'],'run_version':999,
+             'strategy':'开发流程回执','requirement':self.proposal()}])
+        self.assertEqual(c.apply(self.scheduler,d,r)['status'],'stale')
+        latest=self.ledger.get('requirements',req['id'])
+        self.assertEqual(latest['version'],req['version'])
+        self.assertEqual(latest['next_investigation'],9999999999)
+        self.assertEqual(len(self.ledger.scoped('coordination_decisions',self.product['id'])),1)
+
+    def test_plan_can_combine_new_requirement_and_existing_task_repair(self):
+        _,repair=self.decide()
+        d,r=self.decide(action='execute_plan',operations=[
+            {'action':'propose_requirement','run_id':self.run['id'],'run_version':self.run['version'],
+             'strategy':'补齐独立流程回执','requirement':self.proposal()},
+            {k:repair[k] for k in ('action','run_id','run_version','strategy','resume_phase')}])
+        self.assertEqual(c.apply(self.scheduler,d,r)['status'],'applied')
+        self.assertTrue(self.fresh()['coordination_pending'])
+        self.assertEqual(len(self.ledger.scoped('runs',self.product['id'])),2)
+
+    def test_project_environment_issue_without_run_can_propose_requirement(self):
+        self.ledger.update('runs',self.run['id'],self.run['version'],{},'accepted')
+        signal=self.ledger.create('signals',{'product_id':self.product['id'],'title':'巡检失败','reason':'隔离环境启动失败'},'abnormal')
+        with patch('autopilot.coordinator.launch') as launch:
+            c.tick(self.scheduler,now=100)
+        self.assertTrue(launch.called)
+        d,r=self.decide(action='propose_requirement',run_id='',source_kind='signals',source_id=signal['id'],
+                        source_version=signal['version'],requirement=self.proposal())
+        self.assertEqual(c.apply(self.scheduler,d,r)['status'],'applied')
+
+    def test_new_requirement_cannot_bypass_manual_or_no_progress_hold(self):
+        for values in ({'control':'pause'},{'coordination_progress_hold':True}):
+            run=self.fresh()
+            self.ledger.update('runs',run['id'],run['version'],{'control':None,'coordination_progress_hold':False}|values)
+            d,r=self.decide(action='propose_requirement',requirement=self.proposal())
+            self.assertEqual(c.apply(self.scheduler,d,r)['status'],'blocked')
+        self.assertEqual(len(self.ledger.scoped('requirements',self.product['id'])),1)
+
+    def test_previous_day_investigation_does_not_reserve_todays_development_budget(self):
+        req=self.waiting_requirement(investigation_budget_reserved=True,investigation_day='2000-01-01')
+        d,r=self.decide(action='propose_requirement',requirement_id=req['id'],requirement_version=req['version'],requirement=self.proposal())
+        self.assertEqual(c.apply(self.scheduler,d,r)['status'],'applied')
+        req=self.ledger.get('requirements',req['id'])
+        self.assertFalse(self.ledger.get('runs',req['run_id'])['budget_reserved'])
+
+    def test_queue_rejection_rolls_back_requirement_promotion(self):
+        req=self.waiting_requirement()
+        d,r=self.decide(action='propose_requirement',requirement_id=req['id'],requirement_version=req['version'],requirement=self.proposal())
+        with patch.object(self.scheduler.control,'queue',side_effect=Conflict('评测任务数已满')):
+            self.assertEqual(c.apply(self.scheduler,d,r)['status'],'stale')
+        self.assertEqual(self.ledger.get('requirements',req['id'])['version'],req['version'])
+
+    def test_generic_effect_probe_uses_registered_acceptance_check(self):
+        p=self.ledger.get('products',self.product['id'])
+        self.product=self.ledger.update('products',p['id'],p['version'],{'adapter_spec':{'kind':'command'},
+            'project_config':{'readonly_paths':['/api/runtime-identity'],'acceptance_checks':{'workflow':['python3','test.py']}}})
+        value=self.proposal();value['resolution_probes']=[{'path':'check:workflow','pointer':'/status','operator':'equals','expected':'pass'}]
+        d,r=self.decide(action='propose_requirement',requirement=value)
+        self.assertEqual(c.apply(self.scheduler,d,r)['status'],'applied')
+        req=self.ledger.get('requirements',self.ledger.get('coordination_decisions',d['id'])['requirement_id'])
+        self.assertEqual(req['resolution_probes'][0]['path'],'check:workflow')
+
+    def test_plan_and_requirement_schema_accepts_complete_contract(self):
+        from autopilot.role_skills import output_schema
+        import runpy
+        validate=runpy.run_path(str(ROOT/'skills/dsh-role-coordinator/scripts/validate_output.py'))['validate']
+        schema=output_schema('coordinate')
+        _,result=self.decide(action='propose_requirement',requirement=self.proposal())
+        result.update(reason='流程问题',summary='补齐回执',requirement_id='',requirement_version=0,
+                      source_kind='',source_id='',source_version=0,operations=[])
+        validate(result,schema)
+        operation={k:result[k] for k in schema['properties']['operations']['items']['properties']}
+        validate(result | {'action':'execute_plan','operations':[operation]},schema)
+
     def test_forced_watch_is_consumed_once_when_resources_are_busy(self):
         self.ledger.create('coordination_decisions',{'product_id':self.product['id'],'call':{'id':'busy'}},'running')
         with self.store.transaction() as db:

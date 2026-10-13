@@ -85,7 +85,7 @@ def investigate(scheduler,only_active=False):
     if only_active:
         return False
     day=datetime.datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
-    for item in sorted(rows,key=lambda r:(r.get('next_investigation',0),r['created'])):
+    for item in sorted(rows,key=lambda r:(-r.get('coordination_priority',0),r.get('next_investigation',0),r['created'])):
         if item['status'] not in ('pending','awaiting_external') or item.get('classification') not in ('investigation','environment') or item.get('in_scope') is not True:
             continue
         if item.get('next_investigation',0)>time.time():

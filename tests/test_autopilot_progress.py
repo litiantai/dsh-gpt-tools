@@ -42,6 +42,19 @@ class ProgressTests(unittest.TestCase):
         for _ in range(5):self.ledger.budget(self.product['id'],'development',5)
         with patch.object(self.scheduler,'start_call') as start:
             self.assertFalse(investigate(self.scheduler));start.assert_not_called()
+    def test_watch_investigation_priority_survives_promotion_to_development(self):
+        urgent=self.ledger.create('requirements',{'product_id':self.product['id'],'title':'Watch 流程修复',
+            'classification':'investigation','in_scope':True,'coordination_priority':10},'pending')
+        with patch.object(self.scheduler,'start_call') as start:
+            investigate(self.scheduler)
+        self.assertEqual(start.call_args.args[1]['id'],urgent['id'])
+        urgent=self.ledger.get('requirements',urgent['id'])
+        self.ledger.update('requirements',urgent['id'],urgent['version'],{'receipts':[{'call_id':'priority',
+            'result':{'status':'pass','outcome':'development','checks':['流程复现'], 'acceptance':['回执完整'],
+                'resolution_probes':[{'path':'/ths-octop/api/status','pointer':'/ok','operator':'equals','expected':True}]}}]},'investigating')
+        investigate(self.scheduler)
+        urgent=self.ledger.get('requirements',urgent['id'])
+        self.assertEqual(self.ledger.get('runs',urgent['run_id'])['coordination_priority'],10)
     def test_recovery_needs_terminated_execution_and_retries_hourly_without_three_attempt_cap(self):
         run=self.ledger.create('runs',{'product_id':self.product['id'],'reason':'交接等待超时','resume_status':'plan_review','review_packet':{'request_id':'old'}},'blocked')
         review={'status':'blocked','execution_done':False,'packet':{'session_id':run['id']}}

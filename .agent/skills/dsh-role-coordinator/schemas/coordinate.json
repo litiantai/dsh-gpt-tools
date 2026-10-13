@@ -24,7 +24,10 @@
         "verify",
         "assist",
         "reprioritize",
-        "human"
+        "human",
+        "investigate_requirement",
+        "propose_requirement",
+        "execute_plan"
       ]
     },
     "run_id": {
@@ -89,6 +92,258 @@
         "verification",
         "stop_conditions"
       ]
+    },
+    "requirement_id": {
+      "type": "string"
+    },
+    "requirement_version": {
+      "type": "integer"
+    },
+    "source_kind": {
+      "type": "string"
+    },
+    "source_id": {
+      "type": "string"
+    },
+    "source_version": {
+      "type": "integer"
+    },
+    "requirement": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "task",
+            "environment",
+            "process",
+            "code"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "reproduction": {
+          "type": "string"
+        },
+        "impact": {
+          "type": "string"
+        },
+        "acceptance": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resolution_probes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "pointer": {
+                "type": "string"
+              },
+              "operator": {
+                "type": "string",
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "not_empty",
+                  "not_contains"
+                ]
+              },
+              "expected": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "pointer",
+              "operator",
+              "expected"
+            ]
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "title",
+        "evidence",
+        "reproduction",
+        "impact",
+        "acceptance",
+        "resolution_probes"
+      ]
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "repair",
+              "verify",
+              "assist",
+              "reprioritize",
+              "human",
+              "investigate_requirement",
+              "propose_requirement"
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "run_version": {
+            "type": "integer"
+          },
+          "strategy": {
+            "type": "string"
+          },
+          "resume_phase": {
+            "type": "string"
+          },
+          "to_role": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10
+          },
+          "requirement_id": {
+            "type": "string"
+          },
+          "requirement_version": {
+            "type": "integer"
+          },
+          "source_kind": {
+            "type": "string"
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "source_version": {
+            "type": "integer"
+          },
+          "requirement": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "task",
+                  "environment",
+                  "process",
+                  "code"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "evidence": {
+                "type": "string"
+              },
+              "reproduction": {
+                "type": "string"
+              },
+              "impact": {
+                "type": "string"
+              },
+              "acceptance": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "resolution_probes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "pointer": {
+                      "type": "string"
+                    },
+                    "operator": {
+                      "type": "string",
+                      "enum": [
+                        "equals",
+                        "not_equals",
+                        "not_empty",
+                        "not_contains"
+                      ]
+                    },
+                    "expected": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "pointer",
+                    "operator",
+                    "expected"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "kind",
+              "title",
+              "evidence",
+              "reproduction",
+              "impact",
+              "acceptance",
+              "resolution_probes"
+            ]
+          }
+        },
+        "required": [
+          "action",
+          "run_id",
+          "run_version",
+          "strategy",
+          "resume_phase",
+          "to_role",
+          "priority",
+          "requirement_id",
+          "requirement_version",
+          "source_kind",
+          "source_id",
+          "source_version",
+          "requirement"
+        ]
+      }
     }
   },
   "required": [

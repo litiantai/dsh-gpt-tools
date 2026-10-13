@@ -1,10 +1,13 @@
 """项目协调实例：只读模型建议经过版本、资源和人工控制校验后原子执行。"""
 import hashlib
+from contextlib import nullcontext
+from datetime import datetime
 import json
 from pathlib import Path
 import runpy
 import sys
 import time
+from zoneinfo import ZoneInfo
 
 from review_core import Conflict, ACTIVE
 from .store import DEFAULTS, TERMINAL, redact
@@ -14,8 +17,10 @@ AUXILIARY_LANES = {kind:kind for kind in AUXILIARY}
 AUXILIARY_LANES.update(research_jobs='intelligence', chat_messages='intelligence')
 
 PHASES = ('planning', 'developing', 'verifying', 'plan_review', 'acceptance_review')
-ACTIONS = ('wait', 'repair', 'verify', 'assist', 'reprioritize', 'human')
+ACTIONS = ('wait', 'repair', 'verify', 'assist', 'reprioritize', 'human',
+           'investigate_requirement', 'propose_requirement', 'execute_plan')
 WATCH_SECONDS = 300
+REQUIREMENT_STATES = {'pending', 'awaiting_external', 'blocked', 'failed'}
 
 
 def config(product):
@@ -140,14 +145,24 @@ def snapshot(ledger, product):
     from .resources import ResourceSlots
     resources['stage_resources'] = ResourceSlots(ledger).snapshot()
     requirements = requirement_states(ledger, product['id'])
+    linked_issues = {(r.get('watch_source_kind'), r.get('watch_source_id')) for r in requirements}
+    project_issues = []
+    for kind in ('signals','deliveries','daily_reports'):
+        for item in ledger.scoped(kind, product['id']):
+            if item['status'] not in ('blocked','failed','fail','abnormal') or item.get('requirement_id') or item.get('requirement_ids') or (kind,item['id']) in linked_issues:
+                continue
+            project_issues.append({k:item.get(k) for k in ('id','version','status','title','reason','evidence','summary')} | {'kind':kind})
     return {'product_id': product['id'], 'human_authority': config(product)['human_authority'], 'tasks': tasks, 'requirements': requirements, 'quota': resources,
+            'project_issues':project_issues,
             'policy': DEFAULTS | product.get('policy', {}), 'model': selected(product),
+            'project_config': product.get('project_config', {}),
             'messages': [{k:m.get(k) for k in ('id','status','run_id','topic','reply')}
                          for m in ledger.scoped('agent_messages', product['id'])[-20:]]}
 
 
 def requirement_states(ledger, pid):
     """核对完整需求台账与关联任务；需求仍为 queued 时采用任务实际状态。"""
+    from .intake import approved
     runs = ledger.scoped('runs', pid)
     by_id = {r['id']: r for r in runs}
     by_requirement = {}
@@ -164,7 +179,13 @@ def requirement_states(ledger, pid):
             issue = '关联任务不存在或不属于当前项目'
         elif req['status'] == 'queued' and not run:
             issue = '需求已入队但缺少关联任务'
-        result.append({k:req.get(k) for k in ('id','title','status','version')} | {
+        investigation = req.get('investigation_result') or {}
+        result.append({k:req.get(k) for k in ('id','title','status','version','classification','priority',
+            'evidence','reproduction','impact','acceptance','resolution_probes','next_investigation',
+            'investigation_result','watch_recheck_at','watch_source_kind','watch_source_id','source_run_id')} | {
+            'investigation_result': {k:investigation.get(k) for k in ('status','outcome','reason','summary','checks','acceptance','resolution_probes','failure_kind')},
+            'actionable': approved(req) and req.get('in_scope') is True and not run and not issue and
+                          req['status'] in REQUIREMENT_STATES and not any(req.get(k) for k in ('control','call','uncertain','pending_result')),
             'run_id': run['id'] if run else req.get('run_id'),
             'effective_status': run['status'] if run else req['status'],
             'reason': run.get('reason', '') if run else req.get('reason', ''), 'issue': issue})
@@ -174,10 +195,14 @@ def requirement_states(ledger, pid):
 def watch_summary(material):
     """记录异常及可协调性；人工控制或未确认的执行结果只报告，不自动重放。"""
     findings = []
+    for issue in material.get('project_issues', []):
+        findings.append({'source_kind':issue['kind'], 'source_id':issue['id'], 'title':issue.get('title'),
+            'status':issue['status'], 'reason':issue.get('reason') or issue.get('summary'), 'action':'评估流程、环境问题与高优先级需求'})
     for req in material['requirements']:
-        if req['issue'] or (not req.get('run_id') and req['effective_status'] in ('blocked','failed','waiting_for_reply')):
+        if req['issue'] or (not req.get('run_id') and req['effective_status'] in ('blocked','failed','waiting_for_reply','awaiting_external')) or req.get('actionable'):
             findings.append({'requirement_id':req['id'], 'title':req.get('title'),
-                'status':req['effective_status'], 'reason':req['issue'] or req['reason'], 'action':'核对需求及关联任务'})
+                'status':req['effective_status'], 'reason':req['issue'] or req['reason'],
+                'action':'评估调查、解决方案与开发需求' if req.get('actionable') else '核对需求及关联任务'})
     known = set(PHASES) | TERMINAL | {'queued','blocked','waiting_for_reply','pausing','paused','cancelling',
         'deploying','observing','awaiting_release','awaiting_ui_chain','rollback_pending'}
     for task in material['tasks']:
@@ -266,9 +291,95 @@ def human(ledger, run, reason, db, plan_id=None):
         'reason': reason, 'coordination_pending': None, 'coordination_plan_id':plan_id}, 'waiting_for_reply', db)
 
 
-def apply(scheduler, decision, result):
+def requirement_action(scheduler, decision, product, result, db):
+    """将有版本依据的解决方案转为高优先级调查或开发，复用已登记需求。"""
     ledger = scheduler.ledger
-    with ledger.store.transaction() as db:
+    ident = result.get('requirement_id')
+    requirement = None
+    if ident:
+        target = next((r for r in decision['material']['requirements'] if r['id'] == ident), None)
+        if not target or result.get('requirement_version') != target['version']:
+            raise Conflict('建议没有引用本次需求版本')
+        requirement = ledger.get('requirements', ident, db)
+        if requirement['product_id'] != product['id'] or requirement['version'] != target['version']:
+            raise Conflict('需求已变化，等待重新评估')
+        if not target.get('actionable'):
+            raise ValueError('需求待确认、已有任务、受人工控制或仍在执行')
+    elif result.get('run_id'):
+        target = next((r for r in decision['material']['tasks'] if r['id'] == result.get('run_id')), None)
+        if not target or result.get('run_version') != target['version']:
+            raise Conflict('新需求必须引用本次任务或需求证据')
+        run = ledger.get('runs', target['id'], db)
+        if run['product_id'] != product['id'] or run['version'] != target['version']:
+            raise Conflict('来源任务已变化，等待重新评估')
+        if protected(run) or run['status'] not in ('blocked','queued') or run.get('coordination_pending') or run.get('coordination_progress_hold'):
+            raise ValueError('来源任务受控制或正在处理，不能用新需求绕过原任务限制')
+        if run.get('review_id'):
+            review = scheduler.store.get(run['review_id'])
+            if review['status'] in ACTIVE or not review.get('execution_done') or review.get('human'):
+                raise ValueError('来源任务的原审查尚未结束或由人工接管')
+    else:
+        target = next((r for r in decision['material'].get('project_issues', [])
+                       if r['kind'] == result.get('source_kind') and r['id'] == result.get('source_id')), None)
+        if not target or result.get('source_version') != target['version']:
+            raise Conflict('新需求必须引用本次项目问题版本')
+        source = ledger.get(target['kind'], target['id'], db)
+        if source['product_id'] != product['id'] or source['version'] != target['version']:
+            raise Conflict('项目问题已变化，等待重新评估')
+    strategy = result.get('strategy')
+    if not isinstance(strategy, str) or not strategy.strip():
+        raise ValueError('缺少具体处理策略')
+    if result['action'] == 'investigate_requirement':
+        if not requirement or requirement.get('classification') not in ('investigation','environment'):
+            raise ValueError('只能调度尚未进入开发的调查或环境需求')
+        if time.time() - requirement.get('watch_recheck_at', 0) < 3600:
+            raise ValueError('Watch 已安排复查，等待新回执或一小时复查间隔')
+        return ledger.update('requirements', requirement['id'], requirement['version'], {
+            'next_investigation':0, 'watch_recheck_at':time.time(), 'coordination_priority':10,
+            'coordination_plan_id':decision['id'], 'investigation_guidance':strategy,
+            'reason':'Watch 已安排高优先级调查：' + strategy}, 'pending', db)
+    value = result.get('requirement')
+    if not isinstance(value, dict) or value.get('kind') not in ('task','environment','process','code'):
+        raise ValueError('需求必须说明任务、环境、流程或代码问题类型')
+    fields = ('title','evidence','reproduction','impact')
+    if any(not isinstance(value.get(k), str) or not value[k].strip() for k in fields):
+        raise ValueError('需求缺少标题、证据、复现步骤或影响')
+    acceptance = value.get('acceptance')
+    if not isinstance(acceptance, list) or not acceptance or any(not isinstance(v,str) or not v.strip() for v in acceptance):
+        raise ValueError('需求缺少可核对的验收条件')
+    probes = value.get('resolution_probes', [])
+    from .project import generic
+    from .probes import validate
+    validate(probes, product if generic(product) else None, assertions=generic(product))
+    if requirement and requirement.get('confirmation_required') and acceptance != requirement.get('acceptance'):
+        raise ValueError('已确认需求的验收范围不能由 Watch 改写，请提出范围变更草稿')
+    # 同一项目、同一标题只登记一次；后续模型回执不能另建任务重复修复。
+    if requirement is None:
+        matches = [r for r in ledger.scoped('requirements', product['id'], db)
+                   if r.get('title','').strip().casefold() == value['title'].strip().casefold()]
+        if matches:
+            return matches[-1]
+    changes = {k:value[k] for k in fields} | {'acceptance':acceptance, 'resolution_probes':probes,
+        'problem_kind':value['kind'], 'classification':'development' if probes else 'investigation',
+        'in_scope':True, 'priority':0, 'coordination_priority':10, 'coordination_plan_id':decision['id'],
+        'next_investigation':0, 'investigation_guidance':strategy, 'reason':'Watch 解决方案：' + strategy}
+    if requirement and requirement.get('investigation_budget_reserved'):
+        changes['investigation_budget_reserved'] = requirement.get('investigation_day') == datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+    if requirement:
+        requirement = ledger.update('requirements', requirement['id'], requirement['version'], changes, 'pending', db)
+    else:
+        requirement = ledger.create('requirements', changes | {'product_id':product['id'], 'source':'watch',
+            'source_id':decision['id'], 'source_run_id':result.get('run_id'),
+            'watch_source_kind':result.get('source_kind'), 'watch_source_id':result.get('source_id')}, 'pending', db=db)
+    if probes:
+        scheduler.control.queue(requirement, db=db)
+        requirement = ledger.get('requirements', requirement['id'], db)
+    return requirement
+
+
+def apply(scheduler, decision, result, db=None):
+    ledger = scheduler.ledger
+    with (nullcontext(db) if db is not None else ledger.store.transaction()) as db:
         decision = ledger.get('coordination_decisions', decision['id'], db)
         if decision['status'] not in ('running', 'queued'):
             return decision
@@ -294,6 +405,40 @@ def apply(scheduler, decision, result):
             changes.update(help_plan=help_plan(result), plan_saved_at=time.time())
         except ValueError as exc:
             return finish('blocked', str(exc))
+        if action == 'execute_plan':
+            operations = result.get('operations')
+            if not isinstance(operations, list) or not 1 <= len(operations) <= 5:
+                return finish('blocked', '解决方案必须包含 1–5 个调度或需求动作')
+            db.execute('SAVEPOINT watch_plan')
+            children = []
+            for operation in operations:
+                if not isinstance(operation, dict) or operation.get('action') not in set(ACTIONS) - {'execute_plan','wait'}:
+                    db.execute('ROLLBACK TO watch_plan'); db.execute('RELEASE watch_plan')
+                    return finish('blocked', '解决方案包含无效动作')
+                child = ledger.create('coordination_decisions', {k:decision[k] for k in ('product_id','material','selection','config')} |
+                    {'parent_decision_id':decision['id']}, 'queued', db=db)
+                outcome = apply(scheduler, child, operation | {'status':'pass','help_plan':changes['help_plan']}, db=db)
+                if outcome['status'] != 'applied':
+                    db.execute('ROLLBACK TO watch_plan'); db.execute('RELEASE watch_plan')
+                    return finish(outcome['status'], '解决方案未执行：' + outcome['reason'])
+                children.append(outcome['id'])
+            db.execute('RELEASE watch_plan')
+            changes['operation_decision_ids'] = children
+            return finish('applied', result.get('strategy') or '已按解决方案登记需求和调度')
+        if action in ('investigate_requirement','propose_requirement'):
+            db.execute('SAVEPOINT watch_requirement')
+            try:
+                requirement = requirement_action(scheduler, decision, product, result, db)
+            except Conflict as exc:
+                db.execute('ROLLBACK TO watch_requirement'); db.execute('RELEASE watch_requirement')
+                return finish('stale', str(exc))
+            except (ValueError, KeyError) as exc:
+                db.execute('ROLLBACK TO watch_requirement'); db.execute('RELEASE watch_requirement')
+                return finish('blocked', str(exc))
+            db.execute('RELEASE watch_requirement')
+            changes['requirement_id'] = requirement['id']
+            changes['run_id'] = requirement.get('run_id')
+            return finish('applied', '需求已关联解决方案，当前状态：' + requirement['status'])
         target = next((t for t in decision['material']['tasks'] if t['id'] == result.get('run_id')), None)
         if not target or result.get('run_version') != target['version']:
             return finish('stale', '建议没有引用本次任务版本')
@@ -531,7 +676,7 @@ def tick(scheduler, now=None):
         help_ids = {f['run_id'] for f in watch['findings'] if f.get('run_id') and f['action']=='评估帮助与资源协调'}
         candidates = [r for r in material['tasks'] if not r['protected'] and not r.get('coordination_pending') and (r['status'] in ('blocked','queued') or r['id'] in help_ids)]
         reason = ''
-        if not candidates and not any(r['issue'] for r in material['requirements']):
+        if not candidates and not material.get('project_issues') and not any(r['issue'] or r.get('actionable') for r in material['requirements']):
             reason = '异常已核对，等待人工、协作回复或已批准资源；详见需求检查' if watch['abnormal_count'] else '没有需要协调的任务'
         elif not selected(product).get('model'):
             reason = '请配置协调或验收模型'

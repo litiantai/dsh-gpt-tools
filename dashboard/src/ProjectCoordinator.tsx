@@ -8,11 +8,11 @@ import type { ReviewerSelection } from './types';
 import { RecordValue, recordLabel } from './RecordDetails';
 
 type HelpPlan = {basis:string;steps:string[];resources:string[];verification:string[];stop_conditions:string[]};
-type Finding = {run_id?:string;requirement_id?:string;title?:string;status:string;reason?:string;action:string};
-type Decision = {id:string;status:string;created:number;reason?:string;help_plan?:HelpPlan;selection?:ReviewerSelection;result?:{run_id?:string;action?:string;strategy?:string};material?:unknown};
+type Finding = {run_id?:string;requirement_id?:string;source_id?:string;source_kind?:string;title?:string;status:string;reason?:string;action:string};
+type Decision = {id:string;status:string;created:number;reason?:string;help_plan?:HelpPlan;selection?:ReviewerSelection;requirement_id?:string;result?:{run_id?:string;requirement_id?:string;action?:string;strategy?:string};material?:unknown};
 type State = {version:number;enabled:boolean;config:{enabled:boolean;human_authority?:boolean;model?:ReviewerSelection|null};model?:ReviewerSelection;instance:{status:string;reason?:string;last_check?:number;watch?:{requirements_checked:number;tasks_checked:number;abnormal_count:number;findings:Finding[]}};coordination_tokens:number;decisions:Decision[]};
 const states:Record<string,string> = {idle:'监听中',running:'评估中',queued:'待评估',applied:'已处理',blocked:'受阻',stale:'证据已变化',needs_human:'等待人工',waiting:'等待资源'};
-const actions:Record<string,string> = {wait:'等待',repair:'追加返修',verify:'补充验证',assist:'角色协助',reprioritize:'调整排队',human:'请求人工帮助'};
+const actions:Record<string,string> = {wait:'等待',repair:'追加返修',verify:'补充验证',assist:'角色协助',reprioritize:'调整排队',human:'请求人工帮助',investigate_requirement:'调度调查',propose_requirement:'高优先级需求',execute_plan:'执行解决方案'};
 export default function ProjectCoordinator({pid,settings=false}:{pid?:string;settings?:boolean}) {
   const data=useData<State>(pid?`/products/${pid}/coordinator`:'/autopilot/workbench-empty');
   const [form]=Form.useForm();
@@ -31,7 +31,7 @@ export default function ProjectCoordinator({pid,settings=false}:{pid?:string;set
     }catch(e){message.error(errorText(e));}finally{setBusy(false);}
   };
   return <Space direction="vertical" style={{width:'100%'}} size="middle">
-    <Alert type="info" showIcon message="每项目一个协调 Agent" description={'每 5 分钟核对需求与任务状态，先记录协调方案；返修重新制定技术方案、通过方案评审后再开发。' + (value?.config.human_authority?'Watch 已获协调决策授权，可评估并回答技术返修问题，逐轮决定修复或协助；连续两轮验证无改善仍须人工诊断，不绕过预算、暂停、取消和正式验收。':'连续两轮无进展时转人工。')}/>
+    <Alert type="info" showIcon message="每项目一个协调 Agent" description={'每 5 分钟核对需求与任务状态，先记录解决方案，可组合任务调度、调查、角色协助和高优先级需求；返修通过方案评审后再开发。' + (value?.config.human_authority?'Watch 已获协调决策授权，可评估并回答技术返修问题，逐轮决定修复或协助；连续两轮验证无改善仍须人工诊断，不绕过预算、暂停、取消和正式验收。':'连续两轮无进展时转人工。')}/>
     {data.error && <Alert type="error" message={errorText(data.error)}/>}
     {value && <Descriptions column={2} items={[
       {key:'state',label:'当前状态',children:<Tag>{value.enabled?(states[value.instance.status]||value.instance.status):'已停用或项目暂停'}</Tag>},
@@ -42,8 +42,8 @@ export default function ProjectCoordinator({pid,settings=false}:{pid?:string;set
       {key:'watch',label:'最近需求检查',children:value.instance.watch?`${value.instance.watch.requirements_checked} 条需求 · ${value.instance.watch.tasks_checked} 个未结束任务 · ${value.instance.watch.abnormal_count} 项待关注`:'尚未检查'},
       {key:'reason',label:'下一步 / 等待原因',children:value.instance.reason||'等待任务或证据变化'},
     ]}/>}
-    {!!value?.instance.watch?.findings.length && <Table<Finding> size="small" rowKey={r=>r.run_id||r.requirement_id||''} dataSource={value.instance.watch.findings} pagination={{pageSize:5}} columns={[
-      {title:'待关注需求 / 任务',render:(_,r)=>r.title||r.run_id||r.requirement_id},
+    {!!value?.instance.watch?.findings.length && <Table<Finding> size="small" rowKey={r=>r.run_id||r.requirement_id||r.source_id||''} dataSource={value.instance.watch.findings} pagination={{pageSize:5}} columns={[
+      {title:'待关注需求 / 任务',render:(_,r)=>r.title||r.run_id||r.requirement_id||r.source_id},
       {title:'当前状态',dataIndex:'status',render:recordLabel},
       {title:'异常依据',dataIndex:'reason'}, {title:'处理判断',dataIndex:'action'},
     ]}/>}
@@ -63,7 +63,7 @@ export default function ProjectCoordinator({pid,settings=false}:{pid?:string;set
       </>}} columns={[
         {title:'时间',dataIndex:'created',render:time},
         {title:'决定',render:(_,r)=>actions[r.result?.action||'']||'项目评估'},
-        {title:'任务',render:(_,r)=>r.result?.run_id||'项目'},
+        {title:'任务',render:(_,r)=>r.result?.run_id||r.requirement_id||r.result?.requirement_id||'项目'},
         {title:'状态',dataIndex:'status',render:s=><Tag>{states[s]||s}</Tag>},
         {title:'帮助方案',render:(_,r)=>r.help_plan?'已记录 · 展开查看':'—'},
         {title:'依据与下一步',dataIndex:'reason'},
