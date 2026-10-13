@@ -87,6 +87,14 @@ class BrowserTests(unittest.TestCase):
             result=self.driver.open('http://127.0.0.1:'+str(server.server_port),{'session_bootstrap':{'path':'/api/bootstrap','probe_path':'/api/products'}})
             self.assertTrue(result['session_ready'])
             self.assertEqual(self.driver.send({'command':'inspect_api','path':'/api/products'})['status'],200)
+            import json
+            created=self.driver.send({'command':'inspect_api','path':'/api/products','method':'POST',
+                'body':json.dumps({'config':{'name':'隔离准备项目','source':str(ROOT),'goal':'真实浏览器接口准备','automation_disabled':True}})})
+            self.assertEqual(created['status'],200,created)
+            product=json.loads(created['text'])
+            self.assertEqual(product['status'],'paused');self.assertTrue(product['automation_disabled'])
+            self.assertEqual(self.driver.send({'command':'inspect_api','path':'/api/products/'+product['id']})['status'],200)
+            self.assertNotIn(app.csrf,created['text']);self.assertNotIn(app.browser_key,created['text'])
         finally:
             self.driver.close();server.shutdown();server.server_close();thread.join()
 

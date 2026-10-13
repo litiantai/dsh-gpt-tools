@@ -102,5 +102,73 @@
       "test_notifications.py",
       "-v"
     ]
-  }
+  },
+  "inspection_setup": [
+    {
+      "title": "通过实际接口登记暂停的隔离项目",
+      "path": "/api/products",
+      "method": "POST",
+      "body": {
+        "config": {
+          "name": "巡查隔离项目",
+          "source": "{workspace}",
+          "repository": "{workspace}",
+          "goal": "核对项目设置、需求与证据的真实业务行为",
+          "automation_disabled": true
+        }
+      },
+      "response_bindings": [
+        {
+          "name": "inspection_project_id",
+          "pointer": "/id"
+        }
+      ]
+    },
+    {
+      "title": "登记待调查的实际巡查信号",
+      "path": "/api/signals",
+      "method": "POST",
+      "body": {
+        "product_id": "{inspection_project_id}",
+        "signal": {
+          "source": "inspection",
+          "summary": "隔离场景准备信号",
+          "evidence": {
+            "status": "blocked",
+            "reason": "准备场景，不代表生产异常或通过"
+          },
+          "fingerprint": "inspection-preparation-signal",
+          "code": "inspection-preparation"
+        }
+      },
+      "response_bindings": [
+        {
+          "name": "inspection_signal_id",
+          "pointer": "/id"
+        }
+      ]
+    },
+    {
+      "title": "通过实际接口登记待处理需求",
+      "path": "/api/requirements",
+      "method": "POST",
+      "body": {
+        "product_id": "{inspection_project_id}",
+        "title": "巡查准备需求",
+        "evidence": "通过隔离接口创建的待处理需求，未执行代码验收",
+        "acceptance": "真实页面可追溯原需求和隔离准备证据",
+        "impact": "用于检查需求详情、上下文和项目归属"
+      },
+      "response_bindings": [
+        {
+          "name": "inspection_requirement_id",
+          "pointer": "/id"
+        },
+        {
+          "name": "inspection_requirement_version",
+          "pointer": "/version"
+        }
+      ]
+    }
+  ]
 }

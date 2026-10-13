@@ -1,17 +1,23 @@
 /** 隔离浏览器执行器：仅接受受约束的界面动作，不执行模型生成代码。 */
 import { chromium } from '@playwright/test';
 import { createInterface } from 'node:readline';
+import { randomUUID } from 'node:crypto';
 let browser, context, page, origin, allowed, readOnly = false, readonlyPaths = [];
+let csrf;
 let errors = [], fullPage = false;
 function logError(value) { errors.push(String(value).slice(0,2000)); if(errors.length>100)errors.shift(); }
 const viewport = { width: 1440, height: 1000 };
 function permitted(url) { try { return allowed.has(new URL(url).origin); } catch { return false; } }
 function number(value, max) { if (!Number.isFinite(value) || value < 0 || value >= max) throw Error('坐标无效'); return value; }
+function publicResponse(text) {
+  const scrub=value=>Array.isArray(value)?value.map(scrub):value && typeof value==='object'?Object.fromEntries(Object.entries(value).map(([key,item])=>[key,/csrf|token|password|cookie|authorization|api.?key/i.test(key)?'[redacted]':scrub(item)])):value;
+  try { return JSON.stringify(scrub(JSON.parse(text))); } catch { return text; }
+}
 async function command(input) {
   if (input.command === 'open') {
     origin = new URL(input.origin).origin;
     if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(origin)) throw Error('必须使用分支本机实例');
-    fullPage = input.full_page === true; readOnly = input.read_only === true; readonlyPaths = input.readonly_paths || []; errors = [];
+    fullPage = input.full_page === true; readOnly = input.read_only === true; readonlyPaths = input.readonly_paths || []; errors = []; csrf=undefined;
     allowed = new Set([origin, ...(input.allowed_origins || []).map(x => new URL(x).origin)]);
     browser = await chromium.launch({ headless: true });
     context = await browser.newContext({ viewport, serviceWorkers: 'block', acceptDownloads: false,
@@ -29,6 +35,7 @@ async function command(input) {
       const probeUrl = localPath(input.session_bootstrap.probe_path);
       const initialized = await context.request.get(bootstrapUrl, {maxRedirects:0, timeout:10000});
       if (!initialized.ok()) throw Error(`本机会话初始化失败：HTTP ${initialized.status()}`);
+      try { csrf=(await initialized.json()).csrf; } catch { csrf=undefined; }
       const probe = await context.request.get(probeUrl, {maxRedirects:0, timeout:10000});
       if (!probe.ok()) throw Error(`本机会话探测失败：HTTP ${probe.status()}`);
       session = {session_ready:true, bootstrap_status:initialized.status(), probe_status:probe.status()};
@@ -67,8 +74,10 @@ async function command(input) {
     if (url.origin !== origin || (readOnly && !readonlyPaths.includes(url.pathname + url.search))) throw Error('接口不在只读范围');
     const method=input.method || 'GET';
     if (!['GET','POST','PUT','PATCH','DELETE'].includes(method) || (readOnly && method!=='GET')) throw Error('主实例禁止接口写入');
-    const response = await context.request.fetch(url.href, {method,data:input.body?JSON.parse(input.body):undefined,maxRedirects:0,timeout:(input.step?.wait_seconds || 45)*1000});
-    return {ok:response.ok(), text:(await response.text()).slice(0,30000), status:response.status()};
+    let data=input.body?JSON.parse(input.body):undefined;
+    if(method!=='GET') data={...(data || {}),operation_id:data?.operation_id || randomUUID()};
+    const response = await context.request.fetch(url.href, {method,data,headers:csrf && method!=='GET'?{'X-CSRF-Token':csrf}:{},maxRedirects:0,timeout:(input.step?.wait_seconds || 45)*1000});
+    return {ok:response.ok(), text:publicResponse(await response.text()).slice(0,30000), status:response.status()};
   }
   if (input.command === 'inspect_wait') {
     const step=input.step; let settled=true; const deadline=Date.now()+(step.wait_seconds || 45)*1000;
