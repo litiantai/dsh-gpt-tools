@@ -59,7 +59,11 @@ test('project tabs preserve navigation and settings save human units without los
   await page.reload();
   await expect(page.getByRole('tab',{name:'实践评测',exact:true})).toHaveAttribute('aria-selected','true');
   await page.getByRole('tab',{name:'项目设置',exact:true}).click();
+  await expect(page.getByRole('tab',{name:'项目设置',exact:true})).toHaveAttribute('aria-selected','true');
+  await expect(page).toHaveURL(/view=settings/);
+  await expect(page.getByRole('button',{name:'保存项目设置',exact:true})).toBeVisible();
   await page.getByRole('tab',{name:'运行策略',exact:true}).click();
+  await expect(page.getByRole('tab',{name:'运行策略',exact:true})).toHaveAttribute('aria-selected','true');
   await expect(page.getByLabel('发布前连续空闲',{exact:true})).toHaveValue('5');
   await expect(page.getByLabel('体验巡查间隔',{exact:true})).toHaveValue('6');
   await page.getByLabel('发布前连续空闲',{exact:true}).fill('7');
@@ -68,7 +72,9 @@ test('project tabs preserve navigation and settings save human units without los
   await expect(page.getByRole('switch',{name:'允许高峰期使用 DeepSeek',exact:true})).not.toBeChecked();
   await page.getByRole('switch',{name:'允许高峰期使用 DeepSeek',exact:true}).click();
   await page.getByRole('tab',{name:'模型分工',exact:true}).click();
+  await expect(page.getByRole('tab',{name:'模型分工',exact:true})).toHaveAttribute('aria-selected','true');
   await page.getByRole('tab',{name:'运行策略',exact:true}).click();
+  await expect(page.getByRole('tab',{name:'运行策略',exact:true})).toHaveAttribute('aria-selected','true');
   await expect(page.getByLabel('发布前连续空闲',{exact:true})).toHaveValue('7');
   // A runtime-only version change must not invalidate the settings draft.
   await page.getByRole('button',{name:'仅监测',exact:true}).click();
@@ -86,6 +92,8 @@ test('project tabs preserve navigation and settings save human units without los
   await page.getByRole('tab',{name:'巡查与证据',exact:true}).click();
   await expect(page.getByRole('tab',{name:'实践评测',exact:true})).toHaveAttribute('aria-selected','true');
   await page.getByRole('tab',{name:'项目设置',exact:true}).click();
+  await expect(page.getByRole('tab',{name:'项目设置',exact:true})).toHaveAttribute('aria-selected','true');
+  await expect(page.getByRole('button',{name:'保存项目设置',exact:true})).toBeVisible();
   await expect(page.getByRole('tab',{name:'运行策略',exact:true})).toHaveAttribute('aria-selected','true');
   await page.getByRole('link',{name:'平台设置',exact:true}).click();
   await page.getByRole('link',{name:'持续研发',exact:true}).click();

@@ -85,7 +85,7 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
     {hasRunningTasks && <Alert type="info" showIcon message="任务执行中，可调整额度、DeepSeek 时段开关及代码评审模型" description="配置仅影响后续调用；开发模型及其他执行策略在任务结束后修改。"/>}
     {saveError && <Alert type="error" showIcon message="保存失败，当前修改已保留" description={<ErrorNotice value={saveError}/>}/>}
     <Form form={form} layout="vertical" disabled={busy} onValuesChange={()=>setDirty(true)}>
-      <Tabs activeKey={tab} onChange={onTabChange} items={[
+      <Tabs activeKey={tab} onChange={onTabChange} onTabClick={onTabChange} animated={false} items={[
         {key:'coordination_settings',label:'项目协调',children:<ProjectCoordinator pid={project.id} settings/>},
         {key:'linked_projects',label:'关联项目',forceRender:true,children:<>
           <p>关联项目可共同完成需求。先设计前端 UI，再设计接口；各项目保留独立 PR，联合验收后协调交付。</p>
@@ -139,7 +139,7 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
           </Form.Item>})}</div>
           <p className="muted">每日 Token 额度仅统计需求方案、方案审查、开发、业务验证和业务验收，含缓存输入。巡检不占用需求与 Token 额度；需求发现、前期调查单独记账，不占开发 Token 额度。代码交付评审、修复和复验单独记账，不占此额度。当前调用完成后可能超过上限，后续开发调用等待额度恢复。平台审查额度仍独立生效。</p>
         </>},
-        {key:'notifications',label:'通知',forceRender:true,children:<NotificationSettings productId={project.id} reload={reload}/>},
+        {key:'notifications',label:'通知',forceRender:true,children:<NotificationSettings key={project.id} productId={project.id} reload={reload}/>},
         {key:'environment',label:'接入环境',children:<>
           <ProjectEnvironment key={project.id} path={`/products/${project.id}`}/>
           <Descriptions column={1} items={['source','repository','application','worker_runtime'].map(key=>({key,label:({source:'原始源码',repository:'受管源码快照',application:'正式应用',worker_runtime:'固定执行运行时'} as Record<string,string>)[key],children:String(project[key] || '尚未配置')}))}/>
@@ -191,8 +191,9 @@ function GitHubTokenSettings({productId,configuredRepository,reload}:{productId:
   </div>;
 }
 
-interface NotificationDelivery {id:string;kind:string;subject:string;status:string;created:number;attempts:number;error?:string;receipt?:{message_id?:string}}
+interface NotificationDelivery {id:string;kind:string;subject:string;status:string;created:number;attempts:number;error?:string;receipt?:{message_id?:string;withdrawn?:string[]}}
 interface NotificationView {
+  config_version:number;
   enabled:boolean;sender_masked:string;sender_configured:boolean;credential_configured:boolean;
   recipients:string[];events:Record<string,boolean>;
   smtp:{host:string;port:number;tls:string};morning_hour:number;
@@ -205,9 +206,15 @@ const notificationEvents:[string,string][] = [
   ['competitor','竞品发现-分析'],
   ['morning_retro','每日早上七点给出复盘报告'],
 ];
-const notificationStatus:Record<string,string> = {sent:'SMTP 已接受',partial:'部分发送失败',queued:'待发送',failed:'发送失败',blocked:'已阻塞'};
+const notificationStatus:Record<string,string> = {sent:'SMTP 已接受',partial:'部分发送失败',queued:'待发送',failed:'发送失败',blocked:'已阻塞',cancelled:'已取消'};
 function NotificationSettings({productId,reload}:{productId:string;reload:()=>Promise<unknown>}) {
   const saved=useData<NotificationView>(`/products/${productId}/notifications`);
+  const [snapshot,setSnapshot]=useState<NotificationView>();
+  const baseline=useRef<number | null>(null);
+  const dirty=useRef(false);
+  const working=useRef(false);
+  const active=useRef(true);
+  const [hasDraft,setHasDraft]=useState(false);
   const [enabled,setEnabled]=useState(false);
   const [sender,setSender]=useState('');
   const [smtp,setSmtp]=useState({host:'smtp.qq.com',port:465,tls:'ssl'});
@@ -219,32 +226,59 @@ function NotificationSettings({productId,reload}:{productId:string;reload:()=>Pr
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState('');
   const {message}=App.useApp();
+  useEffect(()=>{active.current=true;return ()=>{active.current=false;};},[]);
+  const loadSnapshot=(value:NotificationView)=>{
+    baseline.current=value.config_version;
+    dirty.current=false;
+    setHasDraft(false);
+    setSnapshot(value);
+    setEnabled(value.enabled);
+    setSender('');setCredential('');setRecipient('');
+    setSmtp({...value.smtp});
+    setEvents({...value.events});
+    setMorningHour(value.morning_hour);
+    setRecipients([...value.recipients]);
+    setError('');
+  };
   useEffect(()=>{
-    if(!saved.data)return;
-    setEnabled(saved.data.enabled);
-    setSender('');
-    setSmtp(saved.data.smtp);
-    setEvents(saved.data.events);
-    setMorningHour(saved.data.morning_hour);
-    setRecipients(saved.data.recipients);
-  },[saved.data?.sender_masked,saved.data?.credential_configured,saved.data?.enabled]);
+    if(!saved.data || dirty.current || working.current)return;
+    // A save response is authoritative; an older in-flight poll cannot replace it.
+    if(baseline.current!==null && saved.data.config_version<baseline.current)return;
+    loadSnapshot(saved.data);
+  },[saved.data]);
+  const edit=(change:()=>void)=>{dirty.current=true;setHasDraft(true);change();};
   const addRecipient=()=>{
     const value=recipient.trim();
     if(!value||recipients.includes(value)){setRecipient('');return;}
-    setRecipients([...recipients,value]);setRecipient('');
+    edit(()=>{setRecipients([...recipients,value]);setRecipient('');});
   };
   const save=async()=>{
+    if(baseline.current===null)return;
+    working.current=true;
     setBusy(true);setError('');
     try{
       const config:Record<string,unknown>={enabled,smtp,events,morning_hour:morningHour,recipients};
       if(sender.trim())config.sender=sender.trim();
-      const body:Record<string,unknown>={config};
+      const body:Record<string,unknown>={config,config_version:baseline.current};
       if(credential.trim())body.credential=credential.trim();
-      await api(`/products/${productId}/notifications/configure`,body);
-      setCredential('');await saved.refetch();await reload();
+      const result=await api<NotificationView>(`/products/${productId}/notifications/configure`,body);
+      if(!active.current)return;
+      loadSnapshot(result);
       message.success('邮件通知设置已保存');
-    }catch(e){setError(e instanceof Error?e.message:'通知设置保存失败');}
-    finally{setBusy(false);}
+      await Promise.allSettled([saved.refetch(),reload()]);
+    }catch(e){if(active.current)setError(errorText(e));}
+    finally{working.current=false;if(active.current)setBusy(false);}
+  };
+  const discard=async()=>{
+    working.current=true;setBusy(true);setError('');
+    try{
+      const result=await saved.refetch();
+      if(!active.current)return;
+      if(!result.data || result.error)throw result.error || new Error('无法读取当前通知配置');
+      if(baseline.current!==null && result.data.config_version<baseline.current)throw new Error('配置尚未刷新，请重试');
+      loadSnapshot(result.data);
+    }catch(e){if(active.current)setError(errorText(e));}
+    finally{working.current=false;if(active.current)setBusy(false);}
   };
   const sendTest=async()=>{
     setBusy(true);setError('');
@@ -257,41 +291,42 @@ function NotificationSettings({productId,reload}:{productId:string;reload:()=>Pr
     {title:'主题',render:(_,row)=>row.subject},
     {title:'状态',width:110,render:(_,row)=><Tag color={row.status==='sent'?'success':['failed','partial'].includes(row.status)?'error':row.status==='blocked'?'warning':'default'}>{notificationStatus[row.status] || row.status}</Tag>},
     {title:'时间',width:160,render:(_,row)=>time(row.created)},
-    {title:'结果',width:240,render:(_,row)=><span className="muted">{row.error || row.receipt?.message_id || '—'}</span>},
+    {title:'结果',width:240,render:(_,row)=><div className="muted">{row.error || row.receipt?.message_id || '—'}{row.receipt?.withdrawn?.length?<div>已撤回收件人：{row.receipt.withdrawn.join('、')}</div>:null}</div>},
   ];
   return <div>
     <Alert type="info" showIcon message="邮件在本机直接发送" description="授权码只保存在本机运行时目录，不进入项目配置、操作日志或页面回显；SMTP 接受表示服务器已接收邮件，实际送达请以收件箱为准。"/>
     {(error || saved.error) && <Alert type="error" showIcon message={error || '无法读取当前通知配置'}/>}
     <div className="project-settings-grid">
-      <div><label className="muted">发件人邮箱</label><Input aria-label="发件人邮箱" placeholder={saved.data?.sender_configured?saved.data.sender_masked:'发件人邮箱'} autoComplete="off" value={sender} onChange={e=>setSender(e.target.value)} disabled={busy}/>
-        <p className="muted">当前：{saved.data?.sender_configured?saved.data.sender_masked:'尚未配置'}；输入新值可替换。</p></div>
-      <div><label className="muted">邮箱授权码</label><Input.Password aria-label="邮箱授权码" placeholder={saved.data?.credential_configured?'已配置，输入新值可替换':'输入 SMTP 授权码'} autoComplete="off" visibilityToggle={false} value={credential} onChange={e=>setCredential(e.target.value)} disabled={busy}/>
-        <p className="muted">{saved.data?.credential_configured?'本机已保存授权码，保存时会重新验证登录。':'只保存到本机，不回显、不进入台账。'}</p></div>
-      <div><label className="muted">SMTP 服务器</label><Input aria-label="SMTP 服务器" value={smtp.host} onChange={e=>setSmtp({...smtp,host:e.target.value})} disabled={busy}/></div>
-      <div><label className="muted">SMTP 端口</label><InputNumber aria-label="SMTP 端口" min={1} max={65535} precision={0} style={{width:'100%'}} value={smtp.port} onChange={value=>setSmtp({...smtp,port:typeof value==='number'?value:465})} disabled={busy}/></div>
-      <div><label className="muted">加密方式</label><Select aria-label="加密方式" style={{width:'100%'}} value={smtp.tls} onChange={value=>setSmtp({...smtp,tls:value})} disabled={busy} options={[{value:'ssl',label:'SSL（465）'},{value:'starttls',label:'STARTTLS（587）'},{value:'none',label:'不加密'}]}/></div>
-      <div><label className="muted">每日复盘时间（北京时间整点）</label><InputNumber aria-label="每日复盘时间" min={0} max={23} precision={0} style={{width:'100%'}} value={morningHour} onChange={value=>setMorningHour(typeof value==='number'?value:7)} disabled={busy}/></div>
+      <div><label className="muted">发件人邮箱</label><Input aria-label="发件人邮箱" placeholder={snapshot?.sender_configured?snapshot.sender_masked:'发件人邮箱'} autoComplete="off" value={sender} onChange={e=>edit(()=>setSender(e.target.value))} disabled={busy||!snapshot}/>
+        <p className="muted">当前：{snapshot?.sender_configured?snapshot.sender_masked:'尚未配置'}；输入新值可替换。</p></div>
+      <div><label className="muted">邮箱授权码</label><Input.Password aria-label="邮箱授权码" placeholder={snapshot?.credential_configured?'已配置，输入新值可替换':'输入 SMTP 授权码'} autoComplete="off" visibilityToggle={false} value={credential} onChange={e=>edit(()=>setCredential(e.target.value))} disabled={busy||!snapshot}/>
+        <p className="muted">{snapshot?.credential_configured?'本机已保存授权码，保存时会重新验证登录。':'只保存到本机，不回显、不进入台账。'}</p></div>
+      <div><label className="muted">SMTP 服务器</label><Input aria-label="SMTP 服务器" value={smtp.host} onChange={e=>edit(()=>setSmtp({...smtp,host:e.target.value}))} disabled={busy||!snapshot}/></div>
+      <div><label className="muted">SMTP 端口</label><InputNumber aria-label="SMTP 端口" min={1} max={65535} precision={0} style={{width:'100%'}} value={smtp.port} onChange={value=>edit(()=>setSmtp({...smtp,port:typeof value==='number'?value:465}))} disabled={busy||!snapshot}/></div>
+      <div><label className="muted">加密方式</label><Select aria-label="加密方式" style={{width:'100%'}} value={smtp.tls} onChange={value=>edit(()=>setSmtp({...smtp,tls:value}))} disabled={busy||!snapshot} options={[{value:'ssl',label:'SSL（465）'},{value:'starttls',label:'STARTTLS（587）'},{value:'none',label:'不加密'}]}/></div>
+      <div><label className="muted">每日复盘时间（北京时间整点）</label><InputNumber aria-label="每日复盘时间" min={0} max={23} precision={0} style={{width:'100%'}} value={morningHour} onChange={value=>edit(()=>setMorningHour(typeof value==='number'?value:7))} disabled={busy||!snapshot}/></div>
     </div>
-    <Switch aria-label="启用邮件通知" checked={enabled} onChange={setEnabled} disabled={busy}/> <span>启用邮件通知</span>
+    <Switch aria-label="启用邮件通知" checked={enabled} onChange={value=>edit(()=>setEnabled(value))} disabled={busy||!snapshot}/> <span>启用邮件通知</span>
     <div style={{marginTop:16}}>
       <strong>收件人邮箱列表</strong>
       <p className="muted">可持续新增；保存后生效，重复地址自动去重。</p>
-      <Space wrap>{recipients.map(value=><Tag key={value} closable onClose={()=>setRecipients(recipients.filter(item=>item!==value))}>{value}</Tag>)}</Space>
+      <Space wrap>{recipients.map(value=><Tag key={value} closable={!busy} onClose={()=>edit(()=>setRecipients(recipients.filter(item=>item!==value)))}>{value}</Tag>)}</Space>
       <Space.Compact style={{width:'100%',maxWidth:650,display:'flex',marginTop:8}}>
-        <Input aria-label="新增收件人" placeholder="name@example.com" value={recipient} onChange={e=>setRecipient(e.target.value)} onPressEnter={()=>addRecipient()} disabled={busy}/>
+        <Input aria-label="新增收件人" placeholder="name@example.com" value={recipient} onChange={e=>edit(()=>setRecipient(e.target.value))} onPressEnter={()=>addRecipient()} disabled={busy||!snapshot}/>
         <Button aria-label="添加收件人" onClick={()=>addRecipient()} disabled={busy||!recipient.trim()}>添加</Button>
       </Space.Compact>
     </div>
     <div style={{marginTop:16}}>
       <strong>通知事件</strong>
-      <div className="project-settings-grid">{notificationEvents.map(([key,label])=><label key={key} className="muted"><Switch aria-label={label} checked={!!events[key]} onChange={value=>setEvents({...events,[key]:value})} disabled={busy}/> {label}</label>)}</div>
+      <div className="project-settings-grid">{notificationEvents.map(([key,label])=><label key={key} className="muted"><Switch aria-label={label} checked={!!events[key]} onChange={value=>edit(()=>setEvents({...events,[key]:value}))} disabled={busy||!snapshot}/> {label}</label>)}</div>
     </div>
     <Space wrap style={{marginTop:16}}>
-      <Button aria-label="保存通知设置" type="primary" onClick={()=>void save()} loading={busy}>保存通知设置</Button>
-      <Button aria-label="发送测试简报" onClick={()=>void sendTest()} loading={busy} disabled={busy||!saved.data?.sender_configured||!saved.data?.credential_configured||recipients.length===0}>发送测试简报</Button>
+      <Button aria-label="保存通知设置" type="primary" onClick={()=>void save()} loading={busy} disabled={!snapshot||!hasDraft}>保存通知设置</Button>
+      <Button aria-label="放弃修改并载入最新配置" onClick={()=>void discard()} disabled={busy||!hasDraft}>放弃修改并载入最新配置</Button>
+      <Button aria-label="发送测试简报" onClick={()=>void sendTest()} loading={busy} disabled={busy||hasDraft||!snapshot?.sender_configured||!snapshot?.credential_configured||recipients.length===0}>发送测试简报</Button>
     </Space>
     <h4 style={{marginTop:20}}>最近投递</h4>
-    <p className="muted">SMTP 已接受 {saved.data?.stats.sent || 0} · 部分失败 {saved.data?.stats.partial || 0} · 待发送 {saved.data?.stats.queued || 0} · 失败 {saved.data?.stats.failed || 0} · 阻塞 {saved.data?.stats.blocked || 0}</p>
+    <p className="muted">SMTP 已接受 {saved.data?.stats.sent || 0} · 部分失败 {saved.data?.stats.partial || 0} · 待发送 {saved.data?.stats.queued || 0} · 失败 {saved.data?.stats.failed || 0} · 阻塞 {saved.data?.stats.blocked || 0} · 已取消 {saved.data?.stats.cancelled || 0}</p>
     <Table<NotificationDelivery> rowKey="id" size="small" dataSource={saved.data?.recent || []} columns={columns} pagination={{pageSize:5,showSizeChanger:false}}/>
   </div>;
 }
