@@ -74,9 +74,13 @@ class VerificationHistoryTests(unittest.TestCase):
     def test_unintegrated_and_foreign_requirements_are_excluded(self):
         self.request['record']['integrated_ids'] = []
         self.assertEqual(self.collect()[0], [])
+
         self.request['record']['integrated_ids'] = ['task']
         self.request['requirements'] = [{'id': 'other'}]
         self.assertEqual(self.collect()[0], [])
+
+    def test_baseline_validation_without_task_history_needs_no_state_root(self):
+        self.assertEqual(collect({'record': {}, 'requirements': []}, self.root, 'head', self.folder), [])
 
     def test_unmerged_feature_cannot_prove_release_lineage(self):
         with patch('autopilot.verification_history.git', side_effect=subprocess.CalledProcessError(1, ['git'])):

@@ -14,6 +14,8 @@ def collect(request, workspace, head, folder):
     batch = request['record']
     integrated = set(batch.get('integrated_ids', []))
     requirements = {r['id'] for r in request.get('requirements', [])}
+    if not integrated or not requirements or not request.get('runs'):
+        return history
     trusted = Path(request['state_root']).resolve()
     for run in request.get('runs', []):
         if run['id'] not in integrated or run.get('requirement_id') not in requirements:
