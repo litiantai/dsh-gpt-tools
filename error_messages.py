@@ -52,11 +52,35 @@ def failure_fields(error, subject='相关服务', code=None):
     return {'reason':info['message']+info['suggestion'],'error_info':info,'diagnostic':sanitize(str(error))}
 
 
+def source_text(value, field='reason'):
+    """读取旧回执转换前的描述，兼容尚未转换的回执并脱敏。"""
+    if not isinstance(value, dict):
+        return ''
+    diagnostic = value.get('diagnostic')
+    original = diagnostic.get('original', {}) if isinstance(diagnostic, dict) else {}
+    original = original if isinstance(original, dict) else {}
+    raw = original.get(field) or value.get(field, '')
+    return sanitize(raw) if isinstance(raw, str) else ''
+
+
 def present_errors(value):
     """为新回执和接口数据添加中文展示信息，原始错误保留在诊断字段。"""
     if isinstance(value,list): return [present_errors(v) for v in value]
     if not isinstance(value,dict): return value
     result = {k: v if k in ('diagnostic','error_info') else present_errors(v) for k,v in value.items()}
+    # 完成的验收结论可以引用源码、接口与异常类型，不能按关键词当成执行器故障。
+    semantic = (value.get('status') == 'fail' and value.get('failure_kind') in (None, '', 'ui_acceptance')
+                and not value.get('command') and any(key in value for key in
+                    ('provider', 'findings', 'acceptance_results', 'checks', 'summary')))
+    preserved = set()
+    if semantic:
+        for field in ('reason', 'summary', 'actual'):
+            raw = source_text(value, field)
+            if raw and re.search(r'[\u4e00-\u9fff]', raw) and not re.search(r'Traceback|^\w*(?:Error|Exception):', raw):
+                result[field] = raw
+                preserved.add(field)
+        if 'reason' in preserved:
+            result['error_info'] = {'code': 'BUSINESS', 'message': result['reason'], 'suggestion': ''}
     if isinstance(value.get('error_info'),dict):
         if 'diagnostic' in result: result['diagnostic'] = sanitize(result['diagnostic'])
         return result
@@ -65,6 +89,7 @@ def present_errors(value):
         fields += ['summary','actual']
     originals = {}
     for key in fields:
+        if key in preserved: continue
         raw = value.get(key)
         if not isinstance(raw,str) or not raw: continue
         info = error_info(raw)

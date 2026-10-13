@@ -11,6 +11,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / 'dsh-gpt-supervisor/scripts')]
 from review_core import Store
 from autopilot.api import Control
 from autopilot.delivery_board import pending_issues, review_status, separate_prs, dispatch_state
+from error_messages import present_errors
 
 URL = 'https://github.com/example/repo/pull/1'
 
@@ -21,6 +22,105 @@ def row(ident, phase, status, at, url=URL, **extra):
 
 
 class IssueTests(unittest.TestCase):
+    def validation_batch(self, checks, **result):
+        return {'id': 'batch', 'product_id': 'project', 'status': 'online', 'pr_url': URL, 'updated': 20,
+                'receipts': [{'call_id': 'failed', 'action': 'validate_release', 'at': 2,
+                              'result': {'status': 'fail', 'head_sha': 'old', 'checks': checks, **result}}]}
+
+    def test_matching_check_pass_closes_only_that_check_even_if_other_check_fails(self):
+        first = {'name': 'test-1', 'command': ['npm', 'test'], 'status': 'fail', 'reason': '测试失败'}
+        browser = {'name': 'browser-0', 'command': ['npm', 'run', 'test:e2e'], 'status': 'fail',
+                   'reason': 'locator.click: Test timeout of 30000ms exceeded.'}
+        batch = self.validation_batch([first, browser])
+        batch['receipts'].append({'call_id': 'retry', 'action': 'validate_release', 'at': 4,
+            'result': {'status': 'fail', 'head_sha': 'new', 'checks': [first | {'status': 'pass'}, browser]}})
+        issues = pending_issues([batch], [])
+        self.assertEqual([i['title'] for i in issues], ['browser-0：浏览器测试等待页面元素超时'])
+        self.assertEqual(issues[0]['issue_kind'], 'check_failure')
+        batch['receipts'].append({'call_id': 'passed', 'action': 'validate_release', 'at': 6,
+            'result': {'status': 'pass', 'head_sha': 'latest', 'checks': [browser | {'status': 'pass'}]}})
+        self.assertEqual(pending_issues([batch], []), [])
+        self.assertEqual(batch['receipts'][0]['result']['status'], 'fail')
+
+    def test_pass_does_not_close_changed_command_phase_pr_or_wrong_commit(self):
+        check = {'name': 'test-1', 'command': ['npm', 'test'], 'status': 'fail', 'reason': '测试失败'}
+        for change in ({'command': ['npm', 'run', 'test:unit']}, {'name': 'test-2'}, {'commit': 'wrong'}):
+            batch = self.validation_batch([check])
+            batch['receipts'].append({'call_id': 'passed', 'action': 'validate_release', 'at': 4,
+                'result': {'status': 'pass', 'head_sha': 'new', 'checks': [check | {'status': 'pass'} | change]}})
+            self.assertEqual(len(pending_issues([batch], [])), 1)
+        for action in ('validate_feature', 'review_feature'):
+            batch = self.validation_batch([check])
+            # 另一阶段/PR 的验证不能关闭 release 问题。
+            batch['feature_pr_url'] = URL+'2'
+            batch['receipts'].append({'call_id': 'passed', 'action': action, 'at': 4,
+                'result': {'status': 'pass', 'head_sha': 'new', 'checks': [check | {'status': 'pass'}]}})
+            self.assertEqual(len(pending_issues([batch], [])), 1)
+
+    def test_validation_started_before_finding_cannot_close_it(self):
+        check = {'name': 'test-1', 'command': ['npm', 'test'], 'status': 'fail', 'reason': '测试失败'}
+        batch = self.validation_batch([check])
+        batch['receipts'].append({'call_id': 'earlier', 'action': 'validate_release', 'at': 5,
+            'result': {'status': 'pass', 'head_sha': 'new', 'checks': [check | {'status': 'pass', 'started': 1}]}})
+        self.assertEqual(len(pending_issues([batch], [])), 1)
+
+    def test_earlier_pass_cannot_close_repeated_later_failure_or_review_replace_test(self):
+        check = {'name': 'test-1', 'command': ['npm', 'test'], 'status': 'fail', 'reason': '测试失败'}
+        batch = self.validation_batch([check])
+        batch['receipts'].append({'call_id': 'repeat', 'action': 'validate_release', 'at': 4,
+            'result': {'status': 'fail', 'head_sha': 'new', 'checks': [check]}})
+        batch['receipts'].append({'call_id': 'earlier', 'action': 'validate_release', 'at': 6,
+            'result': {'status': 'pass', 'head_sha': 'new', 'checks': [check | {'status': 'pass', 'started': 3}]}})
+        issues = pending_issues([batch], [row('review', 'review_release', 'pass', 7)])
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]['detected_at'], 4)
+
+    def test_legacy_receipt_without_call_id_and_null_start_is_supported(self):
+        check = {'name': 'test-1', 'command': ['npm', 'test'], 'status': 'fail', 'reason': '测试失败', 'started': None}
+        batch = self.validation_batch([check])
+        del batch['receipts'][0]['call_id']
+        self.assertEqual(len(pending_issues([batch], [])), 1)
+        batch['receipts'].append({'action': 'validate_release', 'at': 4,
+            'result': {'status': 'pass', 'head_sha': 'new', 'checks': [check | {'status': 'pass'}]}})
+        self.assertEqual(pending_issues([batch], []), [])
+
+    def test_traceback_check_has_specific_title_and_preserves_sanitized_evidence(self):
+        check = present_errors({'name': 'test-1', 'command': ['npm', 'test'], 'status': 'fail',
+            'reason': "Traceback\nKeyError: 'state_root'\napi_key=private-key", 'exit_code': 1})
+        issue = pending_issues([self.validation_batch([check])], [])[0]
+        self.assertEqual(issue['title'], "test-1：KeyError: 'state_root'")
+        self.assertNotIn('private-key', json.dumps(issue))
+
+    def test_localized_defect_links_to_original_requirement_and_completion(self):
+        batch, requirement = self.finding_fixture()
+        reason = 'RepositoryScans.tsx:29 缺少 identity.isError 判断'
+        proof = batch['receipts'][0]['result']['checks'][0]['evidence']
+        proof.update(reason='本次操作未能完成', diagnostic={'original': {'reason': reason}},
+                     error_info={'code': 'UNKNOWN', 'message': '本次操作未能完成', 'suggestion': ''})
+        requirement['verification_occurrences'][0]['verification'] = {'status': 'fail', 'reason': reason}
+        issue = pending_issues([batch], [], requirements=[requirement])[0]
+        self.assertEqual(issue['title'], reason)
+        self.assertEqual(issue['requirement']['id'], 'finding')
+        self.assertEqual(pending_issues([batch], [], requirements=[requirement | {'status': 'online'}]), [])
+
+    def test_successful_checks_and_reviews_cannot_close_open_backlog_requirement(self):
+        batch, requirement = self.finding_fixture()
+        batch['receipts'].append({'call_id': 'pass', 'action': 'validate_release', 'at': 5,
+            'result': {'status': 'pass', 'head_sha': 'new', 'checks': [{'name': '业务验收', 'status': 'pass'}]}})
+        issues = pending_issues([batch], [row('review', 'review_release', 'pass', 6)], requirements=[requirement])
+        self.assertEqual([i['requirement']['id'] for i in issues], ['finding'])
+
+    def test_execution_failure_never_becomes_code_issue_even_with_fail_status(self):
+        self.assertEqual(pending_issues([], [row('error', 'review', 'fail', 1,
+            result={'failure_kind': 'agent_execution', 'reason': '模型离线'})]), [])
+        for failure in ('agent_execution', 'acceptance_infrastructure'):
+            batch = self.validation_batch([{'name': '业务验收', 'status': 'fail',
+                'evidence': {'status': 'fail', 'failure_kind': failure, 'reason': '验收环境启动失败'}}])
+            self.assertEqual(pending_issues([batch], []), [])
+        batch = self.validation_batch([{'name': '扫描操作链路', 'status': 'fail',
+            'failure_kind': 'ui_acceptance', 'reason': '应禁止扫描，但仍能提交'}])
+        self.assertEqual(pending_issues([batch], [])[0]['issue_kind'], 'check_failure')
+
     def finding_fixture(self):
         proof = {'status': 'fail', 'reason': '能力确认前允许提交扫描', 'evidence': '/proof'}
         batch = {'id': 'batch', 'product_id': 'project', 'status': 'online', 'pr_url': URL, 'updated': 8,

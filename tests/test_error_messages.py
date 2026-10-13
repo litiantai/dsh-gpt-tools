@@ -5,11 +5,33 @@ import sys
 import unittest
 from urllib.error import URLError
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parents[1]/'dsh-gpt-supervisor/scripts')]
-from error_messages import error_info, failure_fields, present_errors, sanitize
+from error_messages import error_info, failure_fields, present_errors, sanitize, source_text
 from autopilot.retry import abnormal
 
 
 class ErrorMessageTests(unittest.TestCase):
+    def test_completed_defect_keeps_source_description_including_technical_references(self):
+        reason = 'RepositoryScans.tsx:29 缺少 identity.isError 门控，超时后仍可提交 /scans；api_key=private-key'
+        result = present_errors({'status': 'fail', 'provider': 'codex', 'reason': reason,
+                                 'summary': '已复现接口 https://example.test/api?token=secret 的缺陷'})
+        self.assertIn('identity.isError', result['reason'])
+        self.assertIn('超时后仍可提交', result['reason'])
+        self.assertEqual(result['error_info']['code'], 'BUSINESS')
+        self.assertNotIn('private-key', json.dumps(result))
+        self.assertNotIn('token=secret', json.dumps(result))
+        self.assertEqual(present_errors(result), result)
+
+    def test_old_localized_defect_is_recovered_but_execution_error_stays_localized(self):
+        reason = 'RepositoryScans.tsx 缺少 identity.isError 判断'
+        legacy = {'status': 'fail', 'provider': 'codex', **failure_fields(reason)}
+        legacy['diagnostic'] = {'original': {'reason': reason}}
+        result = present_errors(legacy)
+        self.assertEqual(result['reason'], reason)
+        self.assertEqual(source_text(legacy), reason)
+        failed = present_errors({'status': 'fail', 'failure_kind': 'agent_execution',
+                                 'provider': 'codex', 'reason': '模型执行失败：TimeoutError'})
+        self.assertEqual(failed['error_info']['code'], 'REQUEST_TIMEOUT')
+
     def test_native_and_legacy_connection_refused_have_same_description(self):
         native=error_info(URLError(ConnectionRefusedError(61,'Connection refused')),'应用服务')
         legacy=error_info('<urlopen error [Errno 61] Connection refused>','应用服务')
