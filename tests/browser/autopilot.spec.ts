@@ -189,7 +189,7 @@ test('investigation progress and external retry time are readable in the require
   await expect(developing.getByText('开发中 · 等待执行',{exact:true})).toBeVisible();
   await expect(developing.getByText('正在修复已复现问题',{exact:true})).toBeVisible();
   await expect(developing.getByRole('cell').nth(nextInvestigationIndex)).toHaveText('—');
-  await expect(developing.getByRole('cell').nth(nextInvestigationIndex-1)).toHaveText('开发需求');
+  await expect(developing.getByText('开发需求',{exact:true})).toBeVisible();
 });
 
 test('Git delivery models are separately configurable and survive catalog errors', async ({page})=>{

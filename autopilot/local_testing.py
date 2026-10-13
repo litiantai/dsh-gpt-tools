@@ -87,10 +87,12 @@ def run(argv, workspace, root, name, *, env, timeout=900, cancel_check=None):
 
 
 @contextmanager
-def verification(request, root):
-    """按分支启动一个本机实例，测试和业务验收结束后统一回收。"""
+def verification(request, root, *, inspection=False):
+    """按用途准备本机实例；巡检仅构建启动，代码验收执行完整测试门禁。"""
     root = Path(root); root.mkdir(parents=True, exist_ok=True)
     result = {'status': 'blocked', 'checks': [], 'reason': ''}
+    if inspection:
+        result['purpose'] = 'inspection_prepare'
     proc = None; instance = None; slot = None
     quality_session = None
     previous_handler = None
@@ -135,7 +137,9 @@ def verification(request, root):
         atomic(root/'instance.json', instance)
         workspace = instance['workspace']
         from . import quality
-        quality_session = quality.prepare(workspace, config, root, isolated=False)
+        from .role_workflows import PHASES
+        phases = PHASES[:4] if inspection else PHASES
+        quality_session = quality.prepare(workspace, config, root, phases=phases, isolated=False)
         def runner(argv, cwd, folder, name, phase):
             command_env = dict(env)
             from .jvm import kind, environment as jvm_environment
@@ -159,7 +163,7 @@ def verification(request, root):
                 if result['reason']:
                     break
         if not result['reason']:
-            starts = config.get('test_start', config['commands'].get('start', []))
+            starts = config['commands'].get('start', []) if inspection else config.get('test_start', config['commands'].get('start', []))
             if len(starts) != 1:
                 raise ValueError('分支测试必须配置唯一启动命令')
             argv = [x.replace('{port}', str(port)).replace('{state}', str(root/'state')) for x in starts[0]]
@@ -185,14 +189,14 @@ def verification(request, root):
             if not ready:
                 result['reason'] = '本机分支实例启动失败或健康检查超时'
             else:
-                result.update(status='pass', reason='本机分支测试通过')
-                if quality_session:
+                result.update(status='pass', reason='本机巡检实例准备通过' if inspection else '本机分支测试通过')
+                if not inspection and quality_session:
                     previous_count = len(quality_session['checks'])
                     failure = quality.execute(quality_session, ('test', 'browser'), runner, isolated=False)
                     result['checks'].extend(quality_session['checks'][previous_count:])
                     if failure:
                         result.update(status=failure['status'], reason=failure.get('reason') or '必需质量检查未通过')
-                else:
+                elif not inspection:
                     for phase in ('test', 'browser'):
                         for i, argv in enumerate(config['commands'].get(phase, [])):
                             check = runner(argv, workspace, root, f'{phase}-{i}', phase)
