@@ -182,15 +182,14 @@ test('investigation progress and external retry time are readable in the require
   await expect(page.getByText('调查取证中 · 等待执行',{exact:true})).toBeVisible();
   await expect(page.getByText('等待外部条件（自动复查）',{exact:true})).toBeVisible();
   await expect(page.getByRole('columnheader',{name:'下次调查'})).toBeVisible();
+  const nextInvestigationIndex=(await page.getByRole('columnheader').allTextContents()).findIndex(text=>text.includes('下次调查'));
+  expect(nextInvestigationIndex).toBeGreaterThanOrEqual(0);
   await expect(page.getByText('上游服务暂时不可用',{exact:true})).toBeVisible();
   const developing=page.getByRole('row').filter({hasText:'已取证进入开发'});
   await expect(developing.getByText('开发中 · 等待执行',{exact:true})).toBeVisible();
   await expect(developing.getByText('正在修复已复现问题',{exact:true})).toBeVisible();
+  await expect(developing.getByRole('cell').nth(nextInvestigationIndex)).toHaveText('—');
   await expect(developing.getByText('开发需求',{exact:true})).toBeVisible();
-  const headers=await page.getByRole('columnheader').allTextContents();
-  const nextInvestigationColumn=headers.findIndex(title=>title.trim()==='下次调查');
-  expect(nextInvestigationColumn).toBeGreaterThanOrEqual(0);
-  await expect(developing.getByRole('cell').nth(nextInvestigationColumn)).toHaveText('—');
 });
 
 test('Git delivery models are separately configurable and survive catalog errors', async ({page})=>{

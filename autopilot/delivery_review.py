@@ -226,6 +226,13 @@ def verify(request, workspace, head, base, folder):
             'verification': {'status': 'blocked', 'reason': str(exc)}}
         atomic(folder / 'verification.json', result)
         return result
+    from .verification_history import collect
+    history = collect(request, workspace, head, folder)
+    if history:
+        history_index = folder / 'history' / 'index.json'
+        atomic(history_index, history)
+        verification['history_index'] = str(history_index)
+        verification['history_index_sha256'] = hashlib.sha256(history_index.read_bytes()).hexdigest()
     if baseline_acceptance:
         verification['baseline_acceptance'] = True
         verification['acceptance_checks'] = registered_checks

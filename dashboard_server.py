@@ -29,12 +29,13 @@ from review_core import (
 from native_supervision import NativeSupervision
 import reviewers
 from autopilot.api import Control
+from autopilot.project import REPOSITORY_SCAN_API_VERSION
 from error_messages import present_errors, failure_fields
 
 
-# 仓库扫描 API 契约版本。当前运行代码声明自己实现的能力；不兼容变更时递增，
-# 前端据此在调用 /api/scans 前核对，避免新版页面连接旧版服务时反复提交无效扫描。
-REPOSITORY_SCAN_API_VERSION = 1
+# 仓库扫描 API 契约版本（REPOSITORY_SCAN_API_VERSION）。当前运行代码声明自己实现的能力；
+# 不兼容变更时递增，前端据此在调用 /api/scans 前核对，避免新版页面连接旧版服务时反复提交无效扫描。
+# 该常量由 autopilot.project 统一定义，与 /api/autopilot/capabilities 兼容声明共用，避免两处漂移。
 
 
 def runtime_identity(root=ROOT):
