@@ -171,6 +171,43 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(c.apply(self.scheduler, stale, output)['status'], 'stale')
         self.assertNotEqual(changed['version'], signal['version'])
 
+    def test_grouped_sources_keep_all_versions_and_both_waiting_requirements_actionable(self):
+        first = self.waiting_requirement(acceptance=['保留首条归因验收条件'])
+        second = self.waiting_requirement(title='补齐仓库扫描证据', acceptance=['保留第二条扫描验收条件'])
+        material = self.large_watch_material()
+        for index, issue in enumerate(material['project_issues']):
+            issue['inspection_id'] = 'inspection-' + str(index) + 'x' * 2_000
+        decision, output = self.decide(action='execute_plan')
+        decision = self.ledger.update('coordination_decisions', decision['id'], decision['version'], {'material':material})
+        folder = self.root/'grouped'; folder.mkdir()
+        prompt = c.model_prompt(material, '材料：', folder)
+        self.assertLessEqual(len(prompt), c.MODEL_INPUT_LIMIT)
+        compact = json.loads(prompt.split('材料：', 1)[1])
+        self.assertEqual(len(compact['project_issue_groups']), 4)
+        self.assertEqual(sum(group['count'] for group in compact['project_issue_groups']), 563)
+        self.assertEqual([(r['id'],r['version'],r['kind']) for r in compact['project_issues']],
+                         [(r['id'],r['version'],r['kind']) for r in material['project_issues']])
+        reference = compact['coordinator_evidence']
+        snapshot = json.loads(Path(reference['path']).read_text())
+        for item in (compact['project_issues'][0], compact['project_issues'][-1]):
+            group = compact['project_issue_groups'][item['group']]
+            self.assertEqual(group['component'], material['project_issues'][int(item['_full_record'].split('/')[-1])]['component'])
+            self.assertEqual(snapshot['project_issues'][int(item['_full_record'].split('/')[-1])]['id'], item['id'])
+        targets = {r['id']:r for r in compact['requirements']}
+        output['operations'] = []
+        for req in (first, second):
+            target = targets[req['id']]
+            self.assertTrue(target['actionable'])
+            self.assertEqual(target['acceptance'], req['acceptance'])
+            output['operations'].append({'action':'investigate_requirement', 'requirement_id':target['id'],
+                'requirement_version':target['version'], 'strategy':'取得原问题的实际证据回执'})
+        self.assertEqual(c.apply(self.scheduler, decision, output)['status'], 'applied')
+        for req in (first, second):
+            self.assertEqual(self.ledger.get('requirements', req['id'])['status'], 'pending')
+        audit = json.loads((folder/'coordinator-input.json').read_text())
+        self.assertTrue(audit['grouped_sources'])
+        self.assertEqual(audit['source_groups'], 4)
+
     def test_impossible_complete_identity_index_is_not_silently_sliced(self):
         material = c.snapshot(self.ledger, self.product)
         material['project_issues'] = [{'id':'signal-' + str(index) + 'x' * 3_000,

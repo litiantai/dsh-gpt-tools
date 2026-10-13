@@ -214,6 +214,38 @@ def model_prompt(material, prefix, folder):
                 'prompt_chars':len(prompt), 'limit':MODEL_INPUT_LIMIT, 'preview_chars':width,
                 'evidence':reference}, ensure_ascii=False), encoding='utf-8')
             return prompt
+    # A large inspection backlog can have unique inspection IDs and repeated
+    # route metadata. Share that metadata while retaining every actionable source.
+    grouped_guidance = ('\nproject_issue_groups 是按来源、代码、路线和状态共享的浏览摘要，同组不代表同一根因。'
+        'project_issues 每条仍含完整 id/version/kind/status，group 对应分组编号；'
+        '来源动作只能引用该条 id/version/kind，不能引用分组编号。每条 _full_record 均可定位原文，'
+        'inspection_id 及完整证据读取对应 Pointer；按需读字段，不要输出整个文件。\n')
+    for width in (160, 64, 0):
+        groups, group_ids, sources = [], {}, []
+        for index, issue in enumerate(material.get('project_issues', [])):
+            group_key = json.dumps([issue.get(key) for key in ('source','code','component','status')], ensure_ascii=False)
+            pointer = '/project_issues/' + str(index)
+            if group_key not in group_ids:
+                group_ids[group_key] = len(groups)
+                group = {'group':len(groups), 'count':0, '_full_record':pointer}
+                if width:
+                    group.update({key:preview(issue[key], width)
+                        for key in ('source','code','component','status','title','reason','summary','evidence')
+                        if issue.get(key) is not None})
+                groups.append(group)
+            group_id = group_ids[group_key]
+            groups[group_id]['count'] += 1
+            sources.append({key:issue[key] for key in ('id','version','kind','status')} |
+                           {'group':group_id, '_full_record':pointer})
+        compact['project_issues'] = sources
+        compact['project_issue_groups'] = groups
+        prompt = guidance + grouped_guidance + prefix + json.dumps(compact, ensure_ascii=False)
+        if len(prompt) <= MODEL_INPUT_LIMIT:
+            (Path(folder) / 'coordinator-input.json').write_text(json.dumps({
+                'prompt_chars':len(prompt), 'limit':MODEL_INPUT_LIMIT, 'preview_chars':width,
+                'grouped_sources':True, 'source_groups':len(groups),
+                'evidence':reference}, ensure_ascii=False), encoding='utf-8')
+            return prompt
     raise ValueError('Watch 完整对象版本索引超过输入预算；完整证据已保存，未截掉任何待评估对象')
 
 
