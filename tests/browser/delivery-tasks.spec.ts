@@ -10,7 +10,7 @@ test('release tasks are collapsed and all four evidence actions work', async ({p
   await page.route('**/api/products/nested/workbench',r=>r.fulfill({json:{sessions:[],reviews:[],events:[]}}));
   await page.route('**/api/products/nested/delivery-board',r=>r.fulfill({json:{prs:[],release_prs:[{id:'release-pr',delivery_id:'batch',pr_url:'https://github.com/example/repo/pull/13',number:13,title:'release-20261009',git_status:'open',status:'approved',updated:1}],issues:[]}}));
   await page.route('**/api/deliveries/batch/tasks',r=>r.fulfill({json:{tasks:[task],day:'20261009',missing_ids:[]}}));
-  await page.route('**/api/runs/task/usage',r=>r.fulfill({json:{tokens:1234,sources:[{id:'trace',action:'develop',tokens:1234,collected:true,budget_kind:'tokens'}],day:'2026-10-09',project_tokens_used:3456,project_tokens_limit:10000,receipts:[{action:'develop',at:1,result:{status:'pass',summary:'行情渲染已验证'}}],evidence:[],reviews:[]}}));
+  await page.route('**/api/runs/task/usage',r=>r.fulfill({json:{execution_seconds:3600,execution_budget:{remaining_seconds:3600,extra_seconds:3600},tokens:1234,sources:[{id:'trace',action:'develop',tokens:1234,collected:true,budget_kind:'tokens'}],day:'2026-10-09',project_tokens_used:3456,project_tokens_limit:10000,receipts:[{action:'develop',at:1,result:{status:'pass',summary:'行情渲染已验证'}}],evidence:[],reviews:[]}}));
   await page.goto('/autopilot?project=nested');
   await page.getByRole('button',{name:'待合并 1',exact:true}).click();
   const drawer=page.locator('.ant-drawer-content');
@@ -32,6 +32,9 @@ test('release tasks are collapsed and all four evidence actions work', async ({p
   await modal.getByRole('button',{name:'Close',exact:true}).click();
   await drawer.getByRole('button',{name:'查看用量',exact:true}).click();
   await expect(modal.getByText('1,234 Token',{exact:true})).toBeVisible();
+  await expect(modal.getByText('剩余执行预算',{exact:true})).toBeVisible();
+  await expect(modal.getByText('授权累计追加',{exact:true})).toBeVisible();
+  await expect(modal.getByText('3600 秒',{exact:true})).toHaveCount(3);
   await expect(modal.getByText('3,456 / 10,000 Token',{exact:true})).toBeVisible();
   await modal.getByRole('tab',{name:'过程数据',exact:true}).click();
   await expect(modal.getByText('行情渲染已验证',{exact:true}).first()).toBeVisible();

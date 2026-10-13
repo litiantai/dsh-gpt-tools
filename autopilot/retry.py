@@ -77,6 +77,10 @@ def manual_run_retry(ledger, ident, version, allow_revision=False):
         changes.update(review_id=None, review_packet=None)
         now = time.time()
         count = run.get('manual_retry_count', 0) + 1
+        if phase in ('queued', 'planning', 'developing'):
+            from .execution_budget import renew
+            product = ledger.get('products', run['product_id'], db)
+            changes.update(renew(run, product, f'manual:{ident}:{count}', 'human'))
         evidence = ledger.create('evidence', {'product_id': run['product_id'], 'run_id': ident,
             'title': '人工允许返修' if allow_revision else '人工阻塞重试', 'phase': 'manual_retry', 'at': now,
             'details': redact({'source': 'human', 'manual_retry_count': count, 'at': now,
@@ -85,7 +89,9 @@ def manual_run_retry(ledger, ident, version, allow_revision=False):
                 'agent_message_id': question['id'] if question else None,
                 'revisions': run.get('revisions', 0), 'extra_revisions': run.get('extra_revisions', 0),
                 'source_version': version, 'review_id': run.get('review_id'),
-                'coordination_pending': run.get('coordination_pending'), 'counts_toward_revisions': False})},
+                'coordination_pending': run.get('coordination_pending'),
+                'execution_grant': (changes.get('execution_grants') or [None])[-1],
+                'counts_toward_revisions': False})},
             'recorded', db=db)
         changes.update(manual_retry_count=count, last_manual_retry_at=now,
                        manual_retry_pending=evidence['id'], manual_retry_evidence_id=evidence['id'])
@@ -121,7 +127,8 @@ def quota_reason_for(ledger, item, product, kind, tokens_available):
     phase = item.get('resume_status')
     policy = DEFAULTS | product.get('policy', {})
     if kind == 'runs' and phase in ('queued', 'planning', 'developing'):
-        if item.get('execution_seconds', 0) >= policy['execution_seconds']:
+        from .execution_budget import snapshot, pending_changes
+        if snapshot(item | pending_changes(item, product), product)['remaining_seconds'] <= 0:
             return '累计开发执行时间额度不足'
     if kind == 'runs' and phase == 'queued' and not item.get('budget_reserved'):
         evaluation = ledger.get('evaluations', item['evaluation_id']) if item.get('evaluation_id') else None

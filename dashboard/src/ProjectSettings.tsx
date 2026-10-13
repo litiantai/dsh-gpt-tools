@@ -16,7 +16,8 @@ const policyFields = [
   {key:'runs_per_day',label:'每日需求处理上限',unit:'个',factor:1},
   {key:'tokens_per_day',label:'每日 Token 上限',unit:'Token',factor:1},
   {key:'discovery_per_day',label:'每天需求发现调用',unit:'次',factor:1},
-  {key:'execution_seconds',label:'每任务累计执行上限',unit:'分钟',factor:60},
+  {key:'execution_seconds',label:'每轮方案与开发预算',unit:'分钟',factor:60},
+  {key:'execution_call_seconds',label:'单次方案或开发超时',unit:'分钟',factor:60},
   {key:'max_revisions',label:'每任务最多返修',unit:'次',factor:1},
   {key:'idle_seconds',label:'发布前连续空闲',unit:'分钟',factor:60},
   {key:'observation_seconds',label:'发布后观察',unit:'分钟',factor:60},
@@ -37,7 +38,7 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
   useEffect(()=>{
     if(project && !dirty) {
       const roles=project.agents as Record<string,unknown> | undefined;
-      form.setFieldsValue({related_projects:project.related_projects||[],project_role:project.project_role||'auto',runtime_recovery:project.runtime_recovery || {enabled:false},goal:project.goal,agents:{inspection_design:{provider:'codex',model:'gpt-6.1-sol'},...project.agents as object},policy:{tokens_per_day:0,deepseek_off_peak_only:true,...project.policy as object},
+      form.setFieldsValue({related_projects:project.related_projects||[],project_role:project.project_role||'auto',runtime_recovery:project.runtime_recovery || {enabled:false},goal:project.goal,agents:{inspection_design:{provider:'codex',model:'gpt-6.1-sol'},...project.agents as object},policy:{tokens_per_day:0,deepseek_off_peak_only:true,execution_call_seconds:900,...project.policy as object},
         git:project.git || {url:'',base_branch:'master',enabled:false},
         code_review:{reviewer:roles?.acceptance,fixer:roles?.implementation,max_revisions:0,...project.code_review as object}});
       initialValues.current=structuredClone(form.getFieldsValue(true));
@@ -129,11 +130,11 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
           <Form.Item name={['runtime_recovery','enabled']} label="应用自动恢复" valuePropName="checked" extra="开启后，正常退出应用也会自动重新启动；暂停项目后停止恢复。连续失败会延迟重试。"><Switch/></Form.Item>
           <Button disabled={busy || dirty || !(project.runtime_recovery as {enabled?:boolean} | undefined)?.enabled || project.status==='paused'} onClick={()=>void mode('recover-runtime')}>立即尝试恢复</Button>
           <Form.Item name="goal" label="项目目标与范围" rules={[{required:true}]}><Input.TextArea rows={3} disabled={busy || hasRunningTasks}/></Form.Item>
-          <div className="project-settings-grid">{policyFields.map(({key,label,unit,factor})=>{const quota=['runs_per_day','discovery_per_day','tokens_per_day'].includes(key);return <Form.Item key={key} name={['policy',key]} label={label} extra={quota?'0 表示不限；超限等待北京时间次日零点':' '}
+          <div className="project-settings-grid">{policyFields.map(({key,label,unit,factor})=>{const quota=['runs_per_day','discovery_per_day','tokens_per_day'].includes(key);const live=quota || ['execution_seconds','execution_call_seconds'].includes(key);return <Form.Item key={key} name={['policy',key]} label={label} extra={quota?'0 表示不限；超限等待北京时间次日零点':key==='execution_seconds'?'获准返修或人工重试时补足本轮预算，保留历史耗时':key==='execution_call_seconds'?'仅影响后续调用；每次调用同时受剩余预算限制':' '}
             getValueProps={value=>({value:typeof value==='number'?value/factor:undefined})}
             normalize={value=>typeof value==='number'?Math.round(value*factor):value}
             rules={[{required:true,message:'请填写额度或间隔'},{type:'number',min:quota?0:1,message:quota?'不能小于 0':'必须大于 0'}]}>
-            <InputNumber min={quota?0:1/factor} step={1} precision={factor===1?0:undefined} addonAfter={unit} style={{width:'100%'}} disabled={busy || (hasRunningTasks && !quota)}/>
+            <InputNumber min={quota?0:1/factor} step={1} precision={factor===1?0:undefined} addonAfter={unit} style={{width:'100%'}} disabled={busy || (hasRunningTasks && !live)}/>
           </Form.Item>})}</div>
           <p className="muted">每日 Token 额度仅统计需求方案、方案审查、开发、业务验证和业务验收，含缓存输入。巡检不占用需求与 Token 额度；需求发现、前期调查单独记账，不占开发 Token 额度。代码交付评审、修复和复验单独记账，不占此额度。当前调用完成后可能超过上限，后续开发调用等待额度恢复。平台审查额度仍独立生效。</p>
         </>},

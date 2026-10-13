@@ -423,7 +423,7 @@ class Control:
                 raise Conflict('记录已更新，请刷新后重试')
             runs=db.execute('SELECT status FROM auto_runs WHERE product_id=?',(ident,))
             changed={key for key,value in changes.items() if value!=old.get(key)}
-            live_limits={'runs_per_day','discovery_per_day','tokens_per_day','deepseek_off_peak_only'}
+            live_limits={'runs_per_day','discovery_per_day','tokens_per_day','deepseek_off_peak_only','execution_seconds','execution_call_seconds'}
             policy_changes={key for key in set(changes.get('policy',{})) | set(old.get('policy',{}))
                             if changes.get('policy',{}).get(key)!=old.get('policy',{}).get(key)} if isinstance(changes.get('policy',{}),dict) else {'invalid'}
             if 'policy' not in changes:

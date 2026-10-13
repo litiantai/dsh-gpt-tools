@@ -88,11 +88,13 @@ def task_usage(ledger, run):
     product = ledger.get('products', product_id)
     from .quota import snapshot
     quota = snapshot(ledger, product)
+    from .execution_budget import snapshot as execution_budget
     return {'tokens': sum(e['tokens'] for e in entries if e['collected']), 'sources': entries,
             'day': datetime.datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat(),
             'project_tokens_used': quota['tokens_used'],
             'project_tokens_limit': quota['tokens_limit'],
             'execution_seconds': run.get('execution_seconds'),
+            'execution_budget': execution_budget(run, product),
             'receipts': redact(run.get('receipts', [])), 'evidence': redact(evidence),
             'reviews': redact([{'title': r.get('phase'), 'status': r['status'], 'created': r['created'],
                                 'result': r.get('result'), 'provider': (r.get('reviewer') or {}).get('provider'),
