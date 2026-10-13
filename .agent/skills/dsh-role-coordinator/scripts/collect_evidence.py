@@ -9,8 +9,12 @@ def collect(record):
         if receipt.get('action') != 'verify':
             continue
         snapshot['receipt_id'] = receipt.get('call_id')
-        for check in (receipt.get('result') or {}).get('checks', []):
-            if isinstance(check, dict) and (check.get('name') or check.get('id')):
+        result = receipt.get('result') or {}
+        snapshot.update(failed_tests=result.get('failed_test_ids', []), passed_tests=result.get('passed_test_ids', []),
+                        failure_kind=result.get('failure_kind'), retryable=result.get('retryable'),
+                        verification_identity=receipt.get('verification_identity'))
+        for check in result.get('checks', []):
+            if isinstance(check, dict) and check.get('required',True) and (check.get('name') or check.get('id')):
                 snapshot['checks'][str(check.get('id') or check['name'])] = check.get('status', 'unknown')
         break
     review = record.get('last_review_result') or {}

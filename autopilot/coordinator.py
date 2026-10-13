@@ -20,6 +20,7 @@ PHASES = ('planning', 'developing', 'verifying', 'plan_review', 'acceptance_revi
 ACTIONS = ('wait', 'repair', 'verify', 'assist', 'reprioritize', 'human',
            'investigate_requirement', 'propose_requirement', 'execute_plan')
 WATCH_SECONDS = 300
+MODEL_INPUT_LIMIT = 240_000
 REQUIREMENT_STATES = {'pending', 'awaiting_external', 'blocked', 'failed'}
 
 
@@ -151,13 +152,101 @@ def snapshot(ledger, product):
         for item in ledger.scoped(kind, product['id']):
             if item['status'] not in ('blocked','failed','fail','abnormal') or item.get('requirement_id') or item.get('requirement_ids') or (kind,item['id']) in linked_issues:
                 continue
-            project_issues.append({k:item.get(k) for k in ('id','version','status','title','reason','evidence','summary')} | {'kind':kind})
+            project_issues.append({k:item.get(k) for k in ('id','version','status','title','reason','evidence','summary','source','code','component','inspection_id')} | {'kind':kind})
     return {'product_id': product['id'], 'human_authority': config(product)['human_authority'], 'tasks': tasks, 'requirements': requirements, 'quota': resources,
             'project_issues':project_issues,
             'policy': DEFAULTS | product.get('policy', {}), 'model': selected(product),
             'project_config': product.get('project_config', {}),
             'messages': [{k:m.get(k) for k in ('id','status','run_id','topic','reply')}
                          for m in ledger.scoped('agent_messages', product['id'])[-20:]]}
+
+
+def model_prompt(material, prefix, folder):
+    """限制实际 Watch 提示词，保留全部对象版本和可只读定位的完整证据快照。"""
+    body = json.dumps(material, ensure_ascii=False)
+    prompt = prefix + body
+    if len(prompt) <= MODEL_INPUT_LIMIT:
+        return prompt
+    path = Path(folder) / 'coordinator-material.json'
+    path.write_text(body, encoding='utf-8')
+    reference = {'path':str(path), 'sha256':hashlib.sha256(body.encode()).hexdigest(),
+                 'chars':len(body), 'collections':{key:len(material.get(key, []))
+                    for key in ('tasks','requirements','project_issues')}}
+    guidance = ('\nWatch 输入使用证据预览，所有任务、需求和问题的 ID、版本及控制状态均保留。'
+        'coordinator_evidence 指向本次只读完整快照；_full_record 是其中的 JSON Pointer，'
+        '_previewed_fields 列出的字段不是完整证据。按 source/code/component 合并同因问题，'
+        '逐一评估全部已登记需求，不能仅处理列表前几条；需要具体证据或验收条件时用只读工具'
+        '按路径和 Pointer 读取对应字段，避免把整个快照再次输出到上下文。'
+        '不得依据被缩短的预览声称已完成验证。\n')
+    # Preserve the whole identity/control index; reduce evidence detail uniformly,
+    # so later records remain visible rather than starving behind an input slice.
+    identity = {'id','version','status','kind','run_id','requirement_id','effective_status',
+                'actionable','protected','source','code','component','inspection_id',
+                'watch_source_kind','watch_source_id','source_run_id','evidence_ids'}
+    def preview(value, width):
+        if not isinstance(value, (str, list, dict)):
+            return value
+        encoded = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        if len(encoded) <= width:
+            return value
+        return encoded[:width] + '…' if isinstance(value, str) else {'preview':encoded[:width], 'chars':len(encoded)}
+    for width in (600, 300, 120, 64, 32, 0):
+        compact = {}
+        for key, value in material.items():
+            if key in ('tasks','requirements','project_issues'):
+                compact[key] = []
+                for index, record in enumerate(value):
+                    detail_width = max(width, 600) if key in ('tasks','requirements') else width
+                    item = {field:entry if field in identity else preview(entry, detail_width)
+                            for field,entry in record.items()}
+                    shortened = [field for field in record if item[field] != record[field]]
+                    if shortened:
+                        item.update(_full_record='/' + key + '/' + str(index), _previewed_fields=shortened)
+                    compact[key].append(item)
+            elif key in ('source_context','product_id','human_authority','quota','policy','model','project_config'):
+                compact[key] = value
+            else:
+                compact[key] = preview(value, width)
+        compact['coordinator_evidence'] = reference
+        prompt = guidance + prefix + json.dumps(compact, ensure_ascii=False)
+        if len(prompt) <= MODEL_INPUT_LIMIT:
+            (Path(folder) / 'coordinator-input.json').write_text(json.dumps({
+                'prompt_chars':len(prompt), 'limit':MODEL_INPUT_LIMIT, 'preview_chars':width,
+                'evidence':reference}, ensure_ascii=False), encoding='utf-8')
+            return prompt
+    # A large inspection backlog can have unique inspection IDs and repeated
+    # route metadata. Share that metadata while retaining every actionable source.
+    grouped_guidance = ('\nproject_issue_groups 是按来源、代码、路线和状态共享的浏览摘要，同组不代表同一根因。'
+        'project_issues 每条仍含完整 id/version/kind/status，group 对应分组编号；'
+        '来源动作只能引用该条 id/version/kind，不能引用分组编号。每条 _full_record 均可定位原文，'
+        'inspection_id 及完整证据读取对应 Pointer；按需读字段，不要输出整个文件。\n')
+    for width in (160, 64, 0):
+        groups, group_ids, sources = [], {}, []
+        for index, issue in enumerate(material.get('project_issues', [])):
+            group_key = json.dumps([issue.get(key) for key in ('source','code','component','status')], ensure_ascii=False)
+            pointer = '/project_issues/' + str(index)
+            if group_key not in group_ids:
+                group_ids[group_key] = len(groups)
+                group = {'group':len(groups), 'count':0, '_full_record':pointer}
+                if width:
+                    group.update({key:preview(issue[key], width)
+                        for key in ('source','code','component','status','title','reason','summary','evidence')
+                        if issue.get(key) is not None})
+                groups.append(group)
+            group_id = group_ids[group_key]
+            groups[group_id]['count'] += 1
+            sources.append({key:issue[key] for key in ('id','version','kind','status')} |
+                           {'group':group_id, '_full_record':pointer})
+        compact['project_issues'] = sources
+        compact['project_issue_groups'] = groups
+        prompt = guidance + grouped_guidance + prefix + json.dumps(compact, ensure_ascii=False)
+        if len(prompt) <= MODEL_INPUT_LIMIT:
+            (Path(folder) / 'coordinator-input.json').write_text(json.dumps({
+                'prompt_chars':len(prompt), 'limit':MODEL_INPUT_LIMIT, 'preview_chars':width,
+                'grouped_sources':True, 'source_groups':len(groups),
+                'evidence':reference}, ensure_ascii=False), encoding='utf-8')
+            return prompt
+    raise ValueError('Watch 完整对象版本索引超过输入预算；完整证据已保存，未截掉任何待评估对象')
 
 
 def requirement_states(ledger, pid):
@@ -182,7 +271,8 @@ def requirement_states(ledger, pid):
         investigation = req.get('investigation_result') or {}
         result.append({k:req.get(k) for k in ('id','title','status','version','classification','priority',
             'evidence','reproduction','impact','acceptance','resolution_probes','next_investigation',
-            'investigation_result','watch_recheck_at','watch_source_kind','watch_source_id','source_run_id')} | {
+            'investigation_result','watch_recheck_at','watch_source_kind','watch_source_id','source_run_id',
+            'problem_kind','development_guidance','coordination_help_plan')} | {
             'investigation_result': {k:investigation.get(k) for k in ('status','outcome','reason','summary','checks','acceptance','resolution_probes','failure_kind')},
             'actionable': approved(req) and req.get('in_scope') is True and not run and not issue and
                           req['status'] in REQUIREMENT_STATES and not any(req.get(k) for k in ('control','call','uncertain','pending_result')),
@@ -363,6 +453,8 @@ def requirement_action(scheduler, decision, product, result, db):
         'problem_kind':value['kind'], 'classification':'development' if probes else 'investigation',
         'in_scope':True, 'priority':0, 'coordination_priority':10, 'coordination_plan_id':decision['id'],
         'next_investigation':0, 'investigation_guidance':strategy, 'reason':'Watch 解决方案：' + strategy}
+    if probes:
+        changes.update(development_guidance=strategy, coordination_help_plan=help_plan(result))
     if requirement and requirement.get('investigation_budget_reserved'):
         changes['investigation_budget_reserved'] = requirement.get('investigation_day') == datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
     if requirement:
@@ -612,11 +704,20 @@ def evaluate(request):
     from .role_skills import read, output_schema
     schema = output_schema('coordinate')
     fields = schema['properties']
+    material = request['record']['material']
+    instruction = read('dsh-role-coordinator/references/decisions.md')
+    controllable = any((not task.get('protected') and task.get('status') in ('blocked','queued')) or
+                       task.get('delegated_question') for task in material.get('tasks', []))
+    if not controllable:
+        task_actions = {'repair','verify','assist','reprioritize','human'}
+        for properties in (fields, fields['operations']['items']['properties']):
+            properties['action']['enum'] = [action for action in properties['action']['enum'] if action not in task_actions]
+            properties['run_id']['enum'] = ['']
+        instruction += '\n本轮 tasks 为空或没有可操控的当前任务；本轮契约已移除所有任务动作，run_id 必须为空字符串。只能等待、调查 actionable 需求或依据当前项目问题提出需求；组合方案也遵守此限制。不得引用历史任务补齐当前目标。'
     from .role_skills import ROOT
     validator = runpy.run_path(str(ROOT/'dsh-role-coordinator/scripts/validate_output.py'))['validate']
     result = run_model('coordinate', request | {'budget_kind': 'coordination_tokens'},
-        request['record']['selection'], request['record']['material'],
-        read('dsh-role-coordinator/references/decisions.md'), fields)
+        request['record']['selection'], material, instruction, fields)
 
     if result.get('status') == 'pass':
         try:

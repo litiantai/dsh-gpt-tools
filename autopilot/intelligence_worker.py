@@ -54,7 +54,7 @@ def run_model(action, request, role, material, instruction, properties, images=N
     if action == 'collaborate':
         schema['properties']['status']['enum'] = ['pass','fail','blocked','waiting_for_reply']
     result = execute(action, request | {'_intelligence': {
-        'role':role, 'material':redact(material), 'instruction':instruction,
+        'role':role, 'material':redact(material, text_limit=None if action == 'coordinate' else 20_000), 'instruction':instruction,
         'schema':schema, 'images': images or [], 'search':search}})
     return result | {'snapshot_at':material.get('snapshot_at',time.time())}
 

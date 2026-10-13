@@ -20,15 +20,16 @@ DEFAULTS = dict(probe_seconds=60,inspection_seconds=21600, discovery_per_day=4, 
 SECRET = re.compile(r'(?i)(bearer\s+)[\w.\-/+=]+|((?:token|password|cookie|authorization|api[_-]?key)\s*[=:]\s*)[^\s,;]+')
 
 
-def redact(value):
-    """递归清除凭据字段及常见日志凭据；原始账户资料不得作为输入。"""
+def redact(value, *, text_limit=20_000):
+    """递归清除凭据；默认限制日志长度，text_limit=None 用于完整脱敏证据快照。"""
     if isinstance(value, dict):
         return {k: ('[redacted]' if re.search(r'(?i)token|password|cookie|authorization|api.?key', k)
-                    else redact(v)) for k, v in value.items()}
+                    else redact(v, text_limit=text_limit)) for k, v in value.items()}
     if isinstance(value, list):
-        return [redact(v) for v in value]
+        return [redact(v, text_limit=text_limit) for v in value]
     if isinstance(value, str):
-        return SECRET.sub(lambda m: (m[1] or m[2]) + '[redacted]', value)[:20000]
+        clean = SECRET.sub(lambda m: (m[1] or m[2]) + '[redacted]', value)
+        return clean if text_limit is None else clean[:text_limit]
     return value
 
 

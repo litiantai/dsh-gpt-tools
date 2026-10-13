@@ -81,6 +81,25 @@
                 },
                 "api_body": {
                   "type": "string"
+                },
+                "response_bindings": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "pointer": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "pointer"
+                    ]
+                  }
                 }
               },
               "required": [
@@ -95,7 +114,8 @@
                 "expected_text",
                 "wait_seconds",
                 "api_method",
-                "api_body"
+                "api_body",
+                "response_bindings"
               ]
             }
           },

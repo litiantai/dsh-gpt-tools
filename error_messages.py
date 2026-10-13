@@ -64,11 +64,27 @@ def source_text(value, field='reason'):
     return sanitize(raw) if isinstance(raw, str) else ''
 
 
-def present_errors(value):
+def present_errors(value, *, competitor=False):
     """为新回执和接口数据添加中文展示信息，原始错误保留在诊断字段。"""
-    if isinstance(value,list): return [present_errors(v) for v in value]
+    if isinstance(value,list): return [present_errors(v, competitor=competitor) for v in value]
     if not isinstance(value,dict): return value
-    result = {k: v if k in ('diagnostic','error_info') else present_errors(v) for k,v in value.items()}
+    competitor = (competitor and value.get('status') not in ('fail','failed','blocked','unknown','busy')) or (
+        value.get('status') in ('active','disabled','merged') and isinstance(value.get('name'),str)
+        and isinstance(value.get('urls'),list) and isinstance(value.get('identity'),str))
+    result = {k: v if k in ('diagnostic','error_info') else present_errors(v, competitor=k == 'competitors' and isinstance(v,list))
+              for k,v in value.items()}
+    preserved = set()
+    # 候选列表与已保存竞品的 reason 是相关性说明；来源采集失败仍独立处理。
+    if competitor:
+        raw = source_text(value)
+        if raw:
+            result['reason'] = raw
+            preserved.add('reason')
+        diagnostic = value.get('diagnostic')
+        original = diagnostic.get('original', {}) if isinstance(diagnostic,dict) else {}
+        if isinstance(original,dict) and set(original) == {'reason'}:
+            result.pop('error_info',None)
+        if 'diagnostic' in result: result['diagnostic'] = sanitize(result['diagnostic'])
     if value.get('status') in ('pass','completed','done','approve') and isinstance(value.get('diagnostic'),dict):
         original = value['diagnostic'].get('original') or {}
         if set(original) == {'reason'} and isinstance(original['reason'],str):
@@ -79,7 +95,6 @@ def present_errors(value):
     semantic = (value.get('status') == 'fail' and value.get('failure_kind') in (None, '', 'ui_acceptance', 'business')
                 and not value.get('command') and any(key in value for key in
                     ('provider', 'findings', 'acceptance_results', 'checks', 'summary')))
-    preserved = set()
     if semantic:
         for field in ('reason', 'summary', 'actual'):
             raw = source_text(value, field)
@@ -88,13 +103,13 @@ def present_errors(value):
                 preserved.add(field)
         if 'reason' in preserved:
             result['error_info'] = {'code': 'BUSINESS', 'message': result['reason'], 'suggestion': ''}
-    if isinstance(value.get('error_info'),dict):
+    if isinstance(value.get('error_info'),dict) and isinstance(result.get('error_info'),dict):
         if 'diagnostic' in result: result['diagnostic'] = sanitize(result['diagnostic'])
         return result
     fields = ['error','reporting_error']
     if value.get('status') not in ('pass','completed','done','approve'):
         fields.append('reason')
-    elif isinstance(value.get('reason'), str):
+    elif isinstance(value.get('reason'), str) and 'reason' not in preserved:
         result['reason'] = sanitize(value['reason'])
     if value.get('status') in ('fail','failed','blocked','unknown','busy'):
         fields += ['summary','actual']
