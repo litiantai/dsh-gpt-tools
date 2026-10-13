@@ -549,6 +549,8 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(req['classification'],'investigation')
         self.assertEqual(req['coordination_priority'],10)
         self.assertFalse(req.get('run_id'))
+        self.assertFalse(req.get('development_guidance'))
+        self.assertFalse(req.get('coordination_help_plan'))
         d,r=self.decide(action='propose_requirement',requirement=value)
         self.assertEqual(c.apply(self.scheduler,d,r)['requirement_id'],req['id'])
         self.assertEqual(len(self.ledger.scoped('requirements',self.product['id'])),2)
@@ -643,6 +645,64 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(c.apply(self.scheduler,d,r)['status'],'applied')
         req=self.ledger.get('requirements',self.ledger.get('coordination_decisions',d['id'])['requirement_id'])
         self.assertEqual(req['resolution_probes'][0]['path'],'check:workflow')
+
+    def test_process_evidence_gap_with_future_effect_assertion_reuses_requirement_and_preserves_development_context(self):
+        product = self.ledger.get('products', self.product['id'])
+        self.product = self.ledger.update('products', product['id'], product['version'], {
+            'adapter_spec':{'kind':'command'}, 'project_config':{'readonly_paths':['/api/runtime-identity'],
+            'acceptance_checks':{'workflow':['python3','test.py']}}})
+        from autopilot.probes import check
+        for probe in ({'path':'check:workflow','pointer':'/status','operator':'equals','expected':'pass'},
+                      {'path':'/api/runtime-identity','pointer':'/workflow_evidence/attribution/complete',
+                       'operator':'equals','expected':True}):
+            with self.subTest(probe=probe):
+                acceptance = ['逐一保存原信号归因回执', '缺少业务断言时保持 observed，不能记为 pass']
+                scope = '只补齐当前项目归因回执及路线业务断言，不修改生产数据'
+                req = self.waiting_requirement(acceptance=acceptance, scope=scope,
+                    confirmation_required=True, confirmation_status='confirmed',
+                    confirmed_snapshot={'acceptance':acceptance, 'scope':scope})
+                value = self.proposal() | {'title':req['title'], 'acceptance':acceptance, 'resolution_probes':[probe]}
+                strategy = '实现完整归因回执及可判定业务断言，新增缺失证据失败和完整证据成功的回归检查'
+                decision, output = self.decide(action='propose_requirement', requirement_id=req['id'],
+                    requirement_version=req['version'], requirement=value, strategy=strategy)
+                self.assertEqual(c.apply(self.scheduler, decision, output)['status'], 'applied')
+                latest = self.ledger.get('requirements', req['id'])
+                self.assertEqual(latest['classification'], 'development')
+                self.assertEqual(latest['status'], 'queued')
+                self.assertEqual(latest['acceptance'], acceptance)
+                self.assertEqual(latest['scope'], scope)
+                self.assertEqual(latest['confirmed_snapshot'], req['confirmed_snapshot'])
+                self.assertEqual(latest['development_guidance'], strategy)
+                self.assertEqual(latest['coordination_help_plan'], output['help_plan'])
+                run = self.ledger.get('runs', latest['run_id'])
+                self.assertEqual((run['priority'], run['coordination_priority']), (0, 10))
+                self.assertEqual(run['requirement_id'], req['id'])
+                tasks = [r for r in self.ledger.scoped('runs', self.product['id']) if r['requirement_id'] == req['id']]
+                self.assertEqual(len(tasks), 1)
+                c.apply(self.scheduler, decision, output)
+                self.assertEqual(len([r for r in self.ledger.scoped('runs', self.product['id']) if r['requirement_id'] == req['id']]), 1)
+                watched = next(r for r in c.snapshot(self.ledger,self.product)['requirements'] if r['id'] == req['id'])
+                self.assertEqual(watched['problem_kind'], 'process')
+                self.assertEqual(watched['development_guidance'], strategy)
+                self.assertEqual(watched['coordination_help_plan'], output['help_plan'])
+                from autopilot.role_skills import compose
+                request = {'product':self.product, 'record':run, 'requirement':latest}
+                for stage in ('plan','develop'):
+                    _, material = compose(stage, request, {'requirement':latest})
+                    self.assertEqual(material['requirement']['development_guidance'], strategy)
+                    self.assertEqual(material['requirement']['coordination_help_plan'], output['help_plan'])
+                self.assertFalse(check([probe], lambda path:{'product_id':self.product['id'],'commit':'old'}, self.product))
+
+    def test_effect_assertion_does_not_bypass_requirement_scope_manual_or_inflight_control(self):
+        for protected in ({'in_scope':False}, {'control':'pause'}, {'call':{'id':'inflight'}},
+                          {'uncertain':True}, {'pending_result':{'status':'pass'}}):
+            with self.subTest(protected=protected):
+                req = self.waiting_requirement(**protected)
+                decision, output = self.decide(action='propose_requirement', requirement_id=req['id'],
+                    requirement_version=req['version'], requirement=self.proposal())
+                self.assertEqual(c.apply(self.scheduler, decision, output)['status'], 'blocked')
+                self.assertEqual(self.ledger.get('requirements',req['id'])['version'], req['version'])
+                self.assertFalse(any(r['requirement_id'] == req['id'] for r in self.ledger.scoped('runs', self.product['id'])))
 
     def test_plan_and_requirement_schema_accepts_complete_contract(self):
         from autopilot.role_skills import output_schema

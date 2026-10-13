@@ -271,7 +271,8 @@ def requirement_states(ledger, pid):
         investigation = req.get('investigation_result') or {}
         result.append({k:req.get(k) for k in ('id','title','status','version','classification','priority',
             'evidence','reproduction','impact','acceptance','resolution_probes','next_investigation',
-            'investigation_result','watch_recheck_at','watch_source_kind','watch_source_id','source_run_id')} | {
+            'investigation_result','watch_recheck_at','watch_source_kind','watch_source_id','source_run_id',
+            'problem_kind','development_guidance','coordination_help_plan')} | {
             'investigation_result': {k:investigation.get(k) for k in ('status','outcome','reason','summary','checks','acceptance','resolution_probes','failure_kind')},
             'actionable': approved(req) and req.get('in_scope') is True and not run and not issue and
                           req['status'] in REQUIREMENT_STATES and not any(req.get(k) for k in ('control','call','uncertain','pending_result')),
@@ -452,6 +453,8 @@ def requirement_action(scheduler, decision, product, result, db):
         'problem_kind':value['kind'], 'classification':'development' if probes else 'investigation',
         'in_scope':True, 'priority':0, 'coordination_priority':10, 'coordination_plan_id':decision['id'],
         'next_investigation':0, 'investigation_guidance':strategy, 'reason':'Watch 解决方案：' + strategy}
+    if probes:
+        changes.update(development_guidance=strategy, coordination_help_plan=help_plan(result))
     if requirement and requirement.get('investigation_budget_reserved'):
         changes['investigation_budget_reserved'] = requirement.get('investigation_day') == datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
     if requirement:
