@@ -1,7 +1,7 @@
 import { ErrorNotice, errorText, serializeError } from './errors';
-import { useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Alert, Button, Card, Descriptions, Empty, Image, Modal, Space, Spin, Table, Tabs } from 'antd';
+import { Alert, Button, Card, Descriptions, Empty, Image, Modal, Space, Spin, Table, Tabs, type TabsProps } from 'antd';
 import { api } from './api';
 import { ReceiptList, RecordValue, recordLabel } from './RecordDetails';
 import RecordInspector from './RecordInspector';
@@ -12,12 +12,21 @@ type Task = {run:Item;requirement:Partial<Item>;signals:Item[];inspections:Item[
 type Usage = {tokens:number;sources:{id:string;action:string;tokens:number;collected:boolean;budget_kind:string}[];day:string;project_tokens_used:number;project_tokens_limit:number;execution_seconds?:number;execution_budget?:{remaining_seconds:number;extra_seconds:number};receipts:unknown[];evidence:Item[];reviews:Item[]};
 const title = (task:Task)=>task.run.title || task.run.name || task.requirement.title || task.run.id;
 
-function TaskUsage({runId}:{runId:string}) {
+// 内层页签选择由 DeliveryTasks 持有：用量查询每 5 秒刷新，只有把选择权威放在稳定的父组件上，
+// 页签才不会随查询重渲染或子树重建而回退到“消耗明细”。TaskUsage 只随自身数据变化渲染。
+const TaskUsage = memo(function TaskUsage({runId,tab,onTabChange}:{runId:string;tab:string;onTabChange:(key:string)=>void}) {
   const query=useQuery<Usage>({queryKey:['task-usage',runId],queryFn:()=>api(`/runs/${runId}/usage`),refetchInterval:5000});
-  // 内层页签显式受控；加载与错误状态内联展示，刷新查询不再卸载 Tabs 导致页签回退。
-  const [tab,setTab]=useState('usage');
   const data=query.data;
   const recorded=!!data?.sources?.some(s=>s.collected);
+  const items=useMemo<TabsProps['items']>(()=>[
+    {key:'usage',label:'消耗明细',children:data?<Table rowKey="id" size="small" pagination={false} dataSource={data.sources} columns={[
+      {title:'执行阶段',dataIndex:'action',render:recordLabel},
+      {title:'额度分类',dataIndex:'budget_kind',render:(value:string)=>({tokens:'开发额度',code_delivery_tokens:'代码交付额度',daily_report_tokens:'日报独立额度'}[value] || value)},
+      {title:'已采集 Token',render:(_,row)=>row.collected?row.tokens.toLocaleString():'等待采集'},
+    ]}/>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在读取用量明细"/>},
+    // forceRender 让过程数据在弹窗打开后即挂载（未激活时隐藏），点击只切换可见性，消除懒挂载导致的“未找到文本”。
+    {key:'process',label:'过程数据',forceRender:true,children:<><ReceiptList value={data?.receipts ?? []}/><RecordValue value={data?.evidence ?? []}/><RecordValue value={data?.reviews ?? []}/></>},
+  ],[data]);
   return <>
     {query.error && <Alert type="error" message={<ErrorNotice value={query.error}/>}/>}
     {!data && <Spin/>}
@@ -30,22 +39,20 @@ function TaskUsage({runId}:{runId:string}) {
       ]}/>
       <p className="muted">任务消耗包含已归属的执行与审查用量；共享巡检、发现及整批交付消耗不分摊。数据以用量账本采集结果为准，缺失记录不代表零消耗。</p>
     </>}
-    <Tabs activeKey={tab} onChange={setTab} items={[
-      {key:'usage',label:'消耗明细',children:data?<Table rowKey="id" size="small" pagination={false} dataSource={data.sources} columns={[
-        {title:'执行阶段',dataIndex:'action',render:recordLabel},
-        {title:'额度分类',dataIndex:'budget_kind',render:(value:string)=>({tokens:'开发额度',code_delivery_tokens:'代码交付额度',daily_report_tokens:'日报独立额度'}[value] || value)},
-        {title:'已采集 Token',render:(_,row)=>row.collected?row.tokens.toLocaleString():'等待采集'},
-      ]}/>:<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在读取用量明细"/>},
-      {key:'process',label:'过程数据',children:<><ReceiptList value={data?.receipts ?? []}/><RecordValue value={data?.evidence ?? []}/><RecordValue value={data?.reviews ?? []}/></>},
-    ]}/>
+    <Tabs activeKey={tab} onChange={key=>onTabChange(String(key))} onTabClick={key=>onTabChange(String(key))} animated={false} items={items}/>
   </>;
-}
+});
 
 export default function DeliveryTasks({deliveryId,day}:{deliveryId:string;day?:string}) {
   const query=useQuery<{tasks:Task[];day?:string;missing_ids:string[]}>({queryKey:['delivery-tasks',deliveryId],queryFn:()=>api(`/deliveries/${deliveryId}/tasks`),refetchInterval:5000});
   const [selected,setSelected]=useState<{task:Task;view:string}>();
+  const [usageTab,setUsageTab]=useState('usage');
   const [image,setImage]=useState('');
   const [error,setError]=useState('');
+  const onUsageTab=useCallback((key:string)=>setUsageTab(key),[]);
+  const runId=selected?.task.run.id;
+  // 只在真正切换任务时复位内层页签；查询刷新不再让页签回退。
+  useEffect(()=>{setUsageTab('usage');},[runId]);
   const screenshot=async(id:string)=>{
     try {setError('');setImage((await api<{data_url:string}>(`/evidence/${id}/screenshot`)).data_url);}
     catch(e){setError(serializeError(e));}
@@ -72,7 +79,7 @@ export default function DeliveryTasks({deliveryId,day}:{deliveryId:string;day?:s
           {error && <Alert type="error" message={<ErrorNotice value={error}/>}/>}
         </>},
         {key:'pr',label:'PR 详情',children:task.prs.length?<Space direction="vertical">{task.prs.map((pr,i)=><div key={`${pr.pr_url}-${i}`}>{pr.project_name?`${pr.project_name} · ${pr.label}`:pr.label}：{pr.pr_url.startsWith('https://github.com/')?<a href={pr.pr_url} target="_blank" rel="noreferrer">{pr.pr_url}</a>:'PR 地址不可用'}</div>)}</Space>:<Empty description="该任务尚未关联 PR"/>},
-        {key:'usage',label:'查看用量',children:selected?.view==='usage'?<TaskUsage key={task.run.id} runId={task.run.id}/>:null},
+        {key:'usage',label:'查看用量',children:selected?.view==='usage'?<TaskUsage key={task.run.id} runId={task.run.id} tab={usageTab} onTabChange={onUsageTab}/>:null},
       ]}/>}
     </Modal>
     <Image style={{display:'none'}} src={image} preview={{visible:!!image,onVisibleChange:visible=>{if(!visible)setImage('');}}}/>

@@ -58,7 +58,7 @@ export default function ProjectEvidence({productId,tab,onTabChange}:{productId?:
   </Card>;
   return <>
     {(error || inspections.error || evidence.error || evaluations.error || signals.error) && <Alert type="error" message={<ErrorNotice value={error || inspections.error || evidence.error || evaluations.error || signals.error}/>}/>}
-    <Tabs activeKey={tab} onChange={onTabChange} items={[
+    <Tabs activeKey={tab} onChange={onTabChange} onTabClick={onTabChange} animated={false} items={[
       {key:'inspection_routes',label:'巡检路线',children:productId?<InspectionRoutes pid={productId}/>:null},
       {key:'daily',label:'日报与复盘',children:<DailyReports productId={productId}/>},
       {key:'inspection_exceptions',label:`巡检异常 (${exceptions.length})`,children:<>
