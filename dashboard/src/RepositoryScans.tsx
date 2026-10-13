@@ -1,6 +1,6 @@
 import ProjectEnvironment from './ProjectEnvironment';
-import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRef, useState } from 'react';
 import { Alert, App, Button, Collapse, Descriptions, Drawer, Image, Input, Space, Table, Tag } from 'antd';
 import { api } from './api';
 import { time } from './components';
@@ -23,14 +23,36 @@ function repositories(scans:Scan[]):Repository[] {
 export default function RepositoryScans({onClose,productId,onChanged}:{onClose:()=>void;productId?:string;onChanged:()=>unknown}) {
   const [source,setSource]=useState('');const [selected,setSelected]=useState<string>();
   const [busy,setBusy]=useState(false);const {message}=App.useApp();
-  // 后端能力预检必须先于 /scans 请求：运行身份通过 capabilities.repository_scans 声明
-  // 本管理服务已实现仓库扫描接口；旧后端没有该声明（或查询失败/加载中），前端据此禁用入口，
-  // 从而避免向不存在的接口发起请求。只有确认支持后才请求列表，且不受全局 refetchInterval 影响。
-  const identity=useQuery<{capabilities?:{repository_scans?:number}}>({queryKey:['runtime-identity'],queryFn:()=>api('/runtime-identity'),retry:false});
-  const version=identity.data?.capabilities?.repository_scans;
-  // 查询刷新失败仍会保留 data；必须同时核对本次查询状态，不能用缓存继续放行。
-  const supported=identity.isSuccess && typeof version==='number' && Number.isInteger(version) && version>=1;
-  const scans=useQuery<Scan[]>({queryKey:['/scans'],queryFn:()=>api('/scans'),enabled:supported,refetchInterval:3000,retry:false});
+  const queryClient=useQueryClient();
+  // 运行身份预检：只有后端明确声明 capabilities.repository_scans>=1 才认为支持仓库扫描 API。
+  // 声明来自正在运行的代码，而不是 release marker，因此旧后端不会被新 marker 伪装成受支持。
+  // 每次打开抽屉都使用独立查询键并禁用缓存，上一次会话“受支持”的结论绝不能被复用：
+  // 先连新后端、关闭抽屉、切换到旧后端再打开时，必须重新核对，核对完成前不发送任何 /api/scans 请求。
+  const [identityKey]=useState(()=>`runtime-identity:${crypto.randomUUID()}`);
+  // 独立查询键与禁用缓存用于阻断跨会话复用；同时保留全局后台轮询（不再设置 refetchInterval:false），
+  // 使运行身份“先成功后失败”也能被发现：刷新失败时立即撤销缓存能力，恢复后自动放行。
+  const identity=useQuery<{capabilities?:{repository_scans?:number}}>({queryKey:[identityKey],queryFn:()=>api('/runtime-identity'),retry:false,staleTime:0,gcTime:0,refetchOnWindowFocus:false});
+  const scanCapability=identity.data?.capabilities?.repository_scans;
+  // 后台刷新失败时查询库会保留上一次 data，且不能假定 isSuccess 一定翻转为 false；
+  // 因此必须把本次查询的失败状态作为显式撤销开关：identity.isError 是权威信号，
+  // 同时兼容查询库在保留 data 时只把错误放在 error 的差异，任一信号成立即视为失败；
+  // 只要出现过“先成功后失败”，缓存里的 repository_scans 就不得重新放行任何扫描写操作与 /scans 轮询；
+  // 成功刷新后 error 会被重置为 null，恢复不受影响。
+  const identityFailed=identity.isError || !!identity.error;
+  // 只有本次会话成功取回、当前没有进行中的核对且未出现失败时才承认能力；重新核对中或查询失败一律视为未确认。
+  const capabilityConfirmed=identity.isSuccess && !identity.isFetching && !identityFailed;
+  const supported=capabilityConfirmed && typeof scanCapability==='number' && Number.isInteger(scanCapability) && scanCapability>=1;
+  // 能力缺失（旧服务未声明）与身份查询失败是两种不同语义：
+  // 前者提示“管理服务需要升级”；刷新失败但仍持有缓存身份时只提示“无法核对管理服务”，不叠加升级提示。
+  const outdated=capabilityConfirmed && !supported;
+  const unknown=identityFailed && !identity.data;
+  const identityReason=outdated
+    ? '当前管理服务未声明仓库扫描能力（/api/runtime-identity 缺少 capabilities.repository_scans=1），页面无法确认其支持 /api/scans，已停止发送扫描请求。请先升级并重启管理服务，然后重新核对。'
+    : '无法确认运行身份 /api/runtime-identity 声明的仓库扫描能力，页面已停止发送扫描请求。请检查管理服务后重新核对。';
+  // 兼容声明：GET /api/autopilot/capabilities 只用于可编程声明与旧客户端兼容，
+  // 传输层放行必须以上面运行身份返回的 capabilities.repository_scans 为准，禁止用它做正向门控，
+  // 否则旧后端会被“看起来存在”的声明误放行。
+  const scans=useQuery<Scan[]>({queryKey:['/scans'],queryFn:()=>api<Scan[]>('/scans'),enabled:supported,refetchInterval:3000,retry:false});
   const current=scans.data?.find(s=>s.id===selected);
   const groups=repositories(scans.data || []);
   // 只读能力预检：项目必须声明通用命令适配器且具备 verify 能力，且协议版本必须为 1，
@@ -44,18 +66,38 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
   const projectChecking=!!productId && supported && (capability.isPending || capability.isFetching);
   const projectFailed=!!productId && supported && capability.isError;
   const checking=identity.isPending || identity.isFetching || projectChecking;
-  const backendUnsupported=identity.isSuccess && !supported;
-  const blocked=!supported || mismatch || projectFailed;
+  // blocked 必须显式覆盖 identity.isError（先成功后失败），即使缓存 data 仍在也要拦截扫描/重新扫描/onboard/apply。
+  const blocked=!supported || identityFailed || mismatch || projectFailed;
+  // 异步写操作必须读取“当前”门控，而不是点击时那次渲染捕获的旧值：
+  // 应用配置在 await 项目详情期间若身份刷新失败，闭包里的 checking/blocked 仍是旧值，
+  // 会放行写入。用 ref 在每次渲染后同步最新门控，await 之后重新读取即可拦截。
+  const gate=useRef({checking,blocked,supported});
+  gate.current={checking,blocked,supported};
+  const gateClosed=()=>gate.current.checking || gate.current.blocked;
+  const gateReason=()=>gate.current.supported?'请先完成项目接入能力核对':'请先核对管理服务的仓库扫描能力';
+  // 手动 refetch 不经过 enabled，因此写请求返回后必须复核能力是否已被撤销。
+  // 身份刷新失败会同步把 error 写入查询缓存并保留 data（query.ts 失败分支），直接读缓存可消除
+  // await 与 React 渲染提交之间的时序窗口；只拦截“已撤销”（失败/未声明/项目不匹配/项目查询失败），
+  // 不拦例行后台核对，避免误跳过正常列表刷新。
+  function writeRevoked(){
+    const state=queryClient.getQueryState<{capabilities?:{repository_scans?:number}}>([identityKey]);
+    if(state?.error)return true;
+    const current=gate.current;
+    return current.blocked && !current.checking;
+  }
   const screenshot=useQuery<{data_url:string}>({queryKey:['scan-screenshot',selected],queryFn:()=>api(`/scans/${selected}/screenshot`),enabled:supported && !!current?.result?.checks?.some(c=>c.screenshot),retry:false});
   async function act(path:string,body:Record<string,unknown>){
-    if(checking||blocked){message.error(!supported?'请先核对管理服务的仓库扫描能力':'请先完成项目接入能力核对');return;}
-    setBusy(true);try{const result=await api<Scan>(path,body);if(!path.endsWith('/apply'))setSelected(result.id);await scans.refetch();onChanged();}catch(e){message.error(errorText(e));}finally{setBusy(false);}}
+    if(gateClosed()){message.error(gateReason());return;}
+    setBusy(true);try{const result=await api<Scan>(path,body);
+      // 写请求在途期间能力被撤销：不再手动 /scans 刷新，也不触发父级 reload，避免绕过 enabled 发请求。
+      if(writeRevoked())return;
+      if(!path.endsWith('/apply'))setSelected(result.id);await scans.refetch();onChanged();}catch(e){message.error(errorText(e));}finally{setBusy(false);}}
   return <Drawer title="仓库接入与启动扫描" open width={960} onClose={onClose}>
     <Space direction="vertical" style={{width:'100%'}} size="large">
       <Alert type="info" showIcon message="在独立工作区识别并验证项目" description="提供本地仓库绝对路径或 HTTPS Git URL。获取源码后先识别 Java、前端及模块技术栈并检测本机工具；缺少运行时会提示安装。工具就绪后再安装项目依赖、构建、测试、尝试启动并保存结果。启动验证不代表业务验收通过。"/>
       {checking && <Alert type="info" showIcon message="正在确认后端扫描接口与当前项目接入能力" description="确认完成前已禁用扫描提交，避免向不支持的后端发起请求。"/>}
-      {identity.isError && <Alert type="warning" showIcon message="无法核对管理服务" description="无法读取运行身份，扫描操作已暂停。请检查服务后重新核对。" action={<Button onClick={()=>void identity.refetch()}>重新核对</Button>}/>}
-      {backendUnsupported && <Alert type="warning" showIcon message="管理服务需要升级" description="当前管理服务未声明仓库扫描能力。请升级并重启管理服务后重新核对。" action={<Button onClick={()=>void identity.refetch()}>重新核对</Button>}/>}
+      {identityFailed && <Alert type="warning" showIcon message="无法核对管理服务" description="无法读取运行身份，扫描操作已暂停。请检查服务后重新核对。" action={<Button onClick={()=>void identity.refetch()}>重新核对</Button>}/>}
+      {(outdated || unknown) && <Alert type="warning" showIcon message="管理服务需要升级" description={identityReason} action={<Button size="small" onClick={()=>void identity.refetch()}>重新核对</Button>}/>}
       {projectFailed && <Alert type="error" showIcon message="当前项目接入能力查询失败" description={<ErrorNotice value={capability.error} subject="管理服务"/>} action={<Button onClick={()=>void capability.refetch()}>重新核对</Button>}/>}
       {mismatch && <Alert type="warning" showIcon message="当前项目接入能力不匹配" description={mismatchReason}/>}
       <Space.Compact style={{width:'100%'}}><Input aria-label="代码仓库地址" value={source} onChange={e=>setSource(e.target.value)} placeholder="/绝对路径/项目 或 https://…/repo.git"/><Button type="primary" loading={busy} disabled={!source.trim() || checking || blocked} onClick={()=>void act('/scans',{source:source.trim()})}>扫描新仓库</Button></Space.Compact>
@@ -78,7 +120,7 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
         {key:'source',label:'源码提交',children:current.result?.source_commit || '等待采集'},
         {key:'state',label:'结果',children:names[current.status] || current.status},
         {key:'business',label:'业务验收',children:'独立于启动扫描，需进入研发验收流程'}]}/>
-        <ProjectEnvironment key={`${current.id}:${!!current.result}`} path={`/scans/${current.id}`}/>
+        <ProjectEnvironment key={`${current.id}:${!!current.result}`} path={`/scans/${current.id}`} disabled={blocked}/>
         {current.reason && <ErrorNotice value={current.reason}/>}
         <Table<Check> rowKey="name" size="small" dataSource={current.result?.checks} pagination={false} columns={[
           {title:'步骤',dataIndex:'name'},{title:'结果',dataIndex:'status'},
@@ -86,7 +128,7 @@ export default function RepositoryScans({onClose,productId,onChanged}:{onClose:(
           {title:'退出码',dataIndex:'exit_code'},{title:'说明',dataIndex:'reason'}
         ]}/>
         {current.status==='pass' && !current.product_id && <Button loading={busy} disabled={checking || blocked} onClick={()=>void act(`/scans/${current.id}/onboard`,{version:current.version})}>登记项目并进入观察模式</Button>}
-        {current.status==='pass' && productId && (!current.product_id || current.product_id===productId) && <Button loading={busy} disabled={checking || blocked} onClick={async()=>{const product=await api<{version:number}>(`/products/${productId}`);await act(`/scans/${current.id}/apply`,{version:current.version,product_id:productId,product_version:product.version});}}>应用扫描配置到当前项目</Button>}
+        {current.status==='pass' && productId && (!current.product_id || current.product_id===productId) && <Button loading={busy} disabled={checking || blocked} onClick={async()=>{if(gateClosed()){message.error(gateReason());return;}const product=await api<{version:number}>(`/products/${productId}`);if(gateClosed()){message.error(gateReason());return;}await act(`/scans/${current.id}/apply`,{version:current.version,product_id:productId,product_version:product.version});}}>应用扫描配置到当前项目</Button>}
         {screenshot.data && <Image alt="隔离实例启动截图" src={screenshot.data.data_url}/>}
         <Collapse items={[{key:'raw',label:'识别配置与完整回执',children:<pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(current.result,null,2)}</pre>}]}/>
       </>}
