@@ -11,7 +11,11 @@ metadata:
 
 采用 [thsoctop 取证参考](references/thsoctop.md) 的逐步取证方法，不复制其固定步骤数或业务数据。路线应覆盖实际业务结果，而不只是入口可达。历史成功仅是设计依据。
 
-主实例仅 navigate、observe 或已登记的只读 read_api；click、fill、press 以及发送、提交、生成等操作只能在隔离环境。不要生成执行代码或外部命令。定位器从源码或已有真实证据确认，需登录的路线设置 requires_auth=true，运行器通过项目 storage_state 提供测试登录状态；缺少账号或服务时明确前置条件，不编造或输出凭据。
+主实例仅 navigate、observe 或已登记的只读 read_api；click、fill、press 以及发送、提交、生成等操作只能在隔离环境。不要生成执行代码或外部命令。定位器从源码或已有真实证据确认。项目声明 session_bootstrap 时，运行器为浏览器和纯接口路线建立自己的本机会话，无需人工登录或 storage_state；其他需要外部账号的项目保留登录前置条件，不编造或输出凭据。
+
+输入中的 inspection_setup 是控制器在每轮隔离实例内通过实际接口执行一次的数据准备，项目保持暂停并停用自动调度。其 response_bindings 名称可通过 `{名称}` 引用实际返回的 ID 和版本；不能使用不存在的固定合成 ID。路线的接口步骤同样可声明 response_bindings（name、pointer），仅允许公开 id/version/status/name。后续 path、selector、text 和 api_body 使用这些引用，禁止网络 mock、直接写台账、假成功回执或控制器未实现的回调。
+
+设计 pass 表示可执行路线已设计完成，不表示所有业务覆盖或业务验收通过。缺少实际准备能力的历史、模型任务、外部投递等场景须明确列入 coverage_gaps，不设计必定因缺记录而超时的步骤。保留可执行的既有 key；无法保留的 key 明确记录覆盖缺口和所需准备条件，禁止用空列表或入口标题替代原业务断言。
 
 每步填写具体预期。同步操作无需等待；异步操作设置 wait_selector 或 wait_text 和 wait_seconds（默认45秒），等待阶段不得重复提交。只有稳定、可验证的文本结果填写 expected_text，否则留空交独立归因判断，不能用页面标题代替业务断言。
 

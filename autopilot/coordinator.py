@@ -20,6 +20,7 @@ PHASES = ('planning', 'developing', 'verifying', 'plan_review', 'acceptance_revi
 ACTIONS = ('wait', 'repair', 'verify', 'assist', 'reprioritize', 'human',
            'investigate_requirement', 'propose_requirement', 'execute_plan')
 WATCH_SECONDS = 300
+MODEL_INPUT_LIMIT = 240_000
 REQUIREMENT_STATES = {'pending', 'awaiting_external', 'blocked', 'failed'}
 
 
@@ -151,13 +152,69 @@ def snapshot(ledger, product):
         for item in ledger.scoped(kind, product['id']):
             if item['status'] not in ('blocked','failed','fail','abnormal') or item.get('requirement_id') or item.get('requirement_ids') or (kind,item['id']) in linked_issues:
                 continue
-            project_issues.append({k:item.get(k) for k in ('id','version','status','title','reason','evidence','summary')} | {'kind':kind})
+            project_issues.append({k:item.get(k) for k in ('id','version','status','title','reason','evidence','summary','source','code','component','inspection_id')} | {'kind':kind})
     return {'product_id': product['id'], 'human_authority': config(product)['human_authority'], 'tasks': tasks, 'requirements': requirements, 'quota': resources,
             'project_issues':project_issues,
             'policy': DEFAULTS | product.get('policy', {}), 'model': selected(product),
             'project_config': product.get('project_config', {}),
             'messages': [{k:m.get(k) for k in ('id','status','run_id','topic','reply')}
                          for m in ledger.scoped('agent_messages', product['id'])[-20:]]}
+
+
+def model_prompt(material, prefix, folder):
+    """限制实际 Watch 提示词，保留全部对象版本和可只读定位的完整证据快照。"""
+    body = json.dumps(material, ensure_ascii=False)
+    prompt = prefix + body
+    if len(prompt) <= MODEL_INPUT_LIMIT:
+        return prompt
+    path = Path(folder) / 'coordinator-material.json'
+    path.write_text(body, encoding='utf-8')
+    reference = {'path':str(path), 'sha256':hashlib.sha256(body.encode()).hexdigest(),
+                 'chars':len(body), 'collections':{key:len(material.get(key, []))
+                    for key in ('tasks','requirements','project_issues')}}
+    guidance = ('\nWatch 输入使用证据预览，所有任务、需求和问题的 ID、版本及控制状态均保留。'
+        'coordinator_evidence 指向本次只读完整快照；_full_record 是其中的 JSON Pointer，'
+        '_previewed_fields 列出的字段不是完整证据。按 source/code/component 合并同因问题，'
+        '逐一评估全部已登记需求，不能仅处理列表前几条；需要具体证据或验收条件时用只读工具'
+        '按路径和 Pointer 读取对应字段，避免把整个快照再次输出到上下文。'
+        '不得依据被缩短的预览声称已完成验证。\n')
+    # Preserve the whole identity/control index; reduce evidence detail uniformly,
+    # so later records remain visible rather than starving behind an input slice.
+    identity = {'id','version','status','kind','run_id','requirement_id','effective_status',
+                'actionable','protected','source','code','component','inspection_id',
+                'watch_source_kind','watch_source_id','source_run_id','evidence_ids'}
+    def preview(value, width):
+        if not isinstance(value, (str, list, dict)):
+            return value
+        encoded = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        if len(encoded) <= width:
+            return value
+        return encoded[:width] + '…' if isinstance(value, str) else {'preview':encoded[:width], 'chars':len(encoded)}
+    for width in (600, 300, 120, 64, 32, 0):
+        compact = {}
+        for key, value in material.items():
+            if key in ('tasks','requirements','project_issues'):
+                compact[key] = []
+                for index, record in enumerate(value):
+                    detail_width = max(width, 600) if key in ('tasks','requirements') else width
+                    item = {field:entry if field in identity else preview(entry, detail_width)
+                            for field,entry in record.items()}
+                    shortened = [field for field in record if item[field] != record[field]]
+                    if shortened:
+                        item.update(_full_record='/' + key + '/' + str(index), _previewed_fields=shortened)
+                    compact[key].append(item)
+            elif key in ('source_context','product_id','human_authority','quota','policy','model','project_config'):
+                compact[key] = value
+            else:
+                compact[key] = preview(value, width)
+        compact['coordinator_evidence'] = reference
+        prompt = guidance + prefix + json.dumps(compact, ensure_ascii=False)
+        if len(prompt) <= MODEL_INPUT_LIMIT:
+            (Path(folder) / 'coordinator-input.json').write_text(json.dumps({
+                'prompt_chars':len(prompt), 'limit':MODEL_INPUT_LIMIT, 'preview_chars':width,
+                'evidence':reference}, ensure_ascii=False), encoding='utf-8')
+            return prompt
+    raise ValueError('Watch 完整对象版本索引超过输入预算；完整证据已保存，未截掉任何待评估对象')
 
 
 def requirement_states(ledger, pid):
