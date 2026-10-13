@@ -32,6 +32,7 @@ def error_info(error, subject='相关服务', code=None):
     if code is None:
         if isinstance(error, HTTPError):
             code = {401:'AUTH_REQUIRED',403:'ACCESS_DENIED',402:'MODEL_BALANCE_INSUFFICIENT',429:'RATE_LIMITED',502:'SERVICE_UNAVAILABLE',503:'SERVICE_UNAVAILABLE',504:'REQUEST_TIMEOUT'}.get(error.code)
+        elif isinstance(cause, AssertionError): code = 'TEST_ASSERTION_FAILED'
         elif isinstance(cause, TimeoutError): code = 'REQUEST_TIMEOUT'
         elif isinstance(cause, FileNotFoundError): code = 'FILE_MISSING'
         elif isinstance(cause, PermissionError): code = 'ACCESS_DENIED'
@@ -57,10 +58,20 @@ def present_errors(value):
     if isinstance(value,list): return [present_errors(v) for v in value]
     if not isinstance(value,dict): return value
     result = {k: v if k in ('diagnostic','error_info') else present_errors(v) for k,v in value.items()}
+    if value.get('status') in ('pass','completed','done','approve') and isinstance(value.get('diagnostic'),dict):
+        original = value['diagnostic'].get('original') or {}
+        if set(original) == {'reason'} and isinstance(original['reason'],str):
+            result['reason'] = sanitize(original['reason'])
+            result.pop('error_info',None)
+            return result
     if isinstance(value.get('error_info'),dict):
         if 'diagnostic' in result: result['diagnostic'] = sanitize(result['diagnostic'])
         return result
-    fields = ['reason','error','reporting_error']
+    fields = ['error','reporting_error']
+    if value.get('status') not in ('pass','completed','done','approve'):
+        fields.append('reason')
+    elif isinstance(value.get('reason'), str):
+        result['reason'] = sanitize(value['reason'])
     if value.get('status') in ('fail','failed','blocked','unknown','busy'):
         fields += ['summary','actual']
     originals = {}

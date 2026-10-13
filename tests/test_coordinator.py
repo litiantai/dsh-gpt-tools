@@ -122,7 +122,8 @@ class CoordinatorTests(unittest.TestCase):
     def test_two_no_progress_rounds_surface_human_once(self):
         for revision in (4,5):
             run=self.fresh()
-            run=self.ledger.update('runs',run['id'],run['version'],{'revisions':revision,'coordination_baseline':c.checks_snapshot(run)})
+            run=self.ledger.update('runs',run['id'],run['version'],{'revisions':revision,'coordination_baseline':c.checks_snapshot(run),
+                'receipts':run['receipts']+[{'call_id':f'verify-{revision}', 'action':'verify', 'result':{'status':'fail','checks':[{'name':'拒收回执','status':'fail'},{'name':'项目隔离','status':'fail'}]}}]})
             self.ledger.update('runs',run['id'],run['version'],c.progress(run))
         self.assertEqual(self.fresh()['coordination_no_progress'],2)
         self.assertEqual(self.apply()['status'],'needs_human')
@@ -248,7 +249,7 @@ class CoordinatorTests(unittest.TestCase):
     def test_delegated_watch_answers_and_repairs_with_durable_plan(self):
         question=self.delegate_waiting_question()
         run=self.fresh()
-        self.ledger.update('runs',run['id'],run['version'],{'coordination_no_progress':2})
+        self.ledger.update('runs',run['id'],run['version'],{'coordination_no_progress':1})
         material=c.snapshot(self.ledger,self.product)
         self.assertFalse(material['tasks'][0]['protected'])
         self.assertEqual(c.watch_summary(material)['findings'][0]['action'],'评估帮助与资源协调')
@@ -260,7 +261,7 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(reply['status'],'replied')
         self.assertIn('帮助方案',reply['reply'])
         self.assertEqual(self.fresh()['coordination_plan_id'],decision['id'])
-        self.assertEqual(self.fresh()['coordination_no_progress'],2)
+        self.assertEqual(self.fresh()['coordination_no_progress'],1)
         self.assertTrue(c.resume_pending(Scheduler(self.store)))
         run=c.consume_grant(self.scheduler,self.fresh())
         self.assertEqual((run['status'],run['revisions'],run['extra_revisions']),('planning',4,1))

@@ -32,11 +32,15 @@ def ready(product):
 def config(product):
     agents = product.get('agents', {})
     return {'reviewer': copy.deepcopy(agents.get('acceptance')), 'fixer': copy.deepcopy(agents.get('implementation')),
-            'max_revisions': 0} | copy.deepcopy(product.get('code_review', {}))
+            'max_revisions': 0, 'tokens_per_day': 10000000} | copy.deepcopy(product.get('code_review', {}))
 
 
 def repair_queue(scheduler, batch, product, now):
     """修复额度只延后新修复；评审、验证和合并不受累计修复次数限制。"""
+    from .delivery_progress import hold
+    batch, held = hold(scheduler, batch)
+    if held:
+        return batch, True
     from .retry import recover
     batch = recover(scheduler, 'deliveries', batch, product, now)
     repair_states = {'repairing', 'review_failed', 'release_failed', 'repairing_feature', 'repairing_release'}
@@ -202,6 +206,13 @@ def mark_online(ledger, batch, result):
 
 
 def complete(scheduler, batch, result, action):
+    if action.startswith('validate'):
+        from .failures import verification_failure
+        result = verification_failure(result, trusted_root=scheduler.root)
+    from .delivery_progress import changes
+    measured = changes(batch, result, action)
+    if measured:
+        batch = batch | scheduler.change('deliveries', batch, measured)
     if batch.get('flow') == 'review_before_release':
         from .staged_delivery import complete as staged_complete
         return staged_complete(scheduler, batch, result, action)
@@ -318,6 +329,14 @@ def tick(scheduler, now=None):
         action = {'preparing': 'prepare', 'code_review': 'review', 'validating': 'validate', 'repairing': 'repair', 'syncing': 'sync', 'merging': 'merge'}[batch['status']]
         choice = config(product)
         if scheduler.wait_for_off_peak('deliveries',batch,product,action,now=now):
+            continue
+        from .delivery_budget import wait_reason
+        from .verification_control import repeat_reason
+        reason = wait_reason(ledger, product, action) or repeat_reason(batch, product, action)
+        if reason:
+            if batch.get('reason') != reason:
+                scheduler.change('deliveries', batch, {'reason':reason, 'verification_repeat_hold':bool(repeat_reason(batch,product,action)),
+                    **({'resume_status':batch['status']} if repeat_reason(batch,product,action) else {})}, 'blocked' if repeat_reason(batch,product,action) else None)
             continue
         if action in ('review', 'repair'):
             selected = choice['reviewer' if action == 'review' else 'fixer']

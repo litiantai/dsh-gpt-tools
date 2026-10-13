@@ -446,6 +446,14 @@ def tick_product(scheduler, product, now):
         return
     if scheduler.wait_for_off_peak('deliveries',b,product,action,now=now):
         return
+    from .delivery_budget import wait_reason
+    from .verification_control import repeat_reason
+    reason = wait_reason(ledger, product, action) or repeat_reason(b, product, action)
+    if reason:
+        if b.get('reason') != reason:
+            scheduler.change('deliveries', b, {'reason':reason, 'verification_repeat_hold':bool(repeat_reason(b,product,action)),
+                    **({'resume_status':b['status']} if repeat_reason(b,product,action) else {})}, 'blocked' if repeat_reason(b,product,action) else None)
+        return
     if action.startswith(('review', 'repair')):
         selected = copy.deepcopy(choice['fixer' if action.startswith('repair') else 'reviewer'])
         selection(selected)

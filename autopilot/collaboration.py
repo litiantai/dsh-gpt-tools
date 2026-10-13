@@ -93,7 +93,7 @@ def reply(ledger, item, content, db, author=None):
     else:
         run = ledger.get('runs',item['run_id'],db)
         if run.get('collaboration_wait') == item['id'] and run['status']=='waiting_for_reply':
-            ledger.update('runs',run['id'],run['version'],{'collaboration_wait':None,'reason':'','call':None,'coordinator_human':None,'coordination_no_progress':0 if author=='human' else run.get('coordination_no_progress',0)},run['collaboration_resume_status'],db)
+            ledger.update('runs',run['id'],run['version'],{'collaboration_wait':None,'reason':'','call':None,'coordinator_human':None,'coordination_no_progress':0 if author=='human' else run.get('coordination_no_progress',0), 'coordination_progress_hold':False if author=='human' else run.get('coordination_progress_hold',False), 'coordination_execution_failures':0 if author=='human' else run.get('coordination_execution_failures',0)},run['collaboration_resume_status'],db)
     return item
 
 

@@ -119,6 +119,7 @@ class Control:
                     'next_inspection':product.get('last_inspect',0)+policy['inspection_seconds'],
                     'tasks_used':self.ledger.budget_used(product['id'],'development'),
                     'code_delivery_tokens_used':self.ledger.budget_used(product['id'],'code_delivery_tokens'),
+                    'code_delivery_tokens_limit':product.get('code_review',{}).get('tokens_per_day',10000000),
                     'tasks_limit':policy['runs_per_day'], **snapshot(self.ledger, product),
                     'queued':sum(r['product_id']==product['id'] and r['status']=='queued' for r in self.ledger.list('runs'))}
         if len(parts)==3 and parts[0]=='evidence' and parts[2]=='screenshot':
@@ -315,9 +316,13 @@ class Control:
             if old.get('pending_result') or old.get('uncertain'):
                 raise Conflict('当前执行结果待核对，不能重复重试')
             resume = 'syncing_release' if old['status'] == 'release_failed' else old.get('resume_status', 'preparing')
+            if old.get('verification_repeat_hold'):
+                resume = 'release_failed' if old.get('flow') == 'review_before_release' else 'repairing'
             if old.get('flow') == 'review_before_release' and resume == 'reviewing_release':
                 resume = 'syncing_release'
-            return self.ledger.update(kind, ident, old['version'], {'reason': '', 'next_attempt': 0, 'next_auto_retry_at': None, 'auto_retry_wait_reason': None}, resume)
+            return self.ledger.update(kind, ident, old['version'], {'reason': '', 'next_attempt': 0, 'next_auto_retry_at': None, 'auto_retry_wait_reason': None,
+                'delivery_progress_hold':False, 'delivery_no_progress':0, 'verification_repeat_hold':False,
+                'delivery_manual_retries':old.get('delivery_manual_retries',0)+1}, resume)
         if kind=='products':
             if action=='recover-runtime':
                 from .runtime_recovery import enabled, busy
@@ -544,13 +549,15 @@ class Control:
         if 'code_review' in config:
             from reviewers import selection
             value = config['code_review']
-            if not isinstance(value, dict) or set(value) - {'reviewer','fixer','max_revisions'}:
+            if not isinstance(value, dict) or set(value) - {'reviewer','fixer','max_revisions','tokens_per_day'}:
                 raise ValueError('代码评审配置字段无效')
             for role in ('reviewer','fixer'):
                 if role in value:
                     selection(value[role])
                     if value[role].get('reasoning_effort', 'medium') not in ('low','medium','high','xhigh','max','ultra'):
                         raise ValueError('推理强度无效')
+            if type(value.get('tokens_per_day',10000000)) is not int or value.get('tokens_per_day',10000000) < 0:
+                raise ValueError('交付每日 Token 额度必须为非负整数，0 表示不限')
             limit = value.get('max_revisions', 0)
             if type(limit) is not int or not 0 <= limit <= 20:
                 raise ValueError('自动修复轮数必须为 0 到 20，0 表示不限')

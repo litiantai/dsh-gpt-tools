@@ -36,6 +36,30 @@
     "suggestion": "请检查网络连接和服务地址。"
   },
   {
+    "code": "BUILD_FAILED",
+    "pattern": "error TS\\d+|\\bTS\\d{4}:",
+    "message": "候选代码构建或类型检查未通过。",
+    "suggestion": "请按编译诊断修复代码后重新验证。"
+  },
+  {
+    "code": "TEST_ASSERTION_FAILED",
+    "pattern": "AssertionError|Error: expect\\(|expect\\(locator\\).*failed|FAILED \\(failures=|\\bnot ok \\d+",
+    "message": "候选版本的测试断言未通过。",
+    "suggestion": "请查看失败用例及实际结果，修复后重新验证。"
+  },
+  {
+    "code": "TEST_EXECUTION_FAILED",
+    "pattern": "(?:tests/|TestCase|unittest)[\\s\\S]*(?:AttributeError|Conflict|TypeError)",
+    "message": "测试执行发生异常。",
+    "suggestion": "请核对测试代码、测试数据与执行环境。"
+  },
+  {
+    "code": "VERIFICATION_EVIDENCE_MISSING",
+    "pattern": "必需验证证据缺失",
+    "message": "必需验证证据缺失。",
+    "suggestion": "请补齐对应提交的真实验证回执。"
+  },
+  {
     "code": "REQUEST_TIMEOUT",
     "pattern": "timed?\\s*out|TimeoutError|超时",
     "message": "等待{subject}响应超时。",

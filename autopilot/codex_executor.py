@@ -253,6 +253,13 @@ def execute(action,request):
             readable += [credential]
         if action == 'validate' and record.get('id'):
             readable.append(Path(request['state_root'])/'candidates'/product['id']/record['id']/'checks')
+        if action == 'validate' and verification and verification.get('history_index'):
+            history = Path(verification['history_index']).resolve()
+            if (not history.is_relative_to(Path(request['state_root']).resolve()) or not history.is_file()
+                    or hashlib.sha256(history.read_bytes()).hexdigest() != verification.get('history_index_sha256')):
+                return {'status':'blocked','retryable':False,'failure_kind':'verification_evidence',
+                        'reason':'历史验证证据索引路径或哈希无效','evidence':str(root)}
+            readable.append(history.parent)
         quality_readonly = []
         if (request.get('quality') or {}).get('receipt'):
             quality_readonly = [Path(request['quality']['receipt']).resolve().parent]

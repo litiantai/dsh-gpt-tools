@@ -107,12 +107,12 @@ class AutoRetryTests(unittest.TestCase):
         with patch.object(self.scheduler.store,'get',return_value=review | {'human':{'decision':'blocked'}}):
             self.assertEqual(recover(self.scheduler,'runs',waiting,self.product,run['updated']+3601)['status'],'blocked')
 
-    def test_delivery_uses_same_hour_and_token_gate(self):
+    def test_delivery_uses_same_hour_and_independent_delivery_token_gate(self):
         batch=self.ledger.create('deliveries',{'product_id':self.product['id'],'reason':'Harness 执行失败',
             'resume_status':'code_review'},'blocked')
         before,_=repair_queue(self.scheduler,batch,self.product,batch['updated']+3599)
         self.assertEqual(before['status'],'blocked')
-        with patch.object(self.scheduler,'tokens_available',return_value=False):
+        with patch('autopilot.delivery_budget.snapshot',return_value={'exhausted':True}):
             waiting,_=repair_queue(self.scheduler,before,self.product,batch['updated']+3600)
             self.assertEqual(waiting['status'],'blocked')
         after,_=repair_queue(self.scheduler,waiting,self.product,batch['updated']+3601)

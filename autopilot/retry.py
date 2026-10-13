@@ -16,7 +16,7 @@ def repair_plan_changes(run):
     """返修先重新制定技术方案并评审，历史方案保留在上下文与回执中。"""
     return {'previous_plan':run.get('plan') or run.get('previous_plan'), 'plan':None,
             'plan_approved':False, 'repair_plan_required':True, 'repair_plan_review_id':None,
-            'review_id':None, 'review_packet':None}
+            'review_id':None, 'review_packet':None, 'verification_repeat_hold':False}
 
 
 def manual_run_retry(ledger, ident, version, allow_revision=False):
@@ -54,7 +54,14 @@ def manual_run_retry(ledger, ident, version, allow_revision=False):
             raise Conflict('当前阶段不支持返修，请使用原阶段重试或处理协作问题')
         exhausted = run.get('revision_exhausted') or run.get('reason', '').startswith('返修次数已用尽：')
         changes = {'control': None, 'reason': '', 'next_auto_retry_at': None, 'auto_retry_wait_reason': None,
-                   'coordination_pending': None, 'coordination_wait': '', 'revision_exhausted': False}
+                   'coordination_pending': None, 'coordination_wait': '', 'revision_exhausted': False,
+                   'verification_repeat_hold': False, 'coordination_progress_hold': False,
+                   'coordination_no_progress': 0, 'coordination_execution_failures': 0}
+        if phase == 'verifying':
+            from .verification_control import repeat_reason
+            product = ledger.get('products', run['product_id'], db)
+            if repeat_reason(run, product, 'verify'):
+                exhausted = True
         if (exhausted or allow_revision) and phase in ('planning', 'plan_review', 'developing', 'verifying', 'acceptance_review'):
             phase = 'planning'
             changes.update(repair_plan_changes(run))
@@ -104,6 +111,8 @@ def manual_run_retry(ledger, ident, version, allow_revision=False):
 def abnormal(item):
     receipts = item.get('receipts') or []
     result = (receipts[-1].get('result') or {}) if receipts else {}
+    if result.get('status') == 'fail':
+        return False
     if result.get('retryable') is False:
         return False
     if item.get('uncertain') or item.get('control') or result.get('uncertain'):
@@ -122,6 +131,9 @@ def quota_reason(scheduler, item, product, kind):
 
 def quota_reason_for(ledger, item, product, kind, tokens_available):
     """供调度和只读状态投影共用的当前额度判断。"""
+    if kind == 'deliveries':
+        from .delivery_budget import snapshot
+        return '今日交付 Token 额度已用尽，等待北京时间次日零点或调整交付额度' if snapshot(ledger,product)['exhausted'] else ''
     if not tokens_available:
         return '每日 Token 额度不足，等待额度恢复'
     phase = item.get('resume_status')

@@ -6,21 +6,6 @@ from .store import redact
 from error_messages import failure_fields, sanitize
 
 
-def verification_failure(result):
-    """依赖下载的明确网络故障保留验证阶段，不能作为代码缺陷消耗返修次数。"""
-    if result.get('status') != 'fail':
-        return result
-    failed = [c for c in result.get('checks', []) if c.get('status') != 'pass' and c.get('required', True)]
-    if not failed or any(not c.get('name', '').startswith('install-') for c in failed):
-        return result
-    network = re.compile(r'\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|ENOTFOUND)\b')
-    for check in failed:
-        detail = '\n'.join(str(check.get(k, '')) for k in ('reason', 'log_tail', 'diagnostic'))
-        if not network.search(detail):
-            return result
-    return result | {'status': 'blocked', 'failure_kind': 'dependency_network', 'retryable': True}
-
-
 def codex_failure(root, returncode):
     """从 Codex 最终失败事件提取原因；已恢复的重连事件不覆盖成功结果。"""
     terminal = ''
@@ -72,19 +57,43 @@ def codex_failure(root, returncode):
         **fields, 'detail': detail, 'exit_code': returncode, 'evidence': str(root)}
 
 
-def verification_failure(result):
-    """依赖下载的明确网络故障保留验证阶段，不能作为代码缺陷消耗返修次数。"""
-    if result.get('status') != 'fail':
+def verification_failure(result, trusted_root=None):
+    """按真实失败阶段分类，网络故障不消耗代码返修，断言失败不冒充服务超时。"""
+    if result.get('status') not in ('fail', 'blocked') or result.get('failure_kind') == 'agent_execution':
         return result
-    failed = [c for c in result.get('checks', []) if c.get('status') != 'pass' and c.get('required', True)]
-    if not failed or any(not c.get('name', '').startswith('install-') for c in failed):
-        return result
-    network = re.compile(r'\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|ENOTFOUND)\b')
-    for check in failed:
-        detail = '\n'.join(str(check.get(k, '')) for k in ('reason', 'log_tail', 'diagnostic'))
-        if not network.search(detail):
-            return result
-    return result | {'status': 'blocked', 'failure_kind': 'dependency_network', 'retryable': True}
+    from .verification_control import failed_checks, check_detail, failed_test_ids, passed_test_ids
+    failed = failed_checks(result)
+    if not failed:
+        return result | {'failure_kind': 'business', 'retryable': False} if result.get('status') == 'fail' else result
+    nested = [c.get('evidence') if isinstance(c.get('evidence'),dict) else c for c in failed]
+    if all(c.get('status') == 'blocked' for c in failed) and all(n.get('failure_kind') == 'agent_execution' for n in nested):
+        return result | {'status':'blocked','failure_kind':'agent_execution',
+                         'retryable':all(n.get('retryable') is True for n in nested)}
+    details = [(c, check_detail(c, trusted_root)) for c in failed]
+    if all(c.get('name', '').startswith('install-') for c in failed) and all(
+            re.search(r'\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|ENOTFOUND)\b', text)
+            for c, text in details):
+        return result | {'status': 'blocked', 'failure_kind': 'dependency_network', 'retryable': True}
+    kind, code = 'business', None
+    for check, text in details:
+        name = check.get('name', '')
+        if name.startswith(('build-', 'compile-', 'typecheck-')) or re.search(r'error TS\d+', text):
+            kind, code = 'build', 'BUILD_FAILED'
+            break
+        if re.search(r'AssertionError|Error: expect\(|expect\(locator\).*failed|FAILED \(failures=|\bnot ok \d+', text):
+            kind, code = 'test_assertion', 'TEST_ASSERTION_FAILED'
+            break
+        if name.startswith(('test-', 'browser-')):
+            kind, code = 'test_execution', 'TEST_EXECUTION_FAILED'
+        elif check.get('status') == 'blocked' and not check.get('failure_kind'):
+            kind, code = 'verification_evidence', 'VERIFICATION_EVIDENCE_MISSING'
+    changes = {'failure_kind': kind, 'retryable': False,
+               'status': 'blocked' if all(c.get('status') == 'blocked' for c in failed) else result['status'],
+               'failed_test_ids': sorted(set(test for _, text in details for test in failed_test_ids(text))),
+               'passed_test_ids': sorted(set(test for _, text in details for test in passed_test_ids(text)))}
+    if code:
+        changes.update(failure_fields('\n'.join(text for _, text in details), code=code))
+    return result | changes
 
 
 def harness_failure(root, returncode):

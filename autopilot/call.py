@@ -51,6 +51,9 @@ def main(request_path):
         result['timing']='monotonic'
         result['adapter_exit_code']=child.returncode
         result.setdefault('exit_code',child.returncode)
+        if request['command'][-1] in ('verify', 'validate', 'validate_release'):
+            from autopilot.failures import verification_failure
+            result = verification_failure(result, trusted_root=request.get('input', {}).get('state_root'))
         # Preserve retry classification before replacing legacy machine text.
         if result['status']=='blocked' and 'retryable' not in result:
             from autopilot.retry import abnormal

@@ -10,6 +10,14 @@ from autopilot.retry import abnormal
 
 
 class ErrorMessageTests(unittest.TestCase):
+    def test_shared_catalog_patterns_compile_in_python_and_javascript(self):
+        import subprocess,re
+        rows=json.loads((Path(__file__).resolve().parents[1]/'dashboard/src/error-catalog.json').read_text())
+        for row in rows:
+            re.compile(row['pattern'],re.I)
+        subprocess.run(['node','-e',"for (const row of JSON.parse(require('fs').readFileSync(0,'utf8'))) new RegExp(row.pattern,'i');"],
+                       input=json.dumps(rows),text=True,check=True,capture_output=True)
+
     def test_native_and_legacy_connection_refused_have_same_description(self):
         native=error_info(URLError(ConnectionRefusedError(61,'Connection refused')),'应用服务')
         legacy=error_info('<urlopen error [Errno 61] Connection refused>','应用服务')

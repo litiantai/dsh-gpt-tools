@@ -78,6 +78,16 @@ class Scheduler:
     def _start_call(self,kind,item,product,action,command,extra=None,timeout=600):
         if item.get('call'):
             return item
+        from .verification_control import repeat_reason
+        duplicate = repeat_reason(item, product, action)
+        if duplicate:
+            return self.change(kind, item, {'reason': duplicate, 'resume_status': item['status'],
+                               'verification_repeat_hold': True}, 'blocked')
+        if kind == 'deliveries':
+            from .delivery_budget import wait_reason
+            budget_wait = wait_reason(self.ledger, product, action)
+            if budget_wait:
+                return self.change(kind, item, {'reason': budget_wait}) if item.get('reason') != budget_wait else item
         # 派发锁内再次核对占用；等待不消费 Watch 授权、额度或启动进程。
         if kind == 'runs':
             from .resources import ResourceSlots, ACTION_PHASES
@@ -168,8 +178,22 @@ class Scheduler:
             return False
 
     def consume(self,kind,item,result):
+        action = item['call']['action']
+        if action in ('verify', 'validate', 'validate_release'):
+            from .failures import verification_failure
+            result = verification_failure(result, trusted_root=self.root)
         receipt={'call_id':item['call']['id'],'action':item['call']['action'],
                  'at':time.time(),'result':redact(result)}
+        if action in ('verify', 'validate', 'validate_release'):
+            from .verification_control import identity
+            product = self.ledger.get('products', item['product_id'])
+            record = item
+            path = item['call'].get('path')
+            if path and Path(path).is_file():
+                request = json.loads(Path(path).read_text())
+                record = request.get('input', {}).get('record', record)
+                product = request.get('input', {}).get('product', product)
+            receipt['verification_identity'] = identity(record, product, action)
         from .evidence import receipt as save_receipt
         saved=save_receipt(self.ledger,kind,item,receipt)
         receipt['evidence_id']=saved['id']

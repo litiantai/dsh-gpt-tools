@@ -64,7 +64,7 @@ def protected(run, delegated=False):
 
 def delegated_question(ledger, product, run, db=None):
     """项目显式授权后，Watch 可回答自己提交的技术协调问题；保留真实人工控制。"""
-    if not config(product)['human_authority'] or run['status'] != 'waiting_for_reply':
+    if run.get('coordination_progress_hold') or not config(product)['human_authority'] or run['status'] != 'waiting_for_reply':
         return None
     ident = run.get('coordinator_human')
     if not ident or ident != run.get('collaboration_wait') or run.get('collaboration_resume_status') != 'blocked':
@@ -99,8 +99,12 @@ def progress(run):
     from .role_skills import ROOT
     compare = runpy.run_path(str(ROOT/'dsh-role-coordinator/scripts/compare_progress.py'))['compare']
     value = compare(baseline, current)
+    observed = value['fresh_evidence']
+    latest = (run.get('receipts') or [{}])[-1].get('result', {})
+    execution_failure = not observed and latest.get('failure_kind') in ('agent_execution','dependency_network')
     return {'coordination_progress': value, 'coordination_progress_marker': marker,
-            'coordination_no_progress': 0 if value['improved'] else run.get('coordination_no_progress', 0) + 1,
+            'coordination_no_progress': 0 if value['improved'] else run.get('coordination_no_progress', 0) + int(observed),
+            'coordination_execution_failures': run.get('coordination_execution_failures', 0) + 1 if execution_failure else 0,
             'coordination_baseline': None}
 
 
@@ -309,6 +313,18 @@ def apply(scheduler, decision, result):
         if not isinstance(strategy, str) or not strategy.strip():
             return finish('blocked', '缺少具体处理策略')
         instruction = strategy + '\n帮助方案：\n' + json.dumps(changes['help_plan'], ensure_ascii=False, indent=2)
+        if action in ('repair','verify') and (run.get('coordination_no_progress', 0) >= 2 or run.get('coordination_execution_failures', 0) >= 3):
+            reason = '连续验证没有改善或执行故障反复出现；停止自动追加，请人工确认新的诊断或修复方向'
+            if not question:
+                run = human(ledger, run, reason, db)
+            ledger.update('runs', run['id'], run['version'], {'coordination_progress_hold': True, 'reason': reason}, db=db)
+            return finish('needs_human', reason)
+        if action == 'verify':
+            from .verification_control import repeat_reason
+            reason = repeat_reason(run, product, 'verify')
+            if reason:
+                return finish('blocked', reason)
+
         if question and action in ('repair', 'verify', 'assist'):
             phase = 'verifying' if action == 'verify' else result.get('resume_phase')
             if action == 'repair' and phase not in ('planning', 'developing'):
@@ -343,9 +359,6 @@ def apply(scheduler, decision, result):
             phase = 'verifying' if action == 'verify' else result.get('resume_phase')
             if run['status'] != 'blocked' or phase not in ('planning','developing','verifying') or (action == 'repair' and phase == 'verifying'):
                 return finish('blocked', '当前任务不能恢复到建议阶段')
-            if run.get('coordination_no_progress', 0) >= 2 and not config(product)['human_authority']:
-                human(ledger, run, '连续两轮没有可验证进展：' + strategy, db)
-                return finish('needs_human', '停止自动追加，等待人工回复')
             # 调度方案只授权一轮；技术修复方案必须重新生成并通过方案评审。
             phase = 'planning' if action == 'repair' else phase
             ledger.update('runs', run['id'], run['version'], {'coordination_pending': {
@@ -494,12 +507,16 @@ def tick(scheduler, now=None):
                 continue
         for run in ledger.scoped('runs', pid):
             if run['status'] == 'blocked' and not protected(run):
+                if run.get('coordination_progress_version') != 2:
+                    run = scheduler.change('runs', run, {'legacy_coordination_no_progress':run.get('coordination_no_progress',0),
+                        'coordination_no_progress':0, 'coordination_progress_version':2})
                 changes = progress(run)
                 if changes:
                     run = scheduler.change('runs', run, changes)
-                if run.get('coordination_no_progress', 0) >= 2 and not config(product)['human_authority']:
+                if run.get('coordination_no_progress', 0) >= 2 or run.get('coordination_execution_failures', 0) >= 3:
                     with ledger.store.transaction() as db:
-                        human(ledger, ledger.get('runs', run['id'], db), '连续两轮没有可验证进展，请补充修复方向或新的证据。', db)
+                        held = human(ledger, ledger.get('runs', run['id'], db), '连续验证无改善或执行故障重复，请人工补充修复方向或新的诊断证据。', db)
+                        ledger.update('runs', held['id'], held['version'], {'coordination_progress_hold':True}, db=db)
         material = snapshot(ledger, product)
         watch = watch_summary(material)
         with ledger.store.transaction() as db:

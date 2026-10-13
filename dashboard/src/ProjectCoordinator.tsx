@@ -31,7 +31,7 @@ export default function ProjectCoordinator({pid,settings=false}:{pid?:string;set
     }catch(e){message.error(errorText(e));}finally{setBusy(false);}
   };
   return <Space direction="vertical" style={{width:'100%'}} size="middle">
-    <Alert type="info" showIcon message="每项目一个协调 Agent" description={'每 5 分钟核对需求与任务状态，先记录协调方案；返修重新制定技术方案、通过方案评审后再开发。' + (value?.config.human_authority?'Watch 已获协调决策授权，可评估并回答技术返修问题，逐轮决定修复或协助；保留人工暂停、取消和正式验收。':'连续两轮无进展时转人工。')}/>
+    <Alert type="info" showIcon message="每项目一个协调 Agent" description={'每 5 分钟核对需求与任务状态，先记录协调方案；返修重新制定技术方案、通过方案评审后再开发。' + (value?.config.human_authority?'Watch 已获协调决策授权，可评估并回答技术返修问题，逐轮决定修复或协助；连续两轮验证无改善仍须人工诊断，不绕过预算、暂停、取消和正式验收。':'连续两轮无进展时转人工。')}/>
     {data.error && <Alert type="error" message={errorText(data.error)}/>}
     {value && <Descriptions column={2} items={[
       {key:'state',label:'当前状态',children:<Tag>{value.enabled?(states[value.instance.status]||value.instance.status):'已停用或项目暂停'}</Tag>},
@@ -49,7 +49,7 @@ export default function ProjectCoordinator({pid,settings=false}:{pid?:string;set
     ]}/>}
     {settings && <Form component={false} form={form} layout="vertical" onValuesChange={()=>setDirty(true)} disabled={busy}>
       <Form.Item name="enabled" label="启用项目协调" valuePropName="checked"><Switch/></Form.Item>
-      <Form.Item name="human_authority" label="授权 Watch 代行人工协调决策" valuePropName="checked" extra="由 AI 评估并回答技术返修问题，先保存方案再逐轮执行；保留人工暂停、取消及正式验收。"><Switch/></Form.Item>
+      <Form.Item name="human_authority" label="授权 Watch 代行人工协调决策" valuePropName="checked" extra="由 AI 评估并回答技术返修问题，先保存方案再逐轮执行；连续两轮验证无改善仍须人工诊断，不绕过预算、暂停、取消及正式验收。"><Switch/></Form.Item>
       <Form.Item name="model" label="独立协调模型" extra="不指定时沿用项目验收模型。修改只影响后续评估。"><ReviewerSelect connection={()=>({})}/></Form.Item>
       <Space><Button onClick={()=>{form.setFieldValue('model',null);setDirty(true);}}>沿用验收模型</Button><Button type="primary" loading={busy} onClick={()=>void act('settings')}>保存协调设置</Button></Space>
     </Form>}

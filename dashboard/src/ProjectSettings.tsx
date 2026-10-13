@@ -32,7 +32,7 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
   const initialValues=useRef<Record<string,unknown>>({});
   const baseConfig=useRef<Record<string,unknown>>({});
   const {message}=App.useApp();
-  const automation=useData<{tokens_used:number;code_delivery_tokens_used?:number;tasks_used:number;tokens_limit:number;tasks_limit:number;queued:number;next_inspection:number;deepseek_schedule?:{enabled:boolean;peak:boolean;next_allowed_at:number|null;holiday_calendar_known:boolean;holiday_calendar_year:number}}>(project?`/products/${project.id}/automation`:'/autopilot/workbench-empty');
+  const automation=useData<{tokens_used:number;code_delivery_tokens_used?:number;code_delivery_tokens_limit?:number;tasks_used:number;tokens_limit:number;tasks_limit:number;queued:number;next_inspection:number;deepseek_schedule?:{enabled:boolean;peak:boolean;next_allowed_at:number|null;holiday_calendar_known:boolean;holiday_calendar_year:number}}>(project?`/products/${project.id}/automation`:'/autopilot/workbench-empty');
   const projects=useData<{id:string;name:string}[]>('/products');
   const runs=useData<{id:string;status:string}[]>('/runs');
   useEffect(()=>{
@@ -40,7 +40,7 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
       const roles=project.agents as Record<string,unknown> | undefined;
       form.setFieldsValue({related_projects:project.related_projects||[],project_role:project.project_role||'auto',runtime_recovery:project.runtime_recovery || {enabled:false},goal:project.goal,agents:{inspection_design:{provider:'codex',model:'gpt-6.1-sol'},...project.agents as object},policy:{tokens_per_day:0,deepseek_off_peak_only:true,execution_call_seconds:900,...project.policy as object},
         git:project.git || {url:'',base_branch:'master',enabled:false},
-        code_review:{reviewer:roles?.acceptance,fixer:roles?.implementation,max_revisions:0,...project.code_review as object}});
+        code_review:{reviewer:roles?.acceptance,fixer:roles?.implementation,max_revisions:0,tokens_per_day:10000000,...project.code_review as object}});
       initialValues.current=structuredClone(form.getFieldsValue(true));
       loadedVersion.current=project.version;
       baseConfig.current=structuredClone({related_projects:project.related_projects??null,project_role:project.project_role??null,runtime_recovery:project.runtime_recovery ?? null,goal:project.goal ?? null,agents:project.agents ?? null,policy:project.policy ?? null,git:project.git ?? null,code_review:project.code_review ?? null});
@@ -81,7 +81,7 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
     {!!project.evaluation_id && <Alert type="warning" showIcon message="当前仍受评测批次数量限制" description="完成评测后切换持续运行，后续需求按每日额度排队，验收通过后进入发布。" action={<Button disabled={busy} onClick={()=>void mode('continuous')}>切换持续运行</Button>}/>}
     {project.nightly_attribution===true && <Alert type="info" message="每晚统一归因" description="白天按巡检间隔采集证据；每天北京时间 19:00 全部归因并生成当日需求。需求发现调用次数限制不适用于晚间归因，开发仍遵守每日需求和 Token 上限。"/>}
     {automation.data && <p className="muted">今日需求 {automation.data.tasks_used} / {automation.data.tasks_limit || '不限'} · 今日 Token {automation.data.tokens_used.toLocaleString()} / {automation.data.tokens_limit || '不限'} · 排队 {automation.data.queued} 项 · 下次巡检 {automation.data.next_inspection<Date.now()/1000?'等待调度':time(automation.data.next_inspection)}</p>}
-    {automation.data && <p className="muted">今日代码交付评审、修复及复验：{(automation.data.code_delivery_tokens_used || 0).toLocaleString()} Token，单独记账，不占开发每日额度。</p>}
+    {automation.data && <p className="muted">今日代码交付评审、修复及复验：{(automation.data.code_delivery_tokens_used || 0).toLocaleString()} / {automation.data.code_delivery_tokens_limit || '不限'} Token，单独记账，不占开发每日额度。</p>}
     {hasRunningTasks && <Alert type="info" showIcon message="任务执行中，可调整额度、DeepSeek 时段开关及代码评审模型" description="配置仅影响后续调用；开发模型及其他执行策略在任务结束后修改。"/>}
     {saveError && <Alert type="error" showIcon message="保存失败，当前修改已保留" description={<ErrorNotice value={saveError}/>}/>}
     <Form form={form} layout="vertical" disabled={busy} onValuesChange={()=>setDirty(true)}>
@@ -106,6 +106,7 @@ export default function ProjectSettings({project,reload,tab,onTabChange,hasRunni
             <Form.Item name={['git','url']} label="GitHub 仓库地址"><Input placeholder="https://github.com/owner/repository" disabled={gitLocked}/></Form.Item>
             <Form.Item name={['git','base_branch']} label="目标分支"><Input disabled={gitLocked}/></Form.Item>
             <Form.Item name={['git','enabled']} label="启用每日 Git 交付" valuePropName="checked"><Switch disabled={hasRunningTasks}/></Form.Item>
+            <Form.Item name={['code_review','tokens_per_day']} label="交付每日 Token 上限" extra="评审、返修与独立验证共用；0 表示不限，超限等待北京时间次日零点。合并已通过成果不受此限制。" rules={[{type:'number',min:0}]}><InputNumber min={0} precision={0}/></Form.Item>
             <Form.Item name={['code_review','max_revisions']} label="每批次每日自动修复轮数" extra="0 表示不限；用尽后修复排队至北京时间次日零点，已通过评审与验证的成果继续合入主分支。" rules={[{type:'number',min:0,max:20}]}><InputNumber min={0} max={20} precision={0}/></Form.Item>
           </div>
           <GitHubTokenSettings productId={project.id} configuredRepository={!!(project.git as {url?:string})?.url} reload={reload}/>

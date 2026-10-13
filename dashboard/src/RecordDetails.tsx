@@ -34,7 +34,7 @@ const names: Record<string, string> = {
   problem_resolved:'原需求效果已验证',uncertain:'执行结果尚待核对',pause_verified:'暂停证据已核实',
   observation:'仅作观察',source_unchanged:'源码未发生变化',processes_stopped:'执行进程已停止',
   signals:'发现的信号',source:'信号来源',component:'影响模块',classification:'处理分类',in_scope:'属于项目范围',
-  priority:'优先级',queue_first:'优先排队',queue_first_at:'手动入池时间',manual_requirement_id:'手动关联需求',count:'累计出现次数',extra_revisions:'额外返修次数',coordination_no_progress:'连续无进展轮数',coordination_progress:'修复进展',coordination_pending:'待执行协调授权',coordination_reason:'协调依据',coordination_wait:'协调等待原因',role_skill:'角色技能快照',revisions:'累计返修次数',execution_seconds:'累计执行耗时',extra_execution_seconds:'授权追加执行时间',execution_grants:'执行时间授权记录',execution_budget:'当前执行预算',used_seconds:'已执行秒数',initial_seconds:'每轮预算秒数',extra_seconds:'追加预算秒数',limit_seconds:'累计授权秒数',remaining_seconds:'剩余秒数',call_seconds:'下次调用最多秒数',grant_id:'授权编号',added_seconds:'本次追加秒数',failure_reason:'实际阻塞原因',source_context:'本轮读取源码',
+  priority:'优先级',queue_first:'优先排队',queue_first_at:'手动入池时间',manual_requirement_id:'手动关联需求',count:'累计出现次数',extra_revisions:'额外返修次数',coordination_no_progress:'连续验证无改善轮数',coordination_execution_failures:'连续执行故障次数',coordination_progress_hold:'无进展停止自动返修',legacy_coordination_no_progress:'旧版无进展计数',delivery_no_progress:'交付连续无改善轮数',delivery_progress_hold:'交付返修待人工诊断',delivery_manual_retries:'交付人工重试次数',failed_test_ids:'失败用例',passed_test_ids:'已通过用例',resolved_tests:'本轮修复通过的用例',new_failed_tests:'本轮新发现的失败用例',verification_repeat_hold:'同版本复验已停止',coordination_progress:'修复进展',coordination_pending:'待执行协调授权',coordination_reason:'协调依据',coordination_wait:'协调等待原因',role_skill:'角色技能快照',revisions:'累计返修次数',execution_seconds:'累计执行耗时',extra_execution_seconds:'授权追加执行时间',execution_grants:'执行时间授权记录',execution_budget:'当前执行预算',used_seconds:'已执行秒数',initial_seconds:'每轮预算秒数',extra_seconds:'追加预算秒数',limit_seconds:'累计授权秒数',remaining_seconds:'剩余秒数',call_seconds:'下次调用最多秒数',grant_id:'授权编号',added_seconds:'本次追加秒数',failure_reason:'实际阻塞原因',source_context:'本轮读取源码',
   passed:'通过数量',blocked:'阻塞数量',target:'目标数量',target_count:'评测任务数',target_phase:'评测终点',
   method:'巡查方式',environment:'执行环境',results:'各项结果',steps:'巡查步骤',
   at:'记录时间',created:'创建时间',updated:'更新时间',started:'开始时间',finished:'结束时间',
@@ -59,7 +59,7 @@ const values: Record<string,string> = {
   basic:'基础健康检查（兼容旧版）',full:'完整认证监测','thsoctop-basic-status':'旧版基础状态接口','thsoctop-monitor-v1':'认证运行监测协议',
   investigate:'调查取证',investigating:'调查取证中',awaiting_external:'等待外部条件（自动复查）',resolved:'调查确认已解决',waiting:'等待外部条件',
   ...labels,pass:'通过',fail:'未通过',skipped:'未执行',busy:'暂不具备执行条件',observed:'已记录，尚待判断',
-  agent_execution:'Agent 运行异常（不代表代码评审结论）',
+  agent_execution:'Agent 运行异常（不代表代码评审结论）',dependency_network:'依赖下载网络故障',test_assertion:'测试断言失败',test_execution:'测试执行异常',verification_evidence:'验证证据缺失',
   repair_feature:'修复 feat 评审问题',repair_release:'修复 release 验证问题',repair:'问题修复',review:'代码评审',
   delivered:'已交付未上线',online:'已上线',collecting:'等待 23:30 统一验证',validating:'release 统一验证',review_failed:'代码评审失败',merging_feature:'评审通过 · 合入 release',repairing_feature:'修复评审问题',syncing_feature:'同步评审 MR',syncing_release:'同步上线 MR',reviewing_release:'release 变更复审',repairing_release:'修复验证问题',release_failed:'统一验证失败',review_feature:'Code Review · feat → release',review_release:'release 变更复审',validate_release:'release 统一验证',merge_feature:'合入 release',merge_release:'合入 master',code_review:'代码评审',repairing:'问题修复',awaiting_merge:'待合并',syncing:'同步主分支',merging:'确认合并',preparing:'整合验收成果',
   abnormal:'异常',accepted:'业务验收通过，待交付',pending:'待处理',queued:'排队等待',reviewed:'已评估',classified:'已生成需求',
@@ -111,9 +111,10 @@ export function RecordValue({value,field='',depth=0}:{value:unknown;field?:strin
   if(field==='receipts')return <ReceiptList value={parsed}/>;
   if(Array.isArray(parsed))return parsed.length?<div className="record-items">{parsed.map((item,index)=><div key={index} className="record-item"><RecordValue value={item} depth={depth+1}/></div>)}</div>:<span className="muted">暂无记录</span>;
   if(isRecord(parsed)) {
-    const entries=Object.entries(parsed).filter(([key,item])=>names[key] && item!==undefined && item!==null && !(parsed.error_info && ['reason','error','summary','actual','detail','error_info','diagnostic'].includes(key)));
+    const entries=Object.entries(parsed).filter(([key,item])=>names[key] && item!==undefined && item!==null && !(!['pass','completed','done','approve'].includes(String(parsed.status)) && parsed.error_info && ['reason','error','summary','actual','detail','error_info','diagnostic'].includes(key)));
     const extra=Object.keys(parsed).filter(key=>!names[key]);
-    return <div className="record-value">{!!parsed.error_info && <ErrorNotice value={parsed}/>} {entries.length>0?<Descriptions size="small" column={1} items={entries.map(([key,item])=>({key,label:names[key],children:['summary','actual'].includes(key) && ['fail','failed','blocked'].includes(String(parsed.status))?<ErrorNotice value={item}/>:<RecordValue value={item} field={key} depth={depth+1}/>}))}/>:<span className="muted">这条记录只有技术字段，可展开原始数据查看。</span>}{extra.length>0 && !parsed.error_info && <RawRecord value={parsed}/>}</div>;
+    const success=['pass','completed','done','approve'].includes(String(parsed.status));
+    return <div className="record-value">{!!parsed.error_info && !success && <ErrorNotice value={parsed}/>} {entries.length>0?<Descriptions size="small" column={1} items={entries.map(([key,item])=>({key,label:names[key],children:success && key==='reason'?<span className="record-text">{String(item)}</span>:['summary','actual'].includes(key) && ['fail','failed','blocked'].includes(String(parsed.status))?<ErrorNotice value={item}/>:<RecordValue value={item} field={key} depth={depth+1}/>}))}/>:<span className="muted">这条记录只有技术字段，可展开原始数据查看。</span>}{extra.length>0 && !parsed.error_info && <RawRecord value={parsed}/>}</div>;
   }
   if(typeof parsed==='boolean')return <span>{field==='problem_resolved'?(parsed?'已验证':'尚未验证'):parsed?'是':'否'}</span>;
   if(timeFields.has(field) && (typeof parsed==='number' || typeof parsed==='string'))return <span>{time(parsed)}</span>;
