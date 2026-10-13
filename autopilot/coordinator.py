@@ -701,11 +701,20 @@ def evaluate(request):
     from .role_skills import read, output_schema
     schema = output_schema('coordinate')
     fields = schema['properties']
+    material = request['record']['material']
+    instruction = read('dsh-role-coordinator/references/decisions.md')
+    controllable = any((not task.get('protected') and task.get('status') in ('blocked','queued')) or
+                       task.get('delegated_question') for task in material.get('tasks', []))
+    if not controllable:
+        task_actions = {'repair','verify','assist','reprioritize','human'}
+        for properties in (fields, fields['operations']['items']['properties']):
+            properties['action']['enum'] = [action for action in properties['action']['enum'] if action not in task_actions]
+            properties['run_id']['enum'] = ['']
+        instruction += '\n本轮 tasks 为空或没有可操控的当前任务；本轮契约已移除所有任务动作，run_id 必须为空字符串。只能等待、调查 actionable 需求或依据当前项目问题提出需求；组合方案也遵守此限制。不得引用历史任务补齐当前目标。'
     from .role_skills import ROOT
     validator = runpy.run_path(str(ROOT/'dsh-role-coordinator/scripts/validate_output.py'))['validate']
     result = run_model('coordinate', request | {'budget_kind': 'coordination_tokens'},
-        request['record']['selection'], request['record']['material'],
-        read('dsh-role-coordinator/references/decisions.md'), fields)
+        request['record']['selection'], material, instruction, fields)
 
     if result.get('status') == 'pass':
         try:

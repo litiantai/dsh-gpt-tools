@@ -711,6 +711,56 @@ class CoordinatorTests(unittest.TestCase):
         record['last_review_result']['issues']=['新的回归']
         self.assertFalse(c.progress(record)['coordination_progress']['improved'])
 
+    def test_unavailable_task_contract_excludes_historical_run_actions_and_keeps_requirement_actions(self):
+        decision, output = self.decide(action='repair', reason='修复旧任务', summary='旧任务')
+        for tasks in ([], [{'id':'historical','version':7,'status':'blocked','protected':True}],
+                      [{'id':'active','version':8,'status':'planning','protected':False}]):
+            with self.subTest(tasks=tasks):
+                request = {'product':self.product, 'record':decision | {'material':decision['material'] | {'tasks':tasks}}}
+                with patch('autopilot.intelligence_worker.run_model', return_value=output) as model:
+                    result = c.evaluate(request)
+                self.assertEqual(result['status'], 'blocked')
+                fields = model.call_args.args[5]
+                for properties in (fields, fields['operations']['items']['properties']):
+                    self.assertTrue({'repair','verify','assist','reprioritize','human'}.isdisjoint(properties['action']['enum']))
+                    self.assertTrue({'investigate_requirement','propose_requirement'} <= set(properties['action']['enum']))
+                    self.assertEqual(properties['run_id']['enum'], [''])
+                self.assertIn('本轮 tasks 为空或没有可操控', model.call_args.args[4])
+
+    def test_controllable_task_contract_retains_original_actions_and_delegated_targets(self):
+        from autopilot.role_skills import output_schema
+        original = output_schema('coordinate')['properties']
+        decision, output = self.decide(reason='需要返修', summary='当前阻塞')
+        for tasks in (decision['material']['tasks'],
+                      [{'id':'delegated','version':2,'status':'waiting_for_reply','protected':False,
+                        'delegated_question':{'id':'question','version':3}}]):
+            with self.subTest(tasks=tasks):
+                request = {'product':self.product, 'record':decision | {'material':decision['material'] | {'tasks':tasks}}}
+                with patch('autopilot.intelligence_worker.run_model', return_value=output) as model:
+                    self.assertEqual(c.evaluate(request)['status'], 'pass')
+                self.assertEqual(model.call_args.args[5], original)
+
+    def test_taskless_model_contract_still_allows_both_waiting_requirement_investigations(self):
+        self.ledger.update('runs', self.run['id'], self.run['version'], {}, 'accepted')
+        first = self.waiting_requirement()
+        second = self.waiting_requirement(title='补齐仓库扫描证据')
+        decision, output = self.decide(action='execute_plan', run_id='', run_version=0,
+            reason='调查当前两条需求', summary='取得原问题证据')
+        output['operations'] = [{'action':'investigate_requirement','run_id':'','run_version':0,
+            'strategy':'取得原问题的实际证据','resume_phase':'','to_role':'','priority':10,
+            'requirement_id':req['id'],'requirement_version':req['version'],
+            'source_kind':'','source_id':'','source_version':0,'requirement':None} for req in (first, second)]
+        self.assertEqual(decision['material']['tasks'], [])
+        with patch('autopilot.intelligence_worker.run_model', return_value=output) as model:
+            result = c.evaluate({'product':self.product,'record':decision})
+        self.assertEqual(result['status'], 'pass', result)
+        self.assertEqual(c.apply(self.scheduler, decision, result)['status'], 'applied')
+        for req in (first, second):
+            self.assertEqual(self.ledger.get('requirements', req['id'])['status'], 'pending')
+        malicious = output | {'operations':[output['operations'][0] | {'run_id':self.run['id']}]}
+        with patch('autopilot.intelligence_worker.run_model', return_value=malicious):
+            self.assertEqual(c.evaluate({'product':self.product,'record':decision})['status'], 'blocked')
+
     def test_malformed_model_contract_is_blocked(self):
         d,_=self.decide()
         with patch('autopilot.intelligence_worker.run_model',return_value={'status':'pass','action':'repair'}):
