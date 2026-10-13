@@ -19,7 +19,12 @@ def public_addresses(host, port):
     """Fake-IP 域名通过固定 DoH 服务还原；真实内网结果仍拒绝访问。"""
     addresses = {a[4][0] for a in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)}
     fake = ipaddress.ip_network('198.18.0.0/15')
-    if addresses and all(ipaddress.ip_address(a) in fake for a in addresses):
+    real_addresses = {a for a in addresses if ipaddress.ip_address(a) not in fake}
+    if any(not is_public(a) for a in real_addresses):
+        raise ValueError('来源解析到了非公网地址')
+    if real_addresses:
+        return sorted(real_addresses)
+    if addresses:
         # 不接受模型提供的解析器，也不连接本机代理的 Fake-IP。
         from urllib.parse import urlencode
         connection = http.client.HTTPConnection('cloudflare-dns.com', 443, timeout=10)

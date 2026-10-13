@@ -188,6 +188,28 @@ class IntelligenceTests(unittest.TestCase):
         self.act('chat_messages',{'conversation_id':conversation['id'],'content':'停用竞品 Example'})
         self.assertEqual(self.ledger.get('competitors',competitor['id'])['status'],'disabled')
 
+    def test_successful_competitor_discovery_preserves_sanitized_relevance_after_error_presentation(self):
+        from error_messages import present_errors
+        source='https://cursor.com/'
+        canary='research-relevance-key-canary'
+        reason='Cursor 提供 AI coding agent 和代码审查能力，面向相同研发用户；官方介绍：'+source+'；api_key='+canary
+        result=present_errors({'status':'pass','reason':'','summary':'已发现相关竞品','competitors':[{
+            'name':'Cursor','reason':reason,'urls':[source],
+            'verified_sources':[{'url':source,'status':'pass','fingerprint':'cursor-source','content':'Cursor AI coding agent'}]}]})
+        self.assertNotIn(canary,json.dumps(result))
+        item=self.act('research_jobs',{'action':'find_competitors'})
+        self.ledger.update('research_jobs',item['id'],item['version'],{
+            'receipts':[{'call_id':'research-relevance','result':result}]},'running')
+        stored=self.ledger.get('research_jobs',item['id'])
+        finish(self.scheduler,'research_jobs',stored,stored['receipts'][-1]['result'])
+        competitors=self.ledger.scoped('competitors',self.product['id'])
+        self.assertEqual(len(competitors),1)
+        self.assertEqual(competitors[0]['reason'],reason.replace(canary,'[已隐藏]'))
+        self.assertEqual(competitors[0]['origin'],'ai')
+        self.assertEqual(competitors[0]['status'],'active')
+        self.assertNotIn(canary,json.dumps(competitors))
+        self.assertEqual(self.ledger.get('research_jobs',item['id'])['status'],'completed')
+
     def test_human_collaboration_reply_in_pure_chat(self):
         run=self.run_record()
         wait_run(self.scheduler,run,'develop',self.question('human'),'human-call')

@@ -78,6 +78,25 @@ class ResearchInputs(unittest.TestCase):
             with self.assertRaises(ValueError):public_addresses('private.example',443)
             connection.assert_not_called()
 
+    def test_fake_ip_mixed_with_public_addresses_uses_only_public_results(self):
+        for public in (['93.184.216.34'],['2606:4700::1111'],['93.184.216.34','2606:4700::1111']):
+            with self.subTest(public=public):
+                dns=[(socket.AF_INET6 if ':' in address else socket.AF_INET,socket.SOCK_STREAM,6,'',(address,443)) for address in ['198.18.0.1']+public]
+                with patch('autopilot.research.socket.getaddrinfo',return_value=dns),patch('autopilot.research.http.client.HTTPConnection') as connection,patch('autopilot.research.socket.create_connection') as connect:
+                    self.assertEqual(public_addresses('example.com',443),sorted(public))
+                    connection.assert_not_called()
+                    connect.assert_not_called()
+
+    def test_mixed_dns_results_with_private_addresses_are_rejected_without_connection(self):
+        for addresses in (['198.18.0.1','10.0.0.1'],['93.184.216.34','10.0.0.1'],['198.18.0.1','93.184.216.34','10.0.0.1'],['2606:4700::1111','fd00::1']):
+            with self.subTest(addresses=addresses):
+                dns=[(socket.AF_INET6 if ':' in address else socket.AF_INET,socket.SOCK_STREAM,6,'',(address,443)) for address in addresses]
+                with patch('autopilot.research.socket.getaddrinfo',return_value=dns),patch('autopilot.research.http.client.HTTPConnection') as connection,patch('autopilot.research.socket.create_connection') as connect:
+                    with self.assertRaisesRegex(ValueError,'来源解析到了非公网地址'):
+                        fetch('https://example.com')
+                    connection.assert_not_called()
+                    connect.assert_not_called()
+
     def test_multicast_and_reserved_addresses_are_not_public_sources(self):
         for url in ('http://224.0.0.1/','http://240.0.0.1/','http://[ff00::1]/','http://169.254.169.254/'):
             with self.assertRaises(ValueError):normalize_url(url)

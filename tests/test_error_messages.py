@@ -39,6 +39,63 @@ class ErrorMessageTests(unittest.TestCase):
                                  'provider': 'codex', 'reason': '模型执行失败：TimeoutError'})
         self.assertEqual(failed['error_info']['code'], 'REQUEST_TIMEOUT')
 
+    def test_discovered_competitor_keeps_english_relevance_and_nested_source_errors(self):
+        reason = 'Same audience and Error recovery in /Users/example/product/API.md; docs https://example.test/api?token=source-secret; api_key=private-key'
+        result = present_errors({'status': 'pass', 'competitors': [{
+            'name': 'Example', 'urls': ['https://example.test/'], 'reason': reason,
+            'verified_sources': [{'status': 'failed', 'reason': 'TimeoutError', 'url': 'https://example.test/'}]}]})
+        candidate = result['competitors'][0]
+        self.assertIn('Same audience and Error recovery', candidate['reason'])
+        self.assertIn('/Users/example/product/API.md', candidate['reason'])
+        self.assertIn('https://example.test/api', candidate['reason'])
+        self.assertNotIn('error_info', candidate)
+        self.assertNotIn('private-key', json.dumps(result))
+        self.assertNotIn('source-secret', json.dumps(result))
+        self.assertEqual(candidate['verified_sources'][0]['error_info']['code'], 'REQUEST_TIMEOUT')
+        self.assertNotEqual(candidate['verified_sources'][0]['reason'], 'TimeoutError')
+        self.assertEqual(present_errors(result), result)
+
+    def test_saved_competitor_relevance_is_preserved_for_all_lifecycle_states(self):
+        reason = 'Related workflow using https://example.test/docs and /tmp/research.json; token=private-token'
+        for status in ('active', 'disabled', 'merged'):
+            with self.subTest(status=status):
+                result = present_errors({'name': 'Example', 'urls': ['https://example.test/'],
+                                         'identity': 'example.test/example', 'status': status, 'reason': reason})
+                self.assertEqual(result['reason'], sanitize(reason))
+                self.assertNotIn('error_info', result)
+                self.assertEqual(present_errors(result), result)
+
+    def test_old_localized_competitor_relevance_is_recovered_from_original(self):
+        reason = 'Same users; compare https://example.test/API and APIError handling; api_key=private-key'
+        legacy = {'name': 'Example', 'urls': ['https://example.test/'], **failure_fields(reason)}
+        legacy['diagnostic'] = {'original': {'reason': reason}}
+        result = present_errors({'status': 'pass', 'competitors': [legacy]})
+        candidate = result['competitors'][0]
+        self.assertEqual(candidate['reason'], sanitize(reason))
+        self.assertNotIn('error_info', candidate)
+        self.assertNotIn('private-key', json.dumps(result))
+        self.assertEqual(present_errors(result), result)
+
+    def test_competitor_context_does_not_change_execution_failure_classification(self):
+        result = present_errors({'status': 'blocked', 'reason': 'TimeoutError', 'competitors': [{
+            'name': 'Example', 'urls': ['https://example.test/'], 'reason': 'Same users'},
+            {'status': 'failed', 'reason': 'Connection refused'}]})
+        self.assertEqual(result['error_info']['code'], 'REQUEST_TIMEOUT')
+        self.assertNotEqual(result['reason'], 'TimeoutError')
+        self.assertEqual(result['competitors'][0]['reason'], 'Same users')
+        self.assertEqual(result['competitors'][1]['error_info']['code'], 'CONNECTION_REFUSED')
+        unrelated = present_errors({'name': 'Example', 'urls': ['https://example.test/'], 'reason': 'TimeoutError'})
+        self.assertEqual(unrelated['error_info']['code'], 'REQUEST_TIMEOUT')
+
+    def test_competitor_relevance_does_not_hide_other_error_fields(self):
+        result = present_errors({'competitors': [{'name': 'Example', 'urls': ['https://example.test/'],
+                                                 'reason': 'Same audience', 'reporting_error': 'Connection refused'}]})
+        candidate = result['competitors'][0]
+        self.assertEqual(candidate['reason'], 'Same audience')
+        self.assertEqual(candidate['error_info']['code'], 'CONNECTION_REFUSED')
+        self.assertEqual(candidate['diagnostic']['original'], {'reporting_error': 'Connection refused'})
+        self.assertEqual(present_errors(result), result)
+
     def test_native_and_legacy_connection_refused_have_same_description(self):
         native=error_info(URLError(ConnectionRefusedError(61,'Connection refused')),'应用服务')
         legacy=error_info('<urlopen error [Errno 61] Connection refused>','应用服务')

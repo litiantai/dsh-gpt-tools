@@ -2,11 +2,18 @@ import {useState} from 'react';
 import {useInfiniteQuery} from '@tanstack/react-query';
 import {App, Button} from 'antd';
 import {api} from './api';
-import {errorText} from './errors';
+import {errorText, sanitizeDiagnostic, TechnicalDetails} from './errors';
 import {time} from './components';
 import {useProjectNavigation} from './projectNavigation';
 
-type Row={id:string;name?:string;title?:string;reason?:string;urls?:string[];status:string;action?:string;updated:number;version?:number;input_snapshot?:unknown;attempts?:{call_id:string;status:string;reason?:string}[];result?:{diagnostic?:string;detail?:string;failure_kind?:string;outcome?:string;summary?:string;reason?:string;snapshots?:{url:string;status:string;reason?:string}[];fetch_failures?:{url:string;reason:string}[]}};
+type Row={id:string;name?:string;title?:string;reason?:string;diagnostic?:unknown;urls?:string[];status:string;action?:string;updated:number;version?:number;input_snapshot?:unknown;attempts?:{call_id:string;status:string;reason?:string}[];result?:{diagnostic?:unknown;detail?:unknown;failure_kind?:string;outcome?:string;summary?:string;reason?:string;snapshots?:{url:string;status:string;reason?:string}[];fetch_failures?:{url:string;reason:string}[]}};
+function competitorReason(row:Row):string|undefined {
+  const diagnostic=row.diagnostic;
+  if(!diagnostic||typeof diagnostic!=='object'||!('original' in diagnostic))return undefined;
+  const original=diagnostic.original;
+  if(!original||typeof original!=='object'||!('reason' in original)||typeof original.reason!=='string')return undefined;
+  return String(sanitizeDiagnostic(original.reason));
+}
 function useRecords(pid:string,kind:string) {
   const query=useInfiniteQuery<{items:Row[];next_cursor:string|null}>({queryKey:['intelligence',pid,kind],initialPageParam:'',
     queryFn:({pageParam})=>api(`/products/${pid}/intelligence/${kind}?${new URLSearchParams({cursor:String(pageParam),limit:'50'})}`),
@@ -36,9 +43,9 @@ export default function CompetitorAnalysis({pid}:{pid:string}) {
       {query.rows.map(row=><article className="collaboration-entry" key={row.id}>
         <strong>{row.name||row.title}</strong> · {status[row.status]||row.status}
         {row.result?.outcome && <p>{{partial_failure:'部分失败，已保留可用结果',all_failed:'全部来源失败',no_competitors:'暂无竞品',no_changes:'来源无变化',analyzed:'分析完成',found:'发现竞品'}[row.result.outcome] || row.result.outcome}</p>}
-        <p>{row.status==='failed'||row.status==='queued'?row.reason||row.result?.reason:row.result?.summary||row.reason}</p>
+        <p>{(title==='竞品名单'?competitorReason(row):undefined)??(row.status==='failed'||row.status==='queued'?row.reason||row.result?.reason:row.result?.summary||row.reason)}</p>
         {row.result?.failure_kind&&<p>失败类型：{({authentication:'鉴权问题',connection_timeout:'连接或超时',source_collection:'来源采集失败',invalid_output:'输出无效'} as Record<string,string>)[row.result.failure_kind]||row.result.failure_kind}</p>}
-        {(row.result?.diagnostic||row.result?.detail)&&<details><summary>执行器诊断</summary><pre style={{whiteSpace:'pre-wrap'}}>{row.result.diagnostic||row.result.detail}</pre></details>}
+        {!!(row.result?.diagnostic||row.result?.detail)&&<TechnicalDetails value={row.result?.diagnostic||row.result?.detail}/>}
         {(row.result?.fetch_failures||row.result?.snapshots?.filter(s=>s.status!=='pass')||[]).map((s,i)=><p key={i}>{s.url}：{s.reason}</p>)}
         {row.input_snapshot!==undefined&&<details><summary>本次配置与尝试记录</summary><pre>{JSON.stringify(row.input_snapshot,null,2)}</pre>{row.attempts?.map(a=><p key={a.call_id}>{a.status}：{a.reason||'完成'}</p>)}</details>}
         {title==='研究记录'&&row.status==='failed'&&<Button disabled={busy} onClick={async()=>{setBusy(true);try{await api(`/products/${pid}/intelligence/research_jobs/${row.id}/retry`,{version:row.version});await jobs.refetch();}catch(e){message.error(errorText(e));}finally{setBusy(false);}}}>重试研究</Button>}
