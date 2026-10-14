@@ -80,13 +80,27 @@ async function command(input) {
     return {ok:response.ok(), text:publicResponse(await response.text()).slice(0,30000), status:response.status()};
   }
   if (input.command === 'inspect_wait') {
-    const step=input.step; let settled=true; const deadline=Date.now()+(step.wait_seconds || 45)*1000;
-    try {
-      if (step.wait_selector) await page.locator(step.wait_selector).waitFor({state:'visible',timeout:Math.max(1,deadline-Date.now())});
-      if (step.wait_text) await page.getByText(step.wait_text,{exact:false}).first().waitFor({state:'visible',timeout:Math.max(1,deadline-Date.now())});
-    } catch { settled=false; }
+    const step=input.step; const deadline=Date.now()+(step.wait_seconds || 45)*1000;
+    let diagnostic;
+    const checks=[['wait_selector',step.wait_selector],['wait_text',step.wait_text]].filter(([,value])=>value);
+    for (const [field,value] of checks) {
+      const locator=field==='wait_selector'?page.locator(value):page.getByText(value,{exact:false});
+      try {
+        await (field==='wait_text'?locator.first():locator).waitFor({state:'visible',timeout:Math.max(1,deadline-Date.now())});
+      } catch (error) {
+        diagnostic={field,locator:value,original:String(error.message || error).slice(0,8000),url:page.url()};
+        try {
+          diagnostic.match_count=await locator.count();
+          diagnostic.visible_matches=await locator.evaluateAll(nodes=>nodes.slice(0,50).map(node=>{
+            const style=getComputedStyle(node),rect=node.getBoundingClientRect();
+            return style.visibility!=='hidden' && style.display!=='none' && rect.width>0 && rect.height>0;
+          }));
+        } catch (probeError) { diagnostic.probe_error=String(probeError.message || probeError).slice(0,2000); }
+        break;
+      }
+    }
     const text=await page.locator('body').innerText();
-    return {settled,matched:!step.expected_text || text.includes(step.expected_text)};
+    return {settled:!diagnostic,matched:!step.expected_text || text.includes(step.expected_text),...(diagnostic?{diagnostic}: {})};
   }
   if (input.command === 'inspect_action') {
     const step=input.step;

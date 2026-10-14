@@ -100,6 +100,10 @@
                       "pointer"
                     ]
                   }
+                },
+                "expected_json": {
+                  "type": "string",
+                  "description": "接口 JSON Pointer 到预期值的 JSON 对象文本；精确比较类型和值，支持实际准备变量；不用时空字符串。"
                 }
               },
               "required": [
@@ -115,7 +119,8 @@
                 "wait_seconds",
                 "api_method",
                 "api_body",
-                "response_bindings"
+                "response_bindings",
+                "expected_json"
               ]
             }
           },

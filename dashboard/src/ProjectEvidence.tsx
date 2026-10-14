@@ -71,7 +71,7 @@ export default function ProjectEvidence({productId,tab,onTabChange}:{productId?:
           {title:'复扫结论',render:(_,r)=><><Tag>{({queued:'已排队',recovered:'已恢复',collected:'已取证，待归因',blocked:'仍受阻'} as Record<string,string>)[String(r.rescan_status)] || '待复扫'}</Tag>{r.rescan_result!==undefined&&<ResultDetails value={r.rescan_result}/>}</>},
           {title:'归因',render:(_,r)=><RecordValue value={r.attribution || (r.attribution_pending?'待归因':'尚未归因')}/>},
           {title:'时间',dataIndex:'updated',render:time},
-          {title:'证据',render:(_,r)=><Button onClick={()=>setException(r)}>详情</Button>},
+          {title:'证据',render:(_,r)=><Button data-testid="inspection-exception-details" onClick={()=>setException(r)}>详情</Button>},
         ]}/>
       </>},
       {key:'inspections',label:`巡查记录 (${list.length})`,children:<Table rowKey="id" dataSource={list} pagination={{pageSize:10}} scroll={{x:700}} columns={[

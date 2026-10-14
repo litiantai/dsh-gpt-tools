@@ -53,7 +53,7 @@ export default function ProjectCoordinator({pid,settings=false}:{pid?:string;set
       <Form.Item name="model" label="独立协调模型" extra="不指定时沿用项目验收模型。修改只影响后续评估。"><ReviewerSelect connection={()=>({})}/></Form.Item>
       <Space><Button onClick={()=>{form.setFieldValue('model',null);setDirty(true);}}>沿用验收模型</Button><Button type="primary" loading={busy} onClick={()=>void act('settings')}>保存协调设置</Button></Space>
     </Form>}
-    {!settings && <><Button disabled={!value?.enabled || busy || value.instance.status==='running'} onClick={()=>void act('evaluate')}>立即评估</Button>
+    {!settings && <><Button data-testid="coordinator-evaluate" disabled={!value?.enabled || busy || value.instance.status==='running'} onClick={()=>void act('evaluate')}>立即评估</Button>
       <Table<Decision> rowKey="id" dataSource={value?.decisions||[]} loading={data.isLoading} pagination={{pageSize:10}} expandable={{expandedRowRender:r=><>
         {r.help_plan && <Descriptions title="帮助方案" column={1} items={[
           {key:'basis',label:'问题依据',children:r.help_plan.basis},
