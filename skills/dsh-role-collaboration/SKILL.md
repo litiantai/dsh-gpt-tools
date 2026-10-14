@@ -16,3 +16,9 @@ metadata:
 - [collaboration-collaboration-1](references/collaboration-collaboration-1.md)：由平台按对应阶段选择加载。
 - [intelligence_worker-collaboration-1](references/intelligence_worker-collaboration-1.md)：由平台按对应阶段选择加载。
 - [collaborate 输出契约](schemas/collaborate.json)：跨执行器统一字段和状态。
+
+## 按阶段使用能力包
+
+按当前阶段阅读适用的能力包，仍遵守本阶段平台 Schema、执行权限和测试模式；能力文档不新增输出字段或改变确认流程。
+
+- [technical-design](../technical-design/SKILL.md)：只读协作中的方案与契约分析。

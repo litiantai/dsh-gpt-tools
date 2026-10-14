@@ -51,6 +51,9 @@
             "items": {
               "type": "string"
             }
+          },
+          "target_requirement_id": {
+            "type": "string"
           }
         },
         "required": [

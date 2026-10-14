@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "actions": {
+    "chat": ["requirements-intake"],
+    "plan": ["technical-design", "task-breakdown"],
+    "design_ui": ["technical-design"],
+    "design_api": ["technical-design"],
+    "group_scope": ["technical-design"],
+    "develop": ["implementation"],
+    "repair": ["implementation"],
+    "discover": ["defect-investigation"],
+    "investigate": ["defect-investigation"],
+    "daily_attribution": ["defect-investigation"],
+    "inspection_design": ["defect-investigation"],
+    "find_competitors": ["competitor-research"],
+    "analyze_competitors": ["competitor-research"],
+    "review": ["code-review"],
+    "verify": ["acceptance"],
+    "validate": ["acceptance"],
+    "plan_review": ["acceptance"],
+    "acceptance_review": ["acceptance"],
+    "acceptance": ["acceptance"],
+    "daily_acceptance": ["acceptance"],
+    "computer_generate": ["acceptance"],
+    "computer_step": ["acceptance"],
+    "collaborate": ["technical-design"]
+  }
+}

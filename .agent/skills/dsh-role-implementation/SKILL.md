@@ -21,3 +21,11 @@ metadata:
 ## 角色工作流
 
 - [有序工作流](workflow.yaml)：平台加载并保存快照；命令检查必须使用控制器生成的当前源码回执。
+
+## 按阶段使用能力包
+
+按当前阶段阅读适用的能力包，仍遵守本阶段平台 Schema、执行权限和测试模式；能力文档不新增输出字段或改变确认流程。
+
+- [technical-design](../technical-design/SKILL.md)：plan/design 阶段按需设计。
+- [task-breakdown](../task-breakdown/SKILL.md)：plan 阶段依赖与验收拆解。
+- [implementation](../implementation/SKILL.md)：develop/repair 阶段实施与回归。

@@ -53,6 +53,38 @@ class RoleSkillTests(unittest.TestCase):
             self.assertEqual(schema['type'],'object')
             self.assertIn('status',schema['required'])
 
+    def test_chat_and_competitor_analysis_load_their_own_rules(self):
+        from review_core import Store
+        from autopilot.store import Ledger
+        from autopilot.intelligence_worker import execute
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d); store=Store(root/'state'); ledger=Ledger(store)
+            product=ledger.create('products',{'source':str(root),'goal':'整理需求',
+                'agents':{'discovery':{'provider':'codex','model':'fixture'}}},'active')
+            conversation=ledger.create('conversations',{'product_id':product['id']},'open')
+            message=ledger.create('chat_messages',{'product_id':product['id'],
+                'conversation_id':conversation['id'],'role':'user','content':'描述需求',
+                'attachment_ids':[]},'queued')
+            request={'product':product,'record':message,'state_root':str(store.state/'autopilot')}
+            with patch('autopilot.intelligence_worker.run_model',return_value={'status':'pass','drafts':[]}) as model:
+                execute('chat',request)
+            instruction=model.call_args.args[4]
+            self.assertEqual(instruction,skills.rule('intelligence_worker-clarification-1'))
+            self.assertIn('多轮需求澄清',instruction)
+            self.assertNotIn('仅针对 sources 中的变化',instruction)
+
+            ledger.create('competitors',{'product_id':product['id'],'name':'参考产品',
+                'urls':['https://example.com/product']},'active')
+            source={'url':'https://example.com/product','status':'pass','fingerprint':'new','content':'新功能'}
+            job=ledger.create('research_jobs',{'product_id':product['id'],'action':'analyze_competitors'},'queued')
+            with patch('autopilot.research.collect',return_value=[source]), \
+                 patch('autopilot.intelligence_worker.run_model',return_value={'status':'pass','drafts':[]}) as model:
+                execute('analyze_competitors',request | {'record':job})
+            instruction=model.call_args.args[4]
+            self.assertTrue(instruction.startswith(skills.rule('intelligence_worker-research-1')))
+            self.assertIn('已采集网页',instruction)
+            self.assertNotIn('多轮需求澄清',instruction)
+
     def test_every_platform_rule_reference_is_packaged(self):
         import ast
         for source in (ROOT/'autopilot').glob('*.py'):
@@ -94,6 +126,50 @@ class RoleSkillTests(unittest.TestCase):
                 skills.bind('develop',d,{'provider':'codex','model':'two'},'same rule')
             saved=json.loads((Path(d)/'role-skill/manifest.json').read_text())
             self.assertEqual(saved['selection']['model'],'one')
+
+    def test_capability_documents_load_by_stage_and_freeze_linked_resources(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'skills'
+            role = source / 'dsh-role-implementation'
+            role.mkdir(parents=True)
+            (source / 'roles.json').write_text('{}')
+            (role / 'SKILL.md').write_text('---\nname: dsh-role-implementation\n---\n'
+                '[implement](../implementation/SKILL.md)\n[design](../technical-design/SKILL.md)')
+            (source / 'capabilities.json').write_text(json.dumps({'version': 1, 'actions': {'develop': ['implementation']}}))
+            for name, marker in (('implementation', 'APPLY_CURRENT_CHECKS'), ('technical-design', 'DESIGN_ONLY_DETAILS')):
+                folder = source / name
+                (folder / 'references').mkdir(parents=True)
+                (folder / 'SKILL.md').write_text(f'---\nname: {name}\ndescription: test\n---\n{marker}')
+                (folder / 'references/method.md').write_text('original support')
+            call = root / 'call'
+            with patch.object(skills, 'ROOT', source):
+                prompt, manifest = skills.bind('develop', call, {}, 'fixed instruction')
+                self.assertIn('APPLY_CURRENT_CHECKS', prompt)
+                self.assertNotIn('DESIGN_ONLY_DETAILS', prompt)
+                self.assertEqual(manifest['capabilities'], ['implementation'])
+                frozen = call / 'role-skill'
+                self.assertEqual((frozen / 'technical-design/references/method.md').read_text(), 'original support')
+                for item in manifest['files'] + manifest['resources']:
+                    self.assertEqual(hashlib.sha256((frozen / item['path']).read_bytes()).hexdigest(), item['sha256'])
+                (source / 'implementation/SKILL.md').write_text('changed public skill')
+                (source / 'capabilities.json').write_text('broken public registry')
+                reused, same_manifest = skills.bind('develop', call, {}, 'fixed instruction')
+                self.assertEqual(reused, prompt)
+                self.assertEqual(same_manifest, manifest)
+                (frozen / 'technical-design/references/method.md').write_text('tampered support')
+                with self.assertRaises(ValueError):
+                    skills.bind('develop', call, {}, 'fixed instruction')
+
+    def test_capability_registry_rejects_invalid_resource_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            with patch.object(skills, 'ROOT', source):
+                for names in (['../private'], ['/absolute'], [{}], ['same', 'same']):
+                    (source / 'capabilities.json').write_text(json.dumps({'version': 1, 'actions': {'chat': names}}))
+                    with self.subTest(names=names), self.assertRaises(ValueError):
+                        skills.capability_entries('chat')
 
     def test_reviewer_loads_trusted_snapshot_and_rejects_tampering(self):
         from review_core import role_snapshot_instructions, SCHEMA

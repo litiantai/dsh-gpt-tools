@@ -17,3 +17,9 @@ metadata:
 - [intelligence_worker-research-1](references/intelligence_worker-research-1.md)：由平台按对应阶段选择加载。
 - [find_competitors 输出契约](schemas/find_competitors.json)：跨执行器统一字段和状态。
 - [analyze_competitors 输出契约](schemas/analyze_competitors.json)：跨执行器统一字段和状态。
+
+## 按阶段使用能力包
+
+按当前阶段阅读适用的能力包，仍遵守本阶段平台 Schema、执行权限和测试模式；能力文档不新增输出字段或改变确认流程。
+
+- [competitor-research](../competitor-research/SKILL.md)：有来源的竞品比较。

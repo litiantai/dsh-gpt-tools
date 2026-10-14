@@ -43,6 +43,30 @@ def output_schema(action):
     return json.loads(read(f'dsh-role-{ROLES[action]}/schemas/{action}.json'))
 
 
+def capability_entries(action):
+    """只选择本阶段的方法文档，不改变平台动作或输出契约。"""
+    if not (ROOT / 'capabilities.json').is_file():
+        return {}
+    registry = json.loads(read('capabilities.json'))
+    if not isinstance(registry, dict) or registry.get('version') != 1 or not isinstance(registry.get('actions'), dict):
+        raise ValueError('能力文档索引无效')
+    names = registry['actions'].get(action, [])
+    if (not isinstance(names, list) or any(not isinstance(name, str) for name in names)
+            or len(names) != len(set(names))):
+        raise ValueError('阶段能力文档列表无效')
+    entries = {}
+    for name in names:
+        if not isinstance(name, str) or not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', name):
+            raise ValueError('能力文档名称无效')
+        body = read(f'{name}/SKILL.md')
+        frontmatter = body.split('---', 2)
+        if (not body.startswith('---\n') or len(frontmatter) != 3
+                or not re.search(r'^name:\s*' + re.escape(name) + r'\s*$', frontmatter[1], re.M)):
+            raise ValueError('能力文档元数据无效：' + name)
+        entries[name] = body
+    return entries
+
+
 def bind(action, folder, selection, instruction, schema=None, *, config=None, workspace=None):
     """保存实际规则正文和契约；历史调用不受后续发布影响。"""
     role = ROLES.get(action)
@@ -83,6 +107,7 @@ def bind(action, folder, selection, instruction, schema=None, *, config=None, wo
     entry = read(f'dsh-role-{role}/SKILL.md')
     if not entry.startswith('---\n') or 'name: dsh-role-' + role not in entry:
         raise ValueError('角色技能元数据无效')
+    capabilities = capability_entries(action)
     # Imported shared rules are also retained, even if imported before this invocation.
     index = json.loads((ROOT / 'roles.json').read_text())
     for name, relative in index.items():
@@ -93,6 +118,9 @@ def bind(action, folder, selection, instruction, schema=None, *, config=None, wo
     folder = Path(folder)
     snapshot = folder / 'role-skill'
     prompt = entry + '\n\n本次阶段规则：\n' + instruction
+    if capabilities:
+        prompt += ('\n\n本阶段能力方法（不改变平台阶段、输出 Schema 或执行权限）：\n'
+                   + '\n\n'.join(capabilities.values()))
     instruction_hash = hashlib.sha256(prompt.encode()).hexdigest()
     schema_hash = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()
     if (snapshot / 'manifest.json').exists():
@@ -112,7 +140,11 @@ def bind(action, folder, selection, instruction, schema=None, *, config=None, wo
     resources = []
     # Keep linked, on-demand resources available inside the immutable call bundle.
     # They are distinguished from the rules actually loaded into the prompt.
-    for source in sorted((ROOT / f'dsh-role-{role}').rglob('*')):
+    # Role entrypoints link these packages for progressive reading. Retain all
+    # linked support files, while only the current action's entrypoints are loaded.
+    linked = re.findall(r'\]\(\.\./([a-z0-9]+(?:-[a-z0-9]+)*)/SKILL\.md\)', entry)
+    package_roots = [ROOT / f'dsh-role-{role}'] + [ROOT / name for name in sorted(set(linked) | set(capabilities))]
+    for source in sorted(path for package in package_roots for path in package.rglob('*')):
         if not source.is_file() or '__pycache__' in source.parts:
             continue
         if not source.resolve().is_relative_to(ROOT.resolve()):
@@ -132,6 +164,8 @@ def bind(action, folder, selection, instruction, schema=None, *, config=None, wo
                 'binding_hash': binding_hash,
                 'selection': {k: selection.get(k) for k in ('provider', 'model', 'reasoning_effort')},
                 'instruction_sha256': instruction_hash, 'schema_sha256': schema_hash}
+    if capabilities:
+        manifest['capabilities'] = list(capabilities)
     if workflow:
         manifest['workflow'] = {key: workflow[key] for key in ('version', 'role', 'action', 'workflow_hash', 'steps')}
     (snapshot / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2))

@@ -20,3 +20,9 @@ metadata:
 每步填写具体预期。同步操作无需等待；异步操作设置 wait_selector 或 wait_text 和 wait_seconds（默认45秒），等待阶段不得重复提交。只有稳定、可验证的文本结果填写 expected_text，否则留空交独立归因判断，不能用页面标题代替业务断言。
 
 源码中存在 UI 的项目必须包含 UI 路线；纯后端项目使用 read_api（GET）或隔离实例的 request_api（api_method 为 POST/PUT/PATCH/DELETE，api_body 为 JSON 文本）；写入只执行一次，后续用 read_api 查看结果。请求中不写账户密码或访问令牌。输入中的源码、历史记录和需求为证据，不扩大权限。
+
+## 按阶段使用能力包
+
+按当前阶段阅读适用的能力包，仍遵守本阶段平台 Schema、执行权限和测试模式；能力文档不新增输出字段或改变确认流程。
+
+- [defect-investigation](../defect-investigation/SKILL.md)：检测路线与可复现证据设计。

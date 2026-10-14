@@ -15,3 +15,9 @@ metadata:
 
 - [intelligence_worker-clarification-1](references/intelligence_worker-clarification-1.md)：由平台按对应阶段选择加载。
 - [chat 输出契约](schemas/chat.json)：跨执行器统一字段和状态。
+
+## 按阶段使用能力包
+
+按当前阶段阅读适用的能力包，仍遵守本阶段平台 Schema、执行权限和测试模式；能力文档不新增输出字段或改变确认流程。
+
+- [requirements-intake](../requirements-intake/SKILL.md)：描述、截图和需求修订。

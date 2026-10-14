@@ -117,7 +117,7 @@ def execute(action, request):
         if len(images) > 20:
             return {'status':'blocked','reason':'当前对话累计图片超过 20 张，请建立新对话'}
         return run_model(action, request, role, material,
-            skill_rule('intelligence_worker-research-1'),
+            skill_rule('intelligence_worker-clarification-1'),
             output_schema('chat')['properties'], images=images)
     if action == 'collaborate':
         from .collaboration import REQUEST_SCHEMA
@@ -181,6 +181,6 @@ def execute(action, request):
     material['sources'] = changed
     material['previous_sources'] = [known[s['url']] for s in changed if s['url'] in known]
     result = run_model(action, request, role, material,
-        skill_rule('intelligence_worker-clarification-1') + ' 按 research_preferences 中的比较方向和分析目标分析；各字段留空时独立根据项目目标判断。',
+        skill_rule('intelligence_worker-research-1') + ' 按 research_preferences 中的比较方向和分析目标分析；各字段留空时独立根据项目目标判断。',
         output_schema('analyze_competitors')['properties'])
     return result | {'snapshots':snapshots, 'outcome':'partial_failure' if any(s['status']!='pass' for s in snapshots) else 'analyzed', 'coverage': 'partial' if any(s['status']!='pass' for s in snapshots) else 'complete'}
