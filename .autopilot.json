@@ -101,6 +101,18 @@
       "-p",
       "test_notifications.py",
       "-v"
+    ],
+    "inspection-locators": [
+      "python3",
+      "-B",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-p",
+      "test_inspection_locator_contract.py",
+      "-v"
     ]
   },
   "inspection_setup": [
@@ -170,5 +182,6 @@
         }
       ]
     }
-  ]
+  ],
+  "inspection_routes_file": "inspection-routes.json"
 }

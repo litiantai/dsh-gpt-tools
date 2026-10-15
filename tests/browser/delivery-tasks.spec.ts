@@ -36,7 +36,11 @@ test('release tasks are collapsed and all four evidence actions work', async ({p
   await expect(modal.getByText('授权累计追加',{exact:true})).toBeVisible();
   await expect(modal.getByText('3600 秒',{exact:true})).toHaveCount(3);
   await expect(modal.getByText('3,456 / 10,000 Token',{exact:true})).toBeVisible();
-  await modal.getByRole('tab',{name:'过程数据',exact:true}).click();
+  const processTab=modal.getByRole('tab',{name:'过程数据',exact:true});
+  await expect(async()=>{
+    await processTab.click();
+    await expect(processTab).toHaveAttribute('aria-selected','true');
+  }).toPass({timeout:10000});
   await expect(modal.getByText('行情渲染已验证',{exact:true}).first()).toBeVisible();
   await modal.getByRole('button',{name:'Close',exact:true}).click();
   await drawer.getByRole('button',{name:'收起问题'}).click();

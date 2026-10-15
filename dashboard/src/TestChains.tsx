@@ -100,10 +100,10 @@ export default function TestChains({pid,tab,onTabChange}:{pid:string;tab:string;
         {key:'test_chain_settings',label:'测试配置',children:<Form form={configForm} disabled={busy || data.isLoading} layout="vertical" onValuesChange={()=>setDirty(true)}>
           <Form.Item name="enabled" label="启用自动生成与验收" valuePropName="checked"><Switch/></Form.Item>
           <Form.Item name="model" label="Codex 模型" extra="留空复用项目的 Codex 验证模型。"><ReviewerSelect connection={()=>({})}/></Form.Item>
-          <Space align="start" wrap>{[['interval_seconds','观测间隔（秒）',3600],['timeout_seconds','最长等待（秒）',7200],['max_observations','最大观测轮数',1000],['max_actions','最大动作数',1000]].map(([key,label,max])=><Form.Item key={key} name={key} label={label} rules={[{required:true}]}><InputNumber min={1} max={Number(max)} precision={0}/></Form.Item>)}</Space>
+          <Space align="start" wrap>{[['interval_seconds','观测间隔（秒）',3600],['timeout_seconds','最长等待（秒）',7200],['max_observations','最大观测轮数',1000],['max_actions','最大动作数',1000]].map(([key,label,max])=><Form.Item key={key} name={key} label={label} rules={[{required:true}]}><InputNumber aria-label={String(label)} data-testid={`test-chain-${key}`} min={1} max={Number(max)} precision={0}/></Form.Item>)}</Space>
           <Form.Item name="origins" label="测试依赖地址" extra="每行一个 HTTP origin；测试实例本身自动允许。"><Input.TextArea rows={3} placeholder="https://test.example.com"/></Form.Item>
           <Form.Item name="storage_state" label="专用测试登录状态文件" extra="可选，填写 Playwright storageState 文件的本机绝对路径。"><Input/></Form.Item>
-          <Button type="primary" loading={busy} disabled={!dirty} onClick={()=>void saveConfig().catch(()=>{})}>保存测试配置</Button>
+          <Button data-testid="test-chain-config-save" type="primary" loading={busy} disabled={!dirty} onClick={()=>void saveConfig().catch(()=>{})}>保存测试配置</Button>
         </Form>},
       ]}/>
     </Space>

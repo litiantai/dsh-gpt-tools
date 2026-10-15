@@ -21,6 +21,12 @@ metadata:
 
 源码中存在 UI 的项目必须包含 UI 路线；纯后端项目使用 read_api（GET）或隔离实例的 request_api（api_method 为 POST/PUT/PATCH/DELETE，api_body 为 JSON 文本）；写入只执行一次，后续用 read_api 查看结果。请求中不写账户密码或访问令牌。输入中的源码、历史记录和需求为证据，不扩大权限。
 
+稳定定位与回归约束：禁止 `:text-is` 定位器，它不能可靠匹配包装在 span 内的按钮文字，双中文字还可能自动插入空格。优先使用源码声明的 data-testid；表格动作必须限定实际 ID 行，不能用 first() 掩盖重复匹配。role 名称须以实际可访问名称核对，不能假定 label 的字面值。observe 需要等待具体元素状态时填写 wait_selector，selector 本身不是断言。失败证据应包含原始错误、匹配数量及可见性，不把定位失败当作业务缺陷。
+
+输入 source_routes 是随当前源码维护并通过真实隔离回归的路线，控制器保留这些 key 的源码定义；设计其他业务路线并列出旧 key 的覆盖缺口，不能覆盖或删除源码路线。缺少 source_routes 时仍按通常方式设计。
+
+API 字段预期使用 expected_json（JSON Pointer 到预期值的 JSON 对象文本，例如 {"/status":"paused","/automation_disabled":true}），类型和值必须匹配，缺字段直接失败。只写在 expected 自然语言中不构成断言。JSON 中可用实际 response_bindings 引用标识和版本；不要用空集合代替缺少场景数据的业务验收。带 session_bootstrap 的项目须保留独立纯接口路线，核对真实准备记录。
+
 ## 按阶段使用能力包
 
 按当前阶段阅读适用的能力包，仍遵守本阶段平台 Schema、执行权限和测试模式；能力文档不新增输出字段或改变确认流程。

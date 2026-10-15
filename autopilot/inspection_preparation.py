@@ -27,7 +27,7 @@ def resolve(value, bindings):
     if isinstance(value, dict):
         output={}
         for key, item in value.items():
-            if key=='api_body' and item:
+            if key in ('api_body','expected_json') and item:
                 try:
                     parsed=json.loads(item)
                 except json.JSONDecodeError:

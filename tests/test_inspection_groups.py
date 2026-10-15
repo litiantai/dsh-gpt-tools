@@ -91,6 +91,36 @@ class Cases(unittest.TestCase):
         self.assertEqual(result['status'],'blocked')
         self.assertGreaterEqual(len(ledger.get('inspections',result['inspection_id'])['steps']),2)
 
+    def test_wait_diagnostic_is_persisted_with_screenshot_and_original_reason(self):
+        class Driver:
+            def __init__(self,root):pass
+            def open(self,*args):pass
+            def screenshot(self,path):path.write_bytes(b'fixture');return {'text':'ready'}
+            def send(self,value):return {'settled':False,'matched':True,'diagnostic':{'original':'locator.waitFor: strict mode violation','match_count':2,'visible_matches':[True,True]}}
+            def close(self):pass
+        result=execute_route(self.ledger,self.product,{'id':'round','target_commit':'c'},
+            {'id':'v','route_id':'r','definition':route('observe',wait_selector='button')},
+            {'origin':'http://127.0.0.1:9','commit':'c'},self.root/'diagnostic',Driver)
+        self.assertEqual(result['status'],'blocked');self.assertIn('strict mode violation',result['reason'])
+        saved=next(e for e in self.ledger.scoped('evidence',self.product['id']) if e['details']['phase']=='timeout')
+        self.assertEqual(saved['details']['wait']['diagnostic']['match_count'],2)
+        self.assertTrue(saved['screenshot'])
+
+    def test_source_routes_survive_model_redesign_but_not_failed_design(self):
+        from autopilot.inspection_routes import design
+        stable=route('read_api',path='/api/item',expected_json='{"/status":"pending"}')
+        extra=route('observe');extra['key']='extra'
+        request={'state_root':str(self.store.state/'autopilot'),'product':self.product|{'repository':str(self.root)},'record':{}}
+        with patch('autopilot.inspection_routes.source_routes',return_value=[stable]), patch('autopilot.inspection_routes.git',return_value='commit'), patch('autopilot.intelligence_worker.run_model') as model:
+            model.return_value={'status':'pass','routes':[route(),extra],'coverage_gaps':['history unavailable']}
+            result=design(request)
+            self.assertEqual(result['routes'],[stable,extra])
+            self.assertEqual(result['coverage_gaps'],['history unavailable'])
+            self.assertEqual(result['source_commit'],'commit')
+            self.assertEqual(model.call_args.args[3]['source_routes'],[stable])
+            model.return_value={'status':'blocked','routes':[],'reason':'design failed'}
+            self.assertEqual(design(request)['routes'],[])
+
     def make_group(self):
         backend=self.ledger.create('products',{'name':'后端','project_role':'backend'},'active')
         group=self.ledger.create('requirement_groups',{'product_id':self.product['id'],'members':[],'design_version_ids':[]},'designing')

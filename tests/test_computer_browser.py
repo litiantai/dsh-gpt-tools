@@ -37,6 +37,18 @@ class BrowserTests(unittest.TestCase):
     def tearDown(self):
         self.driver.close();self.server.shutdown();self.server.server_close();self.thread.join();self.temp.cleanup()
 
+    def test_wait_preserves_zero_and_multiple_match_diagnostics(self):
+        for selector,count in [('#not-present',0),('input, button',2)]:
+            with self.subTest(selector=selector):
+                result=self.driver.send({'command':'inspect_wait','step':{'wait_selector':selector,'wait_seconds':1}})
+                self.assertFalse(result['settled'])
+                diagnostic=result['diagnostic']
+                self.assertEqual(diagnostic['match_count'],count)
+                self.assertEqual(diagnostic['locator'],selector)
+                self.assertTrue(diagnostic['original'])
+                self.assertEqual(len(diagnostic['visible_matches']),count)
+                self.assertEqual(diagnostic['url'],self.origin+'/')
+
     def test_user_input_submission_navigation_and_scroll(self):
         first=self.root/'first.png';self.driver.screenshot(first)
         self.driver.act({'type':'click','x':150,'y':125})

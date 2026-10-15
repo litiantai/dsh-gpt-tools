@@ -591,8 +591,22 @@ class Dashboard:
             raise Conflict('平台正在更新，暂缓新写入与任务派发')
         oid = body.get("operation_id", "")
         uuid.UUID(oid)
-        fingerprint = json.dumps([path, body], sort_keys=True, ensure_ascii=False)
-        if path.rstrip('/').endswith(('/git-token', '/intelligence/attachments', '/notifications/configure')):
+        fingerprint_source = json.dumps([path, body], sort_keys=True, ensure_ascii=False)
+        fingerprint = fingerprint_source
+
+        def contains_credential(value):
+            """拒绝请求也不能把误填的凭据写进操作预留记录。"""
+            if isinstance(value, dict):
+                return any('credential' in str(key).lower() or contains_credential(item)
+                           for key, item in value.items())
+            if isinstance(value, list):
+                return any(contains_credential(item) for item in value)
+            return False
+
+        config = body.get('config')
+        notification_request = isinstance(config, dict) and 'notifications' in config
+        if (notification_request or contains_credential(body)
+                or path.rstrip('/').endswith(('/git-token', '/intelligence/attachments', '/notifications/configure'))):
             # Idempotency must never persist the credential request body.
             fingerprint = 'sha256:' + hashlib.sha256(fingerprint.encode()).hexdigest()
         with self.lock:
@@ -601,7 +615,8 @@ class Dashboard:
                     "SELECT * FROM operations WHERE id=?", (oid,)
                 ).fetchone()
             if row:
-                if row["fingerprint"] != fingerprint:
+                # 兼容升级前已预留的非哈希指纹，新的敏感请求始终只落哈希。
+                if row["fingerprint"] not in (fingerprint, fingerprint_source):
                     raise Conflict("操作 ID 已被不同请求使用")
                 response = json.loads(row["response"])
                 if response.get("_pending"):

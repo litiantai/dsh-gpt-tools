@@ -25,7 +25,7 @@ def fingerprint(product):
     return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
 
 
-def validate_routes(routes, product):
+def validate_routes(routes, product, *, registration=False):
     if not isinstance(routes, list) or not 1 <= len(routes) <= 50:
         raise ValueError('巡检需包含 1–50 条业务路线')
     ids = set()
@@ -64,6 +64,15 @@ def validate_routes(routes, product):
                 if step.get('api_body'):
                     from .inspection_preparation import TOKEN
                     json.loads(TOKEN.sub('0',step['api_body']))
+            if registration and any(':text-is(' in step.get(field, '') for field in ('selector','wait_selector')):
+                raise ValueError('巡检定位器不允许 :text-is：嵌套文本及双中文字间距会误匹配；请使用源码确认的 data-testid 或带作用域的 role/has-text 定位器')
+            if step.get('expected_json'):
+                if step['action'] not in ('read_api','request_api'):
+                    raise ValueError('JSON 断言仅支持接口步骤')
+                from .inspection_preparation import TOKEN
+                expected=json.loads(TOKEN.sub('0',step['expected_json']))
+                if not isinstance(expected,dict) or not expected or len(expected)>30 or any(not k.startswith('/') for k in expected):
+                    raise ValueError('JSON 断言须为非空 JSON Pointer 到预期值的对象（最多30项）')
             wait = step.get('wait_seconds', 45)
             if type(wait) is not int or not 1 <= wait <= 1800:
                 raise ValueError('步骤等待时间须为 1–1800 秒')
@@ -94,7 +103,7 @@ def finish_plan(ledger, plan, result):
             if result.get('status') != 'pass':
                 raise ValueError(result.get('reason', '路线设计未完成'))
             product = ledger.get('products', plan['product_id'], db)
-            routes = validate_routes(result.get('routes'), product)
+            routes = validate_routes(result.get('routes'), product, registration=True)
             if not result.get('source_commit'):
                 raise ValueError('路线缺少源码版本依据')
             existing = {r['key']:r for r in ledger.scoped('inspection_routes', product['id'], db)}
@@ -219,6 +228,23 @@ def tick(scheduler):
             scheduler.change('inspection_rounds', started, {}, 'running')
 
 
+def source_routes(workspace, product):
+    """加载随源码验证的固定路线；仍须经过同一环境、动作和断言校验。"""
+    root=Path(workspace).resolve();config_path=root/'.autopilot.json'
+    if config_path.is_symlink():
+        raise ValueError('项目配置不能是符号链接')
+    config=json.loads(config_path.read_text()) if config_path.is_file() else {}
+    name=config.get('inspection_routes_file')
+    if not name:
+        return []
+    if not isinstance(name,str) or Path(name).is_absolute() or '..' in Path(name).parts:
+        raise ValueError('源码巡检路线必须使用仓库内相对文件')
+    path=root/name
+    if path.is_symlink() or not path.resolve().is_relative_to(root):
+        raise ValueError('源码巡检路线不能越出仓库')
+    return validate_routes(json.loads(path.read_text()),product,registration=True)
+
+
 def design(request):
     from .intelligence_worker import run_model
     from .role_skills import output_schema
@@ -229,7 +255,8 @@ def design(request):
     from .inspection_session import configuration
     from .inspection_preparation import configuration_for
     ledger = Ledger(Store(Path(request['state_root']).parent))
-    material = {'goal':product.get('goal'), 'project_config':product.get('project_config', {}),
+    maintained=source_routes(workspace,product)
+    material = {'source_routes':maintained, 'goal':product.get('goal'), 'project_config':product.get('project_config', {}),
         'source_commit':commit, 'session_bootstrap':configuration(workspace, product), 'inspection_setup':configuration_for(workspace), 'history':[{k:r.get(k) for k in ('title','method','judgement','environment')}
                                         for r in ledger.scoped('inspections', product['id'])[-20:]],
         'existing_routes':[ledger.get('inspection_route_versions', r['current_version_id'])['definition']
@@ -240,6 +267,9 @@ def design(request):
                        'budget_kind':'inspection_design_tokens'}, request['record'].get('selection') or role(product), material,
         '只读源码并设计覆盖各业务线的真实巡检路线。保留已有路线 key；只输出可由浏览器定位器及受控接口执行的步骤；接口写入必须在隔离环境。session_bootstrap 表示实例可自动建立本机会话，不需要人工账号登录或 storage_state。inspection_setup 是每轮一次的真实接口准备步骤，其 response_bindings 名称可用 {名称} 引用实际返回值；不得继续使用不存在的合成固定id。步骤可用 response_bindings 的 name/pointer 保存实际接口返回的id/version/status/name供后续路径、选择器、输入及JSON请求体引用。不能要求控制器注入未实现的合成数据、网络 mock 或步骤回调；需要数据时用隔离实例支持的实际界面/接口步骤准备，并登记可执行断言。设计pass只表示可执行路线登记成功，不等于全业务覆盖或业务验收通过；不可执行场景放入coverage_gaps，不能输出会因缺数据超时的路线。',
         output_schema('inspection_design')['properties'])
+    if result.get('status')=='pass':
+        keys={r['key'] for r in maintained}
+        result=result | {'routes':maintained+[r for r in result.get('routes',[]) if r.get('key') not in keys]}
     return result | {'source_commit':commit}
 
 
@@ -293,6 +323,42 @@ def api_evidence(instance, step):
         connection.close()
 
 
+def json_assertions(text, expected_json):
+    """按 JSON Pointer 对真实响应做类型敏感比较，缺字段或非 JSON 不得通过。"""
+    if not expected_json:
+        return []
+    expected=json.loads(expected_json)
+    try:
+        body=json.loads(text)
+    except ValueError:
+        return [{'pointer':key,'expected':value,'matched':False,'error':'响应不是 JSON'} for key,value in expected.items()]
+    def equal(actual, wanted):
+        if type(actual) is not type(wanted):
+            return False
+        if isinstance(actual,dict):
+            return actual.keys()==wanted.keys() and all(equal(actual[k],v) for k,v in wanted.items())
+        if isinstance(actual,list):
+            return len(actual)==len(wanted) and all(equal(a,b) for a,b in zip(actual,wanted))
+        return actual==wanted
+    output=[]
+    for pointer, value in expected.items():
+        item={'pointer':pointer,'expected':value,'matched':False}
+        try:
+            actual=body
+            for part in pointer[1:].split('/'):
+                part=part.replace('~1','/').replace('~0','~')
+                if isinstance(actual,list):
+                    if not part.isdecimal(): raise KeyError(part)
+                    actual=actual[int(part)]
+                else:
+                    actual=actual[part]
+            item.update(actual=actual,matched=equal(actual,value))
+        except (KeyError,IndexError,TypeError,ValueError):
+            item['error']='响应缺少该路径'
+        output.append(item)
+    return output
+
+
 def execute_route(ledger, product, round_record, snapshot, instance, root, driver_factory=None):
     from .computer_use import BrowserDriver
     from .evidence import Recorder
@@ -316,12 +382,12 @@ def execute_route(ledger, product, round_record, snapshot, instance, root, drive
     bindings=dict(instance.get('inspection_bindings') or {})
     api_session=None
     status = 'observed'; reason = '巡检证据已保存，等待独立归因'; asserted = False
-    def capture(step, phase, state='observed', actual=None):
+    def capture(step, phase, state='observed', actual=None, details=None):
         path = root/(str(time.time_ns())+'.png')
         screen = driver.screenshot(path)
         return recorder.step(step['title'], step['action'], step['expected'], actual or screen.get('text',''),
             status=state, screenshot=path, details={'route_id':snapshot['route_id'],'route_version_id':snapshot['id'],
-                'checkpoint':step['title'],'phase':phase,'instance':instance,'screen':screen})
+                'checkpoint':step['title'],'phase':phase,'instance':instance,'screen':screen, **(details or {})})
     try:
         if instance.get('commit') != round_record['target_commit']:
             raise ValueError('巡检实例与当轮提交不一致')
@@ -358,10 +424,11 @@ def execute_route(ledger, product, round_record, snapshot, instance, root, drive
                     result=api_evidence(instance,step)
                 else:
                     result=driver.send({'command':'inspect_api','step':step,'path':step['path'],'method':method,'body':step.get('api_body')})
-                passed = not step.get('expected_text') or step['expected_text'] in result['text']
-                state = 'fail' if not result['ok'] or not passed else 'pass' if step.get('expected_text') else 'observed'
+                assertions = json_assertions(result['text'], step.get('expected_json'))
+                passed = (not step.get('expected_text') or step['expected_text'] in result['text']) and all(a['matched'] for a in assertions)
+                state = 'fail' if not result['ok'] or not passed else 'pass' if step.get('expected_text') or assertions else 'observed'
                 recorder.step(step['title'],(step.get('api_method','GET') if step['action']=='request_api' else 'GET')+' '+step['path'],step['expected'],result['text'],status=state,
-                    details={'phase':'response','instance':instance,'route_version_id':snapshot['id'],'request':{'method':step.get('api_method','GET') if step['action']=='request_api' else 'GET','url':instance['origin']+step['path'],'body':json.loads(step['api_body']) if step.get('api_body') else None},'response':result})
+                    details={'phase':'response','instance':instance,'route_version_id':snapshot['id'],'request':{'method':step.get('api_method','GET') if step['action']=='request_api' else 'GET','url':instance['origin']+step['path'],'body':json.loads(step['api_body']) if step.get('api_body') else None},'response':result,'assertions':assertions})
                 asserted = asserted or state=='pass'
                 if state=='fail':
                     status='fail'; reason='接口结果不符合预期'
@@ -376,10 +443,12 @@ def execute_route(ledger, product, round_record, snapshot, instance, root, drive
                     capture(step, 'after')
             result = driver.send({'command':'inspect_wait','step':step})
             state = 'blocked' if not result['settled'] else 'fail' if not result['matched'] else 'pass' if step.get('expected_text') else 'observed'
-            capture(step, ('settled' if step.get('wait_selector') or step.get('wait_text') else 'after') if result['settled'] else 'timeout', state)
+            capture(step, ('settled' if step.get('wait_selector') or step.get('wait_text') else 'after') if result['settled'] else 'timeout', state, details={'wait':result})
             asserted = asserted or state=='pass'
             if state in ('fail','blocked'):
                 status=state; reason='检查点未通过：'+step['title']
+                if result.get('diagnostic',{}).get('original'):
+                    reason+='；'+result['diagnostic']['original']
                 break
         if status=='observed' and asserted:
             status='pass'; reason='本轮全部业务断言通过'
