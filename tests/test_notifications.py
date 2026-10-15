@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import smtplib
+import ssl
 import socketserver
 import sys
 import tempfile
@@ -15,6 +16,8 @@ import threading
 import unittest
 import uuid
 from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -247,7 +250,7 @@ class NotificationTests(unittest.TestCase):
         self.add_run(status='plan_review', title='构建任务')
         self.add_run(status='blocked', title='巡检告警', reason='正式接口不可用')
         self.tick()
-        for kind, title, detail in [('run_report', '构建任务', 'plan_review'),
+        for kind, title, detail in [('run_report', '构建任务', '方案待审查'),
                                     ('alert', '巡检告警', '正式接口不可用')]:
             payload = self.items(kind)[0]['payload']
             self.assertIn(title, payload['text'])
@@ -325,7 +328,7 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(message['From'], 'sender@example.test')
         text = message.get_body(preferencelist=('plain',)).get_content()
         body_html = message.get_body(preferencelist=('html',)).get_content()
-        for header in ('一、概览指标', '二、昨日完成', '三、阻塞与问题', '四、额度使用', '五、竞品动态', '六、今日待办与自进化建议'):
+        for header in ('一、概览指标', '二、本次统计窗口完成', '三、阻塞与问题', '四、额度使用', '五、竞品动态', '六、今日待办与自进化建议'):
             self.assertIn(header, text)
             self.assertIn(header, body_html)
         self.assertIn('已经验收的需求', text)
@@ -495,6 +498,51 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(self.items('alert'), [])
 
     # -------------------------------------------------- 集成与静态边界
+
+    def test_configure_http_tls_failure_keeps_settings_and_credential_unchanged(self):
+        import dashboard_server as dashboard
+        self.configure()
+        before = self.ledger.get('products', self.pid)
+        credential_before = notify.credential_file().read_text()
+        app = dashboard.Dashboard(self.root / 'state')
+        server = dashboard.ThreadingHTTPServer(
+            ('127.0.0.1', 0), dashboard.handler_for(app, 0, ROOT / 'dashboard/dist'))
+        port = server.server_address[1]
+        server.RequestHandlerClass = dashboard.handler_for(app, port, ROOT / 'dashboard/dist')
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        origin = f'http://127.0.0.1:{port}'
+        try:
+            with urlopen(origin + '/api/bootstrap', timeout=5) as response:
+                csrf = json.load(response)['csrf']
+                cookie = response.headers['Set-Cookie'].split(';')[0]
+            body = {'operation_id': str(uuid.uuid4()), 'credential': 'replacement-code',
+                    'config': {'recipients': ['new@example.test']}}
+            request = Request(origin + f'/api/products/{self.pid}/notifications/configure',
+                              data=json.dumps(body).encode(),
+                              headers={'Cookie': cookie, 'Origin': origin, 'X-CSRF-Token': csrf,
+                                       'Content-Type': 'application/json'})
+            failure = ssl.SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol')
+            with patch.object(notify.smtplib, 'SMTP_SSL', side_effect=failure):
+                with self.assertRaises(HTTPError) as caught:
+                    urlopen(request, timeout=5)
+                with caught.exception as response:
+                    self.assertEqual(response.code, 500)
+                    result = json.load(response)
+            self.assertEqual(result['error_info']['code'], 'TLS_CONNECTION_LOST')
+            self.assertIn('邮件服务器', result['error'])
+            self.assertIn('UNEXPECTED_EOF_WHILE_READING', result['diagnostic'])
+            self.assertNotIn('replacement-code', json.dumps(result))
+            self.assertEqual(self.ledger.get('products', self.pid), before)
+            self.assertEqual(notify.credential_file().read_text(), credential_before)
+            with self.store.connect() as db:
+                events = ''.join(row[0] for row in db.execute('SELECT detail FROM events'))
+            self.assertNotIn('replacement-code', events)
+            self.assertEqual(FakeSMTP.sent, [])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
 
     def test_scheduler_tick_invokes_notifications(self):
         with patch('autopilot.notifications.tick') as hook:

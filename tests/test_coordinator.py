@@ -1,6 +1,7 @@
 """协调动作、资源边界、持久化恢复与修复进展回归；不调用真实模型。"""
 import hashlib
 import json
+import concurrent.futures
 import subprocess
 from pathlib import Path
 import sys
@@ -733,11 +734,102 @@ class CoordinatorTests(unittest.TestCase):
         prefix='/products/'+self.product['id']+'/coordinator'
         api=self.scheduler.control
         self.assertTrue(api.get(prefix)['enabled'])
+        self.assertFalse(api.get(prefix)['config']['human_authority'])
         self.assertEqual(api.get(prefix)['model']['model'],'test')
         api.mutate(prefix+'/settings',{'version':self.product['version'],'config':{'enabled':False,'model':{'provider':'claude','model':'other'}}})
         self.assertFalse(api.get(prefix)['enabled'])
         with self.assertRaises(Conflict):
             api.mutate(prefix+'/evaluate',{'version':self.product['version']})
+
+    def test_settings_baseline_survives_monitor_updates(self):
+        prefix='/products/'+self.product['id']+'/coordinator'
+        api=self.scheduler.control
+        before=api.get(prefix)
+        current=self.ledger.update('products',self.product['id'],self.product['version'],
+                                   {'last_probe':123,'call':{'id':'monitor-call'},'monitor_reason':'监测正常'})
+        saved=api.mutate(prefix+'/settings',{'version':before['version'],'base_config':before['config'],
+                                           'config':{'human_authority':True}})
+        self.assertTrue(saved['config']['human_authority'])
+        self.assertEqual(saved['version'],current['version']+1)
+        product=self.ledger.get('products',self.product['id'])
+        for key in ('last_probe','call','monitor_reason','status','agents'):
+            self.assertEqual(product[key],current[key])
+
+    def test_settings_merge_unedited_coordination_fields(self):
+        prefix='/products/'+self.product['id']+'/coordinator'
+        api=self.scheduler.control
+        before=api.get(prefix)
+        model={'provider':'claude','model':'another-editor'}
+        self.ledger.update('products',self.product['id'],self.product['version'],
+                           {'coordinator':{'enabled':False,'model':model}})
+        saved=api.mutate(prefix+'/settings',{'version':before['version'],'base_config':before['config'],
+                                           'config':{'human_authority':True}})
+        self.assertEqual(saved['config'],{'enabled':False,'model':model,'human_authority':True})
+        self.assertEqual(saved['model'],model)
+
+    def test_settings_reject_same_field_conflict_and_keep_stored_config(self):
+        prefix='/products/'+self.product['id']+'/coordinator'
+        api=self.scheduler.control
+        before=api.get(prefix)
+        current=self.ledger.update('products',self.product['id'],self.product['version'],
+                                   {'coordinator':{'model':{'provider':'claude','model':'another-editor'}}})
+        with self.assertRaisesRegex(Conflict,'协调配置已被其他操作修改'):
+            api.mutate(prefix+'/settings',{'version':before['version'],'base_config':before['config'],
+                                          'config':{'model':{'provider':'codex','model':'my-draft'}}})
+        self.assertEqual(self.ledger.get('products',self.product['id']),current)
+
+    def test_settings_stale_baseline_accepts_already_applied_change_without_version_bump(self):
+        prefix='/products/'+self.product['id']+'/coordinator'
+        api=self.scheduler.control
+        before=api.get(prefix)
+        current=self.ledger.update('products',self.product['id'],self.product['version'],
+                                   {'coordinator':{'human_authority':True},'last_probe':123})
+        saved=api.mutate(prefix+'/settings',{'version':before['version'],'base_config':before['config'],
+                                           'config':{'human_authority':True}})
+        self.assertTrue(saved['config']['human_authority'])
+        self.assertEqual(saved['version'],current['version'])
+        self.assertEqual(self.ledger.get('products',self.product['id']),current)
+        saved=api.mutate(prefix+'/settings',{'version':before['version'],'base_config':before['config'],'config':{}})
+        self.assertEqual(saved['version'],current['version'])
+
+    def test_settings_legacy_client_and_evaluate_keep_strict_version_check(self):
+        prefix='/products/'+self.product['id']+'/coordinator'
+        api=self.scheduler.control
+        before=api.get(prefix)
+        current=self.ledger.update('products',self.product['id'],self.product['version'],{'last_probe':123})
+        for action,extra in (('settings',{'config':{'human_authority':True}}),
+                             ('evaluate',{'base_config':before['config']})):
+            with self.assertRaisesRegex(Conflict,'项目已更新'):
+                api.mutate(prefix+'/'+action,{'version':before['version']}|extra)
+        self.assertEqual(self.ledger.get('products',self.product['id']),current)
+
+    def test_settings_baseline_requires_valid_fields_and_covers_changes(self):
+        prefix='/products/'+self.product['id']+'/coordinator/settings'
+        api=self.scheduler.control
+        for base,changes in ((None,{'enabled':False}),
+                             ({'enabled':'yes'},{'enabled':False}),
+                             ({'last_probe':123},{'enabled':False}),
+                             ({'enabled':True},{'human_authority':True}),
+                             ({'enabled':True},{'last_probe':123})):
+            with self.assertRaises(ValueError):
+                api.mutate(prefix,{'version':self.product['version'],'base_config':base,'config':changes})
+        self.assertEqual(self.ledger.get('products',self.product['id']),self.product)
+
+    def test_concurrent_coordination_settings_saves_have_one_winner(self):
+        prefix='/products/'+self.product['id']+'/coordinator'
+        api=self.scheduler.control
+        before=api.get(prefix)
+        def save(model):
+            try:
+                return api.mutate(prefix+'/settings',{'version':before['version'],'base_config':before['config'],
+                                                      'config':{'model':{'provider':'codex','model':model}}})
+            except Conflict:
+                return None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(save,['first-draft','second-draft']))
+        winners=[result for result in results if result]
+        self.assertEqual(len(winners),1)
+        self.assertEqual(api.get(prefix)['config']['model'],winners[0]['config']['model'])
 
     def test_no_progress_is_not_incremented_by_repeated_poll(self):
         run=self.fresh()

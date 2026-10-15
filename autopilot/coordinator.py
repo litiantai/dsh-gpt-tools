@@ -348,13 +348,26 @@ def api(control, parts, body=None):
         raise KeyError('协调接口不存在')
     with ledger.store.transaction() as db:
         product = ledger.get('products', product['id'], db)
-        if body.get('version') != product['version']:
-            raise Conflict('项目已更新，请刷新后重试')
         if parts[3] == 'settings':
-            value = body.get('config')
-            validate(value)
-            ledger.update('products', product['id'], product['version'], {'coordinator': value}, db=db)
+            changes = body.get('config')
+            validate(changes)
+            current = config(product)
+            if 'base_config' in body:
+                base = body['base_config']
+                validate(base)
+                if not set(changes) <= set(base):
+                    raise ValueError('协调配置编辑基线无效')
+                if any(current.get(key) != base[key] and current.get(key) != value
+                       for key, value in changes.items()):
+                    raise Conflict('协调配置已被其他操作修改；当前草稿已保留，请核对后放弃修改以载入最新配置')
+            elif body.get('version') != product['version']:
+                raise Conflict('项目已更新，请刷新后重试')
+            value = current | changes
+            if value != current:
+                ledger.update('products', product['id'], product['version'], {'coordinator': value}, db=db)
         else:
+            if body.get('version') != product['version']:
+                raise Conflict('项目已更新，请刷新后重试')
             if not enabled(product):
                 raise Conflict('请先启用项目自主运行和项目协调')
             current = instance(ledger, product, db)

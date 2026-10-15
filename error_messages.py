@@ -3,6 +3,8 @@ import errno
 import json
 from pathlib import Path
 import re
+import smtplib
+import ssl
 import subprocess
 from urllib.error import HTTPError, URLError
 
@@ -32,6 +34,11 @@ def error_info(error, subject='相关服务', code=None):
     if code is None:
         if isinstance(error, HTTPError):
             code = {401:'AUTH_REQUIRED',403:'ACCESS_DENIED',402:'MODEL_BALANCE_INSUFFICIENT',429:'RATE_LIMITED',502:'SERVICE_UNAVAILABLE',503:'SERVICE_UNAVAILABLE',504:'REQUEST_TIMEOUT'}.get(error.code)
+        elif isinstance(cause, smtplib.SMTPAuthenticationError): code = 'SMTP_AUTH_FAILED'
+        elif isinstance(cause, ssl.SSLEOFError): code = 'TLS_CONNECTION_LOST'
+        elif isinstance(cause, ssl.SSLCertVerificationError): code = 'TLS_CERTIFICATE_INVALID'
+        elif isinstance(cause, ssl.SSLError): code = 'TLS_FAILED'
+        elif isinstance(cause, smtplib.SMTPServerDisconnected): code = 'CONNECTION_LOST'
         elif isinstance(cause, AssertionError): code = 'TEST_ASSERTION_FAILED'
         elif isinstance(cause, TimeoutError): code = 'REQUEST_TIMEOUT'
         elif isinstance(cause, FileNotFoundError): code = 'FILE_MISSING'

@@ -188,21 +188,34 @@ def attach_accepted(ledger, product, now):
 
 
 def mark_online(ledger, batch, result):
-    """只消费 GitHub 已确认合并的回执，并原子更新全部关联业务记录。"""
+    """原子记录源码上线和主实例更新请求；重复合并回执保留更新进度。"""
     if not result.get('merged') or not result.get('merge_sha'):
         raise ValueError('缺少 GitHub 合并确认，禁止标记已上线')
     with ledger.store.transaction() as db:
         current = ledger.get('deliveries', batch['id'], db)
-        ledger.update('deliveries', current['id'], current['version'], {'merge_sha': result['merge_sha'], 'merged_at': time.time(), 'reason': ''}, 'online', db)
+        if current['status'] == 'online' and current.get('merge_sha') == result['merge_sha']:
+            return
+        now = time.time()
+        ledger.update('deliveries', current['id'], current['version'], {'merge_sha': result['merge_sha'], 'merged_at': now, 'reason': ''}, 'online', db)
         for ident in current['integrated_ids']:
             run = ledger.get('runs', ident, db)
-            ledger.update('runs', ident, run['version'], {'merge_sha': result['merge_sha'], 'online_at': time.time()}, 'online', db)
+            ledger.update('runs', ident, run['version'], {'merge_sha': result['merge_sha'], 'online_at': now}, 'online', db)
             req = ledger.get('requirements', run['requirement_id'], db)
             ledger.update('requirements', req['id'], req['version'], {'delivery_id': current['id'], 'merge_sha': result['merge_sha']}, 'online', db)
+        product = ledger.get('products', current['product_id'], db)
+        changes = {'master_update': {'delivery_id': current['id'], 'merge_sha': result['merge_sha'],
+            'status': 'pending', 'requested_at': now, 'next_attempt': 0,
+            'reason': '等待拉取最新 master 并重建主实例'}}
+        spec = product.get('adapter_spec') or {}
+        if spec.get('kind') == 'command' and (product.get('deployment') or {}).get('kind') == 'self':
+            capabilities = list(spec.get('capabilities') or [])
+            missing = [action for action in ('master_sync', 'final_acceptance') if action not in capabilities]
+            if missing:
+                changes['adapter_spec'] = spec | {'capabilities': capabilities + missing}
         if current.get('bootstrap'):
-            product = ledger.get('products', current['product_id'], db)
-            ledger.update('products', product['id'], product['version'], {'git_migration': {'status': 'completed', 'delivery_id': current['id'], 'merge_sha': result['merge_sha']},
-                'delivery_repository': current['repository']}, db=db)
+            changes.update(git_migration={'status': 'completed', 'delivery_id': current['id'], 'merge_sha': result['merge_sha']},
+                delivery_repository=current['repository'])
+        ledger.update('products', product['id'], product['version'], changes, db=db)
 
 
 def complete(scheduler, batch, result, action):

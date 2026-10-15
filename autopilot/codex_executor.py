@@ -142,6 +142,9 @@ def execute(action,request):
                      'known_requirements':[{'id':r['id'],'title':r['title'],'status':r['status'],'classification':r.get('classification')} for r in ledger.list('requirements') if r['product_id']==product['id']]})
     if verification:
         material['verification']=verification
+    if action == 'daily_retrospective':
+        from .retrospective_report import model_report
+        material['daily_report'] = model_report(request['daily_report'], root)
     from .role_skills import compose
     instruction, material = compose(action, request, material, spec)
     material['source_context'] = source
@@ -273,6 +276,8 @@ def execute(action,request):
             quality_readonly = [Path(request['quality']['receipt']).resolve().parent]
             readable += quality_readonly
         readonly = quality_readonly + [root/'role-skill'] + ([] if action=='develop' else [workspace]+metadata) + ([credential] if provider=='codex' else [])
+        if action == 'daily_retrospective':
+            readonly.append(root/'retrospective-evidence')
         if action == 'coordinate':
             readonly += [root/name for name in ('coordinator-material.json','coordinator-input.json') if (root/name).is_file()]
         argv=restrict(argv, allowed, root/'model.sb', private_roots=private, read_allowed=readable,

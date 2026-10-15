@@ -47,6 +47,23 @@ class RoleSkillTests(unittest.TestCase):
             self.assertFalse(nested['additionalProperties'])
             self.assertEqual(set(nested['properties']), set(nested['required']))
 
+    def test_retrospective_schema_is_strict_at_every_object(self):
+        schema = skills.output_schema('daily_retrospective')
+        def check(node):
+            if isinstance(node, dict):
+                if node.get('type') == 'object':
+                    self.assertIs(node.get('additionalProperties'), False)
+                    self.assertEqual(set(node['properties']), set(node.get('required', [])))
+                self.assertNotIn('uniqueItems', node)
+                for child in node.values():
+                    check(child)
+            elif isinstance(node, list):
+                for child in node:
+                    check(child)
+        check(schema)
+        for key in ('coverage', 'problem_items', 'requirement_candidates'):
+            self.assertIn(key, schema['required'])
+
     def test_contracts_and_computer_actions_load(self):
         for action in ('discover','validate','plan','develop','computer_generate','computer_step'):
             schema=skills.output_schema(action)

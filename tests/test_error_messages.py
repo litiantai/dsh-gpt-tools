@@ -1,5 +1,7 @@
 """中文异常输出与原始诊断分离、脱敏及重试语义的回归。"""
 import json
+import smtplib
+import ssl
 from pathlib import Path
 import sys
 import unittest
@@ -10,6 +12,32 @@ from autopilot.retry import abnormal
 
 
 class ErrorMessageTests(unittest.TestCase):
+    def test_smtp_transport_failure_is_distinct_from_invalid_credential(self):
+        raw = '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1082)'
+        native = error_info(ssl.SSLEOFError(8, raw), '邮件服务器')
+        legacy = error_info(raw, '邮件服务器')
+        self.assertEqual(native, legacy)
+        self.assertEqual(native['code'], 'TLS_CONNECTION_LOST')
+        self.assertIn('邮件服务器', native['message'])
+        self.assertIn('代理规则', native['suggestion'])
+        self.assertNotIn('授权码', native['message'] + native['suggestion'])
+        fields = failure_fields(ssl.SSLEOFError(8, raw), '邮件服务器')
+        self.assertIn('UNEXPECTED_EOF_WHILE_READING', fields['diagnostic'])
+        self.assertEqual(present_errors(fields), fields)
+        auth = error_info(smtplib.SMTPAuthenticationError(535, b'authentication failed'), '邮件服务器')
+        self.assertEqual(auth['code'], 'SMTP_AUTH_FAILED')
+        self.assertIn('授权码', auth['suggestion'])
+
+    def test_tls_and_smtp_failures_are_recognized_by_type_and_legacy_text(self):
+        for native, legacy, expected in [
+            (ssl.SSLCertVerificationError(1, 'certificate verify failed'), 'CERTIFICATE_VERIFY_FAILED', 'TLS_CERTIFICATE_INVALID'),
+            (ssl.SSLError(1, 'wrong version number'), '[SSL: WRONG_VERSION_NUMBER]', 'TLS_FAILED'),
+            (smtplib.SMTPServerDisconnected('Connection unexpectedly closed'), 'Connection unexpectedly closed', 'CONNECTION_LOST'),
+        ]:
+            with self.subTest(code=expected):
+                self.assertEqual(error_info(native)['code'], expected)
+                self.assertEqual(error_info(legacy)['code'], expected)
+
     def test_shared_catalog_patterns_compile_in_python_and_javascript(self):
         import subprocess,re
         rows=json.loads((Path(__file__).resolve().parents[1]/'dashboard/src/error-catalog.json').read_text())

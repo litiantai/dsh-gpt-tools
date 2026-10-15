@@ -133,7 +133,9 @@ class Scheduler:
         path=directory/'request.json'
         atomic(path,request)
         item=self.change(kind,item,{'call':{'id':call_id,'action':action,'started':time.time(),'path':str(path),
-            'signal_ids':[s['id'] for s in (extra or {}).get('signals',[])]},
+            'signal_ids':[s['id'] for s in (extra or {}).get('signals',[])],
+            **({'master_update_merge_sha':item['master_update']['merge_sha']}
+               if action=='master_sync' and item.get('master_update') and item['master_update'].get('status')!='pass' else {})},
             **({'manual_retry_pending':None} if kind=='runs' and action in ('plan','develop') else {}),
             **({'off_peak_wait':None,'reason':''} if item.get('off_peak_wait') else {}),
             **({'reason':''} if item.get('reason')=='每日 Token 额度已用尽，等待次日或调整额度' else {})})
@@ -324,6 +326,7 @@ class Scheduler:
                 return
             action=product['call']['action']
             signal_ids=product['call'].get('signal_ids',[])
+            master_update_merge_sha=product['call'].get('master_update_merge_sha')
             product=self.consume('products',product,result)
             changes={'last_'+action:time.time(),'last_'+action+'_result':redact(result)}
             if action=='inspect' and result.get('inspection_workspace'):
@@ -334,6 +337,21 @@ class Scheduler:
                     changes['master_environment']=result['instance']
                     if (product.get('master_environment') or {}).get('commit')!=result['instance'].get('commit'):
                         changes.update(last_inspect=0,last_final_acceptance=0)
+                update=product.get('master_update') or {}
+                receipt_sha=result.get('master_update_merge_sha')
+                if (update and update.get('status')!='pass'
+                        and (receipt_sha or master_update_merge_sha)==update.get('merge_sha')):
+                    completed=(result.get('status')=='pass' and (result.get('instance') or {}).get('commit')
+                               and receipt_sha==update.get('merge_sha'))
+                    status='pass' if completed else ('blocked' if result.get('status')=='pass'
+                                                     else result.get('status','blocked'))
+                    reason=result.get('reason','')
+                    if result.get('status')=='pass' and not completed:
+                        reason='主实例更新回执缺少匹配的合并提交或运行版本，等待重新同步'
+                    changes['master_update']=dict(update,status=status,reason=reason,
+                        next_attempt=0 if completed else time.time()+60)
+                    if completed:
+                        changes['master_update']['completed_at']=time.time()
             if action=='final_acceptance':
                 from .master import consume
                 consume(self.ledger,product,result)
@@ -355,6 +373,11 @@ class Scheduler:
                         self.change('signals',source,{},'reviewed')
             return
         if not product.get('adapter'):
+            return
+        if product['status'] not in ('active','observing') or product.get('automation_disabled'):
+            return
+        update=product.get('master_update') or {}
+        if update and update.get('status')!='pass' and self.master_step(product):
             return
         from .runtime_recovery import enabled, busy
         recovering=enabled(product)
@@ -380,11 +403,18 @@ class Scheduler:
     def master_step(self,product):
         from .master import enabled, pending
         from .runtime_recovery import busy
-        if not enabled(product) or busy(self.ledger,product['id']):
+        if (product['status'] not in ('active','observing') or product.get('automation_disabled')
+                or product.get('call') or not enabled(product) or busy(self.ledger,product['id'])):
             return False
         now=time.time()
+        update=product.get('master_update') or {}
+        if update and update.get('status')!='pass':
+            if now >= (update.get('next_attempt') or 0):
+                self.start_call('products',product,product,'master_sync',product['adapter'],timeout=14400)
+                return True
+            return False
         if product['status']=='active' and now-product.get('last_master_sync',0)>=60:
-            self.start_call('products',product,product,'master_sync',product['adapter'],timeout=600)
+            self.start_call('products',product,product,'master_sync',product['adapter'],timeout=14400)
             return True
         requirements=pending(self.ledger,product)
         if (requirements and (product.get('last_master_sync_result') or {}).get('status')=='pass'
@@ -439,7 +469,9 @@ class Scheduler:
             existing=titles.get(title)
             target=candidate.get('existing_requirement_id')
             if target:
-                existing=next((r for r in titles.values() if r['id']==target),existing)
+                existing=next((r for r in titles.values() if r['id']==target),None)
+                if existing is None:
+                    continue
             if existing:
                 combined=list(dict.fromkeys(existing.get('signal_ids',[])+ids))
                 added=[i for i in ids if i not in existing.get('signal_ids',[])]
@@ -452,6 +484,11 @@ class Scheduler:
                         signal=self.ledger.get('signals',ident,db)
                         links=list(dict.fromkeys(signal.get('requirement_ids',[])+[existing['id']]))
                         self.ledger.update('signals',ident,signal['version'],{'requirement_id':links[0],'requirement_ids':links},'classified',db)
+                # 已有 ID 是身份依据；标题变化或没有新增信号也不能再创建。
+                for known_title, known_item in list(titles.items()):
+                    if known_item['id'] == existing['id']:
+                        titles[known_title] = existing
+                titles[title] = existing
             if title in titles:
                 if titles[title].get('confirmation_required'):
                     items.append(titles[title])

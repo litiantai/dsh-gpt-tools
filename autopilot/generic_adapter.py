@@ -1,5 +1,6 @@
 """通用命令项目适配器：隔离验证、版本产物及独立更新器交接。"""
 import hashlib
+import fcntl
 import json
 from contextlib import nullcontext
 from pathlib import Path
@@ -55,7 +56,7 @@ def validate_manifest(path):
     return manifest
 
 
-def package(request, checks, root):
+def package(request, checks, root, *, metadata=None):
     product, record = request['product'], request['record']
     workspace = Path(record['workspace']); artifact = root/'artifact'
     if artifact.exists():
@@ -88,6 +89,7 @@ def package(request, checks, root):
              'database_compatibility': product.get('project_config', {}).get('database_compatibility', 'unknown')}
     from .acceptance_scope import pre_release
     value['acceptance_scope'] = pre_release(request.get('requirement'), record)
+    value.update(metadata or {})
     atomic(root/'manifest.json', value)
     return str(root/'manifest.json')
 
@@ -164,43 +166,124 @@ def request_update(request, manifest_path):
     return {'status': 'deferred', 'reason': '独立更新器正在处理版本切换', 'update': str(path)}
 
 
+def master_build(request, expected, validated_manifest_path):
+    """从 master 重新构建并检查产物，release 业务证据明确绑定原源码。"""
+    from .master import build_workspace
+    from .isolated import independent_runtime
+    from .role_workflows import sha
+    import uuid
+    product = request['product']
+    validated = validate_manifest(validated_manifest_path)
+    tree = git(product['delivery_repository'], 'rev-parse', expected+'^{tree}')
+    if (validated.get('product_id') != product['id'] or validated.get('source_tree') != tree
+            or git(product['delivery_repository'], 'rev-parse', validated['commit']+'^{tree}') != tree):
+        raise ValueError('master 重建缺少当前项目同源码的 release 验收证据')
+    root = Path(request['state_root'])/'master-builds'/product['id']/expected
+    root.mkdir(parents=True, exist_ok=True)
+    path = root/'manifest.json'
+    with (root/'build.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if path.exists():
+            cached = validate_manifest(path)
+            if (cached.get('commit') != expected or cached.get('product_id') != product['id']
+                    or not cached.get('master_build_checks')
+                    or any(c.get('status') != 'pass' for c in cached['master_build_checks'] if c.get('required', True))
+                    or cached.get('source_tree') != tree
+                    or cached.get('validated_manifest') != str(validated_manifest_path)
+                    or cached.get('validated_commit') != validated['commit']
+                    or cached.get('validated_artifact_hash') != validated['artifact_hash']
+                    or cached.get('project_config_hash') != sha(product['project_config'])):
+                raise ValueError('master 构建身份、检查或配置不一致，不能复用')
+            return str(path)
+        workspace = build_workspace(request, expected)
+        before = digest(workspace)
+        checks_root = root/('checks-'+uuid.uuid4().hex)
+        checks_root.mkdir()
+        result = verify(workspace, checks_root, product['project_config'],
+                        runtime=product.get('worker_runtime') or independent_runtime(request.get('state_root')),
+                        local=product.get('test_execution') == 'local')
+        atomic(checks_root/'master-build.json', result)
+        if result['status'] != 'pass':
+            raise ValueError('master 重建检查未通过：'+result.get('reason', '')+'；证据：'+str(checks_root))
+        changed = any(subprocess.run(['git', '-C', workspace, 'diff', *args, '--quiet'],
+                                    capture_output=True).returncode for args in ((), ('--cached',)))
+        if git(workspace, 'rev-parse', 'HEAD') != expected or digest(workspace) != before or changed:
+            raise ValueError('master 重建期间源码发生变化，不能部署')
+        inherited = [c | {'inherited_from': str(validated_manifest_path), 'evidence_scope': 'validated_source_tree'}
+                     for c in validated['checks']]
+        record = {'id': 'master-'+expected, 'commit': expected, 'workspace': workspace}
+        # Interrupted packaging is preserved as evidence; a retry starts a new artifact.
+        if (root/'artifact').exists():
+            (root/'artifact').rename(root/('artifact-incomplete-'+uuid.uuid4().hex))
+        return package(request | {'record': record}, result['checks']+inherited, root, metadata={
+            'master_build_checks': result['checks'], 'validated_manifest': str(validated_manifest_path),
+            'validated_commit': validated['commit'], 'validated_artifact_hash': validated['artifact_hash'],
+            'project_config_hash': sha(product['project_config']), 'source_workspace': workspace})
+
+
 def master_sync(request):
-    from .master import target
+    """合并后拉取主分支、重建实例并交接独立更新器，重试保留同一任务。"""
+    product = request['product']
+    receipt = {'master_update_merge_sha': (product.get('master_update') or {}).get('merge_sha')}
+    root = Path(request['state_root'])/'master-builds'/product['id']
+    root.mkdir(parents=True, exist_ok=True)
+    with (root/'sync.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return receipt | {'status': 'busy', 'reason': 'master 实例正在重建，等待当前更新完成'}
+        try:
+            return _master_sync(request) | receipt
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            return receipt | {'status': 'blocked', 'reason': str(exc)}
+
+
+def _master_sync(request):
+    from .master import target, update_target
     from review_core import Store
     from .store import Ledger
-    product = request['product']; expected = target(product)
+    product = request['product']; expected = update_target(request)
+    receipt = {'source_commit': expected}
     try:
-        return {'status': 'pass', 'instance': identity(product, expected)}
+        instance = identity(product, expected)
     except (ValueError, OSError):
-        pass
+        instance = None
+    if instance:
+        if target(product) != expected:
+            return receipt | {'status': 'busy', 'reason': '核对实例期间 master 变化，等待重新更新'}
+        return receipt | {'status': 'pass', 'instance': instance, 'reason': 'master 实例版本已就绪'}
     repo = product['delivery_repository']; tree = git(repo, 'rev-parse', expected+'^{tree}')
     ledger = Ledger(Store(Path(request['state_root']).parent))
     for batch in ledger.list('deliveries'):
         if batch['product_id'] != product['id'] or batch['status'] != 'online':
             continue
-        proof = batch.get('validation_pass', {})
-        for receipt in reversed(batch.get('receipts', [])):
-            result = receipt['result']
-            if receipt['action'] not in ('validate','validate_release') or result.get('status') != 'pass' or not result.get('manifest'):
+        proof = batch.get('validation_pass') or {}
+        for entry in reversed(batch.get('receipts', [])):
+            result = entry['result']
+            if entry['action'] not in ('validate','validate_release') or result.get('status') != 'pass' or not result.get('manifest'):
                 continue
             if result.get('head_sha') != proof.get('head_sha') or result.get('base_sha') != proof.get('base_sha'):
                 continue
             manifest = validate_manifest(result['manifest'])
-            if manifest['source_tree'] != tree:
+            if manifest.get('product_id') != product['id'] or manifest.get('commit') != result['head_sha']:
+                raise ValueError('release 验收产物与项目或验证提交不一致')
+            if (manifest.get('source_tree') != tree
+                    or git(repo, 'rev-parse', manifest['commit']+'^{tree}') != tree):
                 continue
-            # Merge commits can differ while the verified source tree remains identical.
-            root = Path(request['state_root'])/'master-builds'/product['id']/expected
-            dest = root/'manifest.json'
-            if not dest.exists():
-                root.mkdir(parents=True, exist_ok=True)
-                artifact = root/'artifact'
-                shutil.copytree(manifest['artifact'], artifact, symlinks=True)
-                atomic(artifact/'autopilot-release.json', {'product_id': product['id'], 'commit': expected, 'release_id': 'master-'+expected})
-                atomic(dest, manifest | {'commit': expected, 'release_id': 'master-'+expected, 'artifact': str(artifact),
-                                         'artifact_hash': manifest_hash(artifact), 'root': str(root)})
-            result=request_update(request, str(dest))
-            return result | {'status':'busy'} if result['status']=='deferred' else result
-    return {'status': 'blocked', 'reason': '主分支缺少内容一致且验收通过的产物'}
+            dest = master_build(request, expected, result['manifest'])
+            receipt.update(manifest=dest)
+            if target(product) != expected:
+                return receipt | {'status': 'busy', 'reason': '重建期间 master 变化，等待重建最新版本'}
+            result = request_update(request, dest)
+            if result['status'] == 'deferred':
+                return receipt | result | {'status': 'busy'}
+            if result['status'] == 'pass':
+                instance = identity(product, expected)
+                if target(product) != expected:
+                    return receipt | {'status': 'busy', 'reason': '更新期间 master 变化，等待更新最新版本'}
+                return receipt | result | {'instance': instance, 'reason': 'master 实例重建与版本切换完成'}
+            return receipt | result
+    return receipt | {'status': 'blocked', 'reason': '主分支缺少内容一致且验收通过的产物'}
 
 
 def execute(action, request):

@@ -32,7 +32,7 @@ def snapshot(ledger, product, now):
             return ledger.get('daily_reports', ident, db)
         except KeyError:
             pass
-        previous = db.execute('SELECT data FROM auto_daily_reports WHERE product_id=? ORDER BY created DESC LIMIT 1', (product['id'],)).fetchone()
+        previous = db.execute("SELECT data FROM auto_daily_reports WHERE product_id=? AND COALESCE(json_extract(data,'$.report_type'),'daily')='daily' ORDER BY created DESC LIMIT 1", (product['id'],)).fetchone()
         start = json.loads(previous[0])['cutoff'] if previous else due.replace(hour=0).timestamp()
         cutoff = due.timestamp()
         def records(kind):
@@ -67,6 +67,7 @@ def snapshot(ledger, product, now):
                  'delivered_count': sum(r['status']=='delivered' for r in runs),
                  'queued_count': sum(r['status'] == 'queued' for r in runs)}
         return ledger.create('daily_reports', {'product_id': product['id'], 'title': due.date().isoformat() + ' 研发日报与复盘',
+            'report_type': 'daily',
             'day': due.date().isoformat(), 'cutoff': cutoff, 'window_start': start, 'timezone': 'Asia/Shanghai',
             'stats': stats, 'run_ids': [r['id'] for r in audit_runs], 'audits': [], 'quota_exempt': True,
             'release_results': [{'status': r['status'], 'reason': r.get('reason', '')} for r in releases if start <= r['updated'] <= now],
@@ -77,13 +78,51 @@ def snapshot(ledger, product, now):
             'reason': '日报已建立，按顺序进行晚间归因、复验与复盘；统计截至北京时间 19:00，排队状态为生成时快照'} | attribution, 'running', ident, db)
 
 
+def morning_snapshot(scheduler, product, day, start, end):
+    """早七先保存完整事实报告，智能分析沿现有持久化调用异步推进。"""
+    ledger = scheduler.ledger
+    ident = product['id'] + '-morning-' + day.isoformat()
+    with ledger.store.transaction() as db:
+        try:
+            report = ledger.get('daily_reports', ident, db)
+        except KeyError:
+            report = ledger.create('daily_reports', {
+                'product_id': product['id'], 'report_type': 'morning',
+                'title': day.isoformat() + ' 昨日研发完整复盘', 'day': day.isoformat(),
+                'cutoff': end, 'window_start': start, 'timezone': 'Asia/Shanghai',
+                'stats': {}, 'run_ids': [], 'audits': [], 'quota_exempt': True,
+                'reason': '完整事实已生成，智能复盘与改进需求归因等待异步执行',
+            }, 'running', ident, db)
+    if not report.get('html_report'):
+        from .retrospective_report import prepare, finish
+        prepared = prepare(scheduler, product, report, register_sources=True)
+        facts = {'status': 'blocked', 'reason': '智能复盘等待异步执行，以下展示完整台账事实',
+                 'summary': prepared.get('summary', {}).get('statement', '已采集所有可用来源，覆盖情况见报告。') + ' 智能分析和改进需求归因待执行。',
+                 'accomplishments': [], 'problems': [], 'lessons': [], 'next_actions': []}
+        artifacts = finish(scheduler, product, report, facts, auto_apply=False, queue=False)
+        report = ledger.update('daily_reports', report['id'], report['version'], artifacts | {'analysis_pending': True})
+    return report
+
+
+def _next_report(ledger):
+    """先回收在途调用，再优先早七分析，避免晚间归因积压饿死早报。"""
+    with ledger.store.connect() as db:
+        reports = [ledger.decode(row) for row in db.execute("SELECT * FROM auto_daily_reports WHERE status='running' ORDER BY created,id")]
+    reports = [row for row in reports if not ledger.get('products', row['product_id']).get('automation_disabled')]
+    def priority(row):
+        if row.get('call') or len(row.get('receipts', [])) > row.get('processed_receipts', 0):
+            return 0
+        return 1 if row.get('report_type') == 'morning' else 2
+    return min(reports, key=priority) if reports else None
+
+
 def tick(scheduler):
     ledger = scheduler.ledger
     for product in ledger.list('products'):
         if not product.get('automation_disabled') and product.get('daily_report_enabled'):
             snapshot(ledger, product, time.time())
     # 每次仅推进一份报告；每项调用与回执持久化，重启不会重复验收已完成项。
-    report = next((r for r in reversed(ledger.list('daily_reports')) if r['status'] == 'running' and not ledger.get('products',r['product_id']).get('automation_disabled')), None)
+    report = _next_report(ledger)
     if not report:
         return
     product = ledger.get('products', report['product_id'])
@@ -130,8 +169,14 @@ def tick(scheduler):
             collect(ledger)
             traces = [Path(r['result']['evidence']) / 'trace.jsonl' for r in report['receipts'] if r['result'].get('evidence')]
             usage = sum(trace_tokens(path) for path in traces if path.is_file())
-            scheduler.change('daily_reports', report, processed | {'retrospective_status':result['status'], 'retrospective': redact(result), 'finished_at': time.time(),
-                'exempt_usage': usage, 'reason': result.get('summary') or result.get('reason', '日报执行未返回说明')}, status)
+            from .retrospective_report import finish
+            artifacts = finish(scheduler, product, report, result, auto_apply=True, queue=True)
+            finished = scheduler.change('daily_reports', report, processed | artifacts | {'analysis_pending': False, 'retrospective_status':result['status'], 'retrospective': redact(result), 'finished_at': time.time(),
+                'exempt_usage': usage, 'retrospective': artifacts.get('retrospective') or redact(result),
+                'reason': result.get('summary') or result.get('reason', '日报执行未返回说明')}, status)
+            if finished.get('report_type') == 'morning' and result['status'] == 'pass':
+                from .notifications import enqueue_retrospective_completion
+                enqueue_retrospective_completion(scheduler, product, finished, time.time())
         return action not in READ_ONLY_ACTIONS
     command = [sys.executable, str(Path(__file__).resolve().parents[1] / 'scripts/autopilot-adapter.py'), 'daily']
     remaining=report.get('attribution_signal_ids',[])[len(report.get('attribution_results',[]))*8:]
@@ -143,7 +188,12 @@ def tick(scheduler):
         extra = {'audit_run': run, 'requirement': ledger.get('requirements', run['requirement_id'])}
         action = 'daily_acceptance'
     else:
-        extra = {'daily_report': report}
+        from .retrospective_report import prepare
+        prepared = prepare(scheduler, product, report, register_sources=True)
+        metadata = {key: value for key, value in prepared.items() if key != 'material'}
+        if report.get('retrospective_evidence') != metadata:
+            report = scheduler.change('daily_reports', report, {'retrospective_evidence': metadata})
+        extra = {'daily_report': report | {'comprehensive_evidence': prepared}}
         action = 'daily_retrospective'
     # 只读归因/复盘可与研发并行；实际复验仍保护候选目录和测试实例。
     if action == 'daily_acceptance':

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import html as html_module
 import json
 import os
 import re
@@ -238,7 +237,8 @@ def mask(value):
 def connect(smtp):
     host, port, mode = smtp['host'], int(smtp['port']), smtp['tls']
     if mode == 'ssl':
-        return smtplib.SMTP_SSL(host, port, timeout=SMTP_TIMEOUT)
+        from .smtp_transport import connect_ssl
+        return connect_ssl(host, port, timeout=SMTP_TIMEOUT, factory=smtplib.SMTP_SSL)
     server = smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT)
     if mode == 'starttls':
         server.starttls()
@@ -258,7 +258,7 @@ def verify(smtp, sender, code):
     return True
 
 
-def build_message(sender, recipients, subject, text, body_html):
+def build_message(sender, recipients, subject, text, body_html, report_attachment=None):
     note = EmailMessage()
     note['From'] = sender
     note['To'] = ', '.join(recipients)
@@ -267,6 +267,9 @@ def build_message(sender, recipients, subject, text, body_html):
     note['Message-ID'] = make_msgid(domain=sender.partition('@')[2] or None)
     note.set_content(text)
     note.add_alternative(body_html, subtype='html')
+    if report_attachment is not None:
+        note.add_attachment(report_attachment['content'], subtype='html',
+                            filename=report_attachment['filename'])
     return note
 
 
@@ -381,12 +384,16 @@ def _quota(ledger, product):
 def _window_label(start, end):
     left = dt.datetime.fromtimestamp(start, ZONE)
     right = dt.datetime.fromtimestamp(end, ZONE)
-    if left.date() == right.date() or (right - left) == dt.timedelta(days=1):
+    if right < left:
+        raise ValueError('统计窗口结束时间不能早于开始时间')
+    if left.time() == dt.time.min and right.time() == dt.time.min and right - left == dt.timedelta(days=1):
         return left.strftime('%Y-%m-%d 00:00–24:00')
-    return left.strftime('%Y-%m-%d %H:%M') + ' 至 ' + right.strftime('%Y-%m-%d %H:%M')
+    precision = '%Y-%m-%d %H:%M:%S' if any((left.second, right.second, left.microsecond, right.microsecond)) else '%Y-%m-%d %H:%M'
+    return left.strftime(precision) + ' 至 ' + right.strftime(precision)
 
 
 def render_text(subject, data):
+    completed_heading = '二、昨日完成' if data.get('kind') == 'morning_retro' else '二、本次统计窗口完成'
     lines = [subject, '', '一、概览指标',
              f'- 统计窗口：{_window_label(*data["window"])}（Asia/Shanghai）',
              f'- 新增需求：{data["stats"]["requirements_found"]}',
@@ -396,7 +403,7 @@ def render_text(subject, data):
              f'- 发布批次：{data["stats"]["releases"]}',
              f'- 当前排队：{data["stats"]["queued"]}',
              '', *([data['focus'], ''] if data.get('focus') else []),
-             '二、昨日完成']
+             completed_heading]
     if data['done'] or data['online_detail']:
         for row in data['done']:
             lines.append(f'- 需求《{row["title"] or row["id"]}》业务验收通过（记录 {row["id"]}）')
@@ -436,47 +443,9 @@ def render_text(subject, data):
 
 
 def render_html(subject, data):
-    def item_list(values, empty='无'):
-        if not values:
-            return f'<li>{html_module.escape(empty)}</li>'
-        return ''.join(f'<li>{html_module.escape(str(value))}</li>' for value in values)
-    stats = data['stats']
-    done = [f'需求《{row["title"] or row["id"]}》业务验收通过（记录 {row["id"]}）' for row in data['done']]
-    done += [f'交付《{row["title"] or row["id"]}》已合入主分支（记录 {row["id"]}）' for row in data['online_detail']]
-    issues = [f'[{issue["source"]}] {issue["title"]}：{issue["cause"]}；需要：{issue["action"]}' for issue in data['issues']]
-    issues += [f'[复盘] {problem["summary"]}（累计 {problem["occurrences"]} 次，持续跟踪）' for problem in data['open_problems']]
-    quota = data['quota']
-    quota_rows = [f'开发 Token：{quota["tokens_used"]} / {quota["tokens_limit"] or "不限"}'
-                  + ('（已用尽）' if quota['tokens_exhausted'] else ''),
-                  f'今日需求：{quota["development_used"]} / {quota["development_limit"] or "不限"}',
-                  f'需求发现：{quota["discovery_used"]} / {quota["discovery_limit"] or "不限"}']
-    competitor = []
-    for row in data['competitors']['jobs']:
-        label = '发现竞品' if row['action'] == 'find_competitors' else '竞品分析'
-        competitor.append(f'{label}任务{("完成" if row["status"] == "completed" else "失败")}：新增 {row["found"]} 个候选'
-                          + (f'；{row["reason"]}' if row['reason'] else ''))
-    competitor += [f'新登记竞品：{row["name"]}' for row in data['competitors']['new']]
-    todo = [f'待办：{value}' for value in (data['todo'] or ['按巡检与需求发现节奏继续推进；暂无额外汇总事项。'])]
-    todo += [f'自进化：{value}' for value in data['suggestions']]
-    focus = f'<p class="focus">{html_module.escape(data["focus"])}</p>' if data.get('focus') else ''
-    body = f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>{html_module.escape(subject)}</title>
-<style>body{{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#1f2329;line-height:1.6}}
-h1{{font-size:18px}}h2{{font-size:15px;margin-top:20px;border-bottom:1px solid #e5e6eb;padding-bottom:4px}}
-ul{{padding-left:20px;margin:6px 0}}.focus{{background:#f2f3f5;padding:8px 12px;border-radius:4px}}</style></head>
-<body><h1>{html_module.escape(subject)}</h1>{focus}
-<p>统计窗口：{html_module.escape(_window_label(*data["window"]))}（Asia/Shanghai）</p>
-<h2>一、概览指标</h2><ul>
-<li>新增需求：{stats["requirements_found"]}</li><li>启动任务：{stats["runs_started"]}</li>
-<li>业务验收通过：{stats["accepted"]}</li><li>交付上线：{stats["online"]}</li>
-<li>发布批次：{stats["releases"]}</li><li>当前排队：{stats["queued"]}</li></ul>
-<h2>二、昨日完成</h2><ul>{item_list(done)}</ul>
-<h2>三、阻塞与问题</h2><ul>{item_list(issues)}</ul>
-<h2>四、额度使用</h2><ul>{item_list(quota_rows)}</ul>
-<h2>五、竞品动态</h2><ul>{item_list(competitor)}</ul>
-<h2>六、今日待办与自进化建议</h2><ul>{item_list(todo)}</ul>
-<p style="color:#86909c;font-size:12px">本简报由本机台账复算生成，未使用任何外部数据源。</p>
-</body></html>'''
-    return body[:200000]
+    """渲染适配邮箱和手机屏幕的研发简报。"""
+    from .notification_email import render_html as render_email_html
+    return render_email_html(subject, data)
 
 
 def render(ledger, product, kind, now, context=None):
@@ -499,6 +468,7 @@ def render(ledger, product, kind, now, context=None):
         if context.get('title'):
             subject += f' · {context["title"]}'
     data = collect(ledger, product, start, end, now, context)
+    data['kind'] = kind
     if context.get('focus'):
         data['focus'] = context['focus']
     return subject, {'text': render_text(subject, data), 'html': render_html(subject, data),
@@ -570,6 +540,8 @@ def record_problems(ledger, product, issues):
 
 
 def _run_events(ledger, product, now, known=None):
+    labels = {'plan_review': '方案待审查', 'accepted': '业务验收通过', 'delivered': '已交付',
+              'online': '已上线', 'completed': '已完成'}
     for run in ledger.scoped('runs', product['id']):
         if run['status'] not in REPORT_STATUSES:
             continue
@@ -577,7 +549,7 @@ def _run_events(ledger, product, now, known=None):
         _queue(ledger, product, 'run_report', key, now, {
             'start': (run.get('created') or now - 86400) - 1, 'end': now + 1,
             'title': run.get('title') or run['id'],
-            'focus': f'运行节点：{run.get("title") or run["id"]} 已进入 {run["status"]}。'
+            'focus': f'运行节点：{run.get("title") or run["id"]} · {labels.get(run["status"], run["status"])}。'
                      + (f'原因：{_safe(run.get("reason"), 300)}' if run.get('reason') else ''),
         }, known)
 
@@ -651,7 +623,138 @@ def _competitor_events(ledger, product, now, known=None):
         }, known)
 
 
-def _retro_events(ledger, product, now, config, known=None):
+def _report_file(metadata, root):
+    """仅读取复盘目录内且摘要匹配的已冻结产物，不信任任意台账路径。"""
+    directory = (Path(root) / 'retrospectives').resolve()
+    path = Path(metadata.get('path', '')).resolve()
+    if not path.is_relative_to(directory) or not path.is_file():
+        raise ValueError('复盘报告附件路径无效')
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != metadata.get('sha256'):
+        raise ValueError('复盘报告附件摘要不匹配，停止投递并保留通知重试')
+    return path, content
+
+
+def _report_attachment(payload, root):
+    metadata = payload.get('html_report')
+    if metadata is None:
+        return None
+    if not isinstance(metadata, dict):
+        raise ValueError('复盘报告附件信息无效')
+    path, content = _report_file(metadata, root)
+    return {'content': content.decode('utf-8'), 'filename': path.name}
+
+
+def _retrospective_text(facts):
+    """纯文本邮件也保留历史异常、当前等待与覆盖缺口的完整分组摘要。"""
+    summary = facts.get('summary', {})
+    lines = ['', '三、完整复盘：问题与卡点', summary.get('statement', ''),
+             '历史失败与返修（按原因合并；逐条证据见 HTML 附件）：']
+    for row in facts.get('problem_items', []):
+        lines.append(f'- [{", ".join(row.get("source_kinds") or [row.get("source_kind", "")])}] '
+                     f'{row.get("title", "问题")}；{row.get("reason", "未记录原因")}；发生 {row.get("occurrences", 1)} 次；'
+                     f'当前状态 {row.get("current_status", "unknown")}；记录 {", ".join(row.get("source_ids", []))}')
+    if not facts.get('problem_items'):
+        lines.append('- 当前证据中未发现窗口内异常；是否完整覆盖以以下缺口说明为准。')
+    lines.append('当前卡点与等待（不将正常执行视作故障）：')
+    for row in facts.get('current_blockers', []):
+        lines.append(f'- {row.get("title", "等待")}；{row.get("reason", "未记录原因")}；'
+                     f'状态 {row.get("current_status", "unknown")}；记录 {", ".join(row.get("source_ids", []))}')
+    if not facts.get('current_blockers'):
+        lines.append('- 未发现需要处理的当前等待记录。')
+    gaps = facts.get('coverage', {}).get('gaps', [])
+    lines.append('覆盖检查：' + ('完整' if facts.get('coverage', {}).get('complete') else '存在缺口，不能断言没有问题'))
+    lines.extend(f'- {row.get("source", "来源")}：{row.get("detail", row.get("code", "未说明"))}' for row in gaps)
+    analysis = facts.get('analysis') or {}
+    conversion = facts.get('conversion') or {}
+    if analysis.get('status') == 'pass':
+        lines += ['智能复盘结论：', str(analysis.get('summary') or '')]
+        for row in analysis.get('problem_items', []):
+            lines.append(f'- {row.get("title", "问题")}：{row.get("cause", "")}；处理 {row.get("disposition", "")}；下一步 {row.get("next_action", "")}')
+        lines.extend(f'- 下一步：{value}' for value in analysis.get('next_actions', []))
+        lines.append(f'需求转化：新增 {conversion.get("created", 0)}、复用 {conversion.get("reused", 0)}、入队 {conversion.get("queued", 0)}、待补证 {conversion.get("skipped", 0)}、失败 {conversion.get("failed", 0)}。')
+        for row in conversion.get('results', []):
+            lines.append(f'- {row.get("title", "候选")}：{row.get("action", "未处理")}；需求 {row.get("requirement_id", "未入池")}；状态 {row.get("status", "")}；{row.get("advancement") or row.get("reason") or ""}')
+    else:
+        lines.append('智能复盘与可验收改进需求正在沿现有任务流程处理；请在研发日报中查看最新报告与入池结果。')
+    return '\n'.join(lines)
+
+
+def _morning_payload(ledger, product, now, context, report, root, completion=False):
+    """邮件正文呈现全面事实，完整 HTML 以独立冻结附件保留。"""
+    metadata = report['retrospective_evidence']
+    _, evidence_bytes = _report_file({'path': metadata['evidence_path'], 'sha256': metadata['evidence_hash']}, root)
+    evidence = json.loads(evidence_bytes)
+    facts = {key: evidence.get(key, {}) if key in ('summary', 'coverage', 'statistics') else evidence.get(key, [])
+             for key in ('summary', 'coverage', 'statistics', 'problem_items', 'current_blockers')}
+    if not report.get('analysis_pending'):
+        facts.update(analysis=report.get('retrospective') or {}, conversion=report.get('conversion') or {})
+    _, content = _report_file(report['html_report'], root)
+    attachment_path = Path(report['html_report']['path']).parent / (('复盘结论-' if completion else '完整复盘-') + report['day'] + '.html')
+    temporary = attachment_path.with_suffix('.html.tmp')
+    temporary.write_bytes(content)
+    temporary.replace(attachment_path)
+    label = '昨日研发复盘完成' if completion else '昨日研发简报'
+    subject = f'[{product.get("name") or product["id"]}] {label} · {report["day"]}'
+    data = collect(ledger, product, *context['window'], now, context)
+    data.update(kind='morning_retro', day=report['day'], comprehensive=facts,
+                analysis_pending=bool(report.get('analysis_pending')), report_id=report['id'])
+    data['focus'] = facts['summary'].get('statement', '覆盖范围和事实见完整报告。')
+    if facts.get('analysis', {}).get('status') == 'pass':
+        data['focus'] += '\n智能复盘：' + str(facts['analysis'].get('summary') or '')
+    current_count = facts['summary'].get('current_blocker_groups', 0)
+    if current_count:
+        data['todo'] = [f'核对当前 {current_count} 组任务卡点、需求等待或待归因信号；具体原因及关联需求见完整复盘。']
+    data['suggestions'] = ['依据完整问题与当前卡点归因，已有需求补充证据，可验收的新增改进自动去重入池并沿研发流程推进。']
+    if report.get('analysis_pending'):
+        data['suggestions'].append('智能复盘等待异步执行；本封邮件已附完整事实报告，最新结论和入池结果可在研发日报查看。')
+    text = render_text(subject, data)
+    before, separator, rest = text.partition('三、阻塞与问题')
+    _, next_separator, after = rest.partition('四、额度使用')
+    text = before + _retrospective_text(facts) + '\n\n' + next_separator + after if separator and next_separator else text + _retrospective_text(facts)
+    return subject, {'text': text,
+                     'html': render_html(subject, data), 'day': report['day'],
+                     'window': context['window'], 'kind': 'morning_retro', 'report_id': report['id'],
+                     'html_report': {'path': str(attachment_path), 'sha256': hashlib.sha256(content).hexdigest()}}
+
+
+def enqueue_retrospective_completion(scheduler, product, report, now):
+    """通过的智能结论与真实入池回执只补充一次；未投递的早报直接升级。"""
+    config = normalize(product)
+    if not config['enabled'] or not config['events'].get('morning_retro'):
+        return None
+    analysis = report.get('retrospective') or {}
+    conversion = report.get('conversion') or {}
+    if report.get('analysis_pending') or analysis.get('status') != 'pass' or not (
+            analysis.get('summary') or analysis.get('problem_items') or analysis.get('next_actions') or conversion.get('results')):
+        return None
+    ledger = scheduler.ledger
+    event_key = 'retro-analysis:' + report['day']
+    ident = notification_id(product['id'], event_key)
+    if _exists(ledger, ident):
+        return None
+    original_id = notification_id(product['id'], 'retro:' + report['day'])
+    try:
+        original = ledger.get('notifications', original_id)
+    except KeyError:
+        original = None
+    context = {'day': dt.date.fromisoformat(report['day']),
+               'window': [report['window_start'], report['cutoff']], '_kind': 'morning_retro'}
+    unsent = bool(original and original['status'] in ('queued', 'blocked')
+                  and not original.get('attempts') and not original.get('receipt'))
+    subject, payload = _morning_payload(ledger, product, now, context, report, scheduler.root, completion=not unsent)
+    if unsent:
+        ledger.update('notifications', original_id, original['version'], {'subject': subject, 'payload': payload})
+        # 持久化抑制标记，使重启或原早报投递后也不再补发同一结论。
+        return ledger.create('notifications', {'product_id': product['id'], 'kind': 'morning_retro',
+            'event_key': event_key, 'subject': subject, 'payload': {}, 'attempts': 0,
+            'reason': '最终结论已合入尚未投递的早七邮件', 'original_notification_id': original_id}, 'cancelled', ident)
+    return ledger.create('notifications', {'product_id': product['id'], 'kind': 'morning_retro',
+        'event_key': event_key, 'subject': subject, 'payload': payload, 'attempts': 0,
+        'next_attempt_at': 0, 'receipt': None, 'error': ''}, 'queued', ident)
+
+
+def _retro_events(ledger, product, now, config, known=None, scheduler=None):
     day, start, end = window_for_retro(now, config.get('morning_hour', MORNING_HOUR))
     if end < product.get('created', 0):
         return None
@@ -660,10 +763,17 @@ def _retro_events(ledger, product, now, config, known=None):
     event_key = f'retro:{day.isoformat()}'
     ident = notification_id(product['id'], event_key)
     seen = ident in known if known is not None else _exists(ledger, ident)
+    if scheduler is None:
+        from types import SimpleNamespace
+        scheduler = SimpleNamespace(ledger=ledger, store=ledger.store, root=ledger.store.state / 'autopilot')
+    from .daily import morning_snapshot
+    report = morning_snapshot(scheduler, product, day, start, end)
+    if not report.get('analysis_pending'):
+        enqueue_retrospective_completion(scheduler, product, report, now)
     if seen:
         return None
-    context = {'day': day, 'window': [start, end], 'title': day.isoformat()}
-    subject, payload = render(ledger, product, 'morning_retro', now, context)
+    context = {'day': day, 'window': [start, end], 'title': day.isoformat(), '_kind': 'morning_retro'}
+    subject, payload = _morning_payload(ledger, product, now, context, report, scheduler.root)
     record_problems(ledger, product, collect(ledger, product, start, end, now, context)['issues'])
     item = ledger.create('notifications', {
         'product_id': product['id'], 'kind': 'morning_retro', 'event_key': event_key,
@@ -675,7 +785,7 @@ def _retro_events(ledger, product, now, config, known=None):
     return item
 
 
-def enqueue(ledger, product, config, now, known=None):
+def enqueue(ledger, product, config, now, known=None, scheduler=None):
     events = config['events']
     if events.get('run_report'):
         _run_events(ledger, product, now, known)
@@ -686,7 +796,7 @@ def enqueue(ledger, product, config, now, known=None):
     if events.get('competitor'):
         _competitor_events(ledger, product, now, known)
     if events.get('morning_retro'):
-        _retro_events(ledger, product, now, config, known)
+        _retro_events(ledger, product, now, config, known, scheduler)
 
 
 # ---------------------------------------------------------------- 投递
@@ -718,7 +828,8 @@ def send(scheduler, item, now):
                'message_id': previous.get('message_id'), 'at': now}
     try:
         note = build_message(config['sender'], recipients, item['subject'],
-                             payload.get('text', ''), payload.get('html', ''))
+                             payload.get('text', ''), payload.get('html', ''),
+                             _report_attachment(payload, scheduler.root))
         if receipt['message_id']:
             note.replace_header('Message-ID', receipt['message_id'])
         receipt['message_id'] = note['Message-ID']
@@ -791,7 +902,7 @@ def tick(scheduler):
         enabled.add(product['id'])
         try:
             known = {item['id'] for item in ledger.scoped('notifications', product['id'])}
-            enqueue(ledger, product, config, now, known)
+            enqueue(ledger, product, config, now, known, scheduler)
         except Exception as exc:
             ledger.store.event('autopilot_notification_error',
                                detail={'product_id': product['id'], 'reason': _safe(exc)})

@@ -39,6 +39,323 @@
       "items": {
         "type": "string"
       }
+    },
+    "coverage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source_kind": {
+            "type": "string",
+            "enum": [
+              "products",
+              "runs",
+              "inspections",
+              "inspection_rounds",
+              "signals",
+              "evidence",
+              "reviews",
+              "code_reviews",
+              "deliveries",
+              "releases",
+              "requirements",
+              "queue",
+              "daily_reports",
+              "coordinators",
+              "inspection_plans",
+              "research_jobs",
+              "current_progress",
+              "events",
+              "notifications",
+              "scans",
+              "test_chains",
+              "test_chain_versions",
+              "test_chain_runs",
+              "test_chain_baselines",
+              "requirement_groups",
+              "design_versions",
+              "evaluations",
+              "problems"
+            ]
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "record_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "limitations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "source_kind",
+          "complete",
+          "record_ids",
+          "limitations"
+        ]
+      }
+    },
+    "problem_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source_kind": {
+            "type": "string",
+            "enum": [
+              "products",
+              "runs",
+              "inspections",
+              "inspection_rounds",
+              "signals",
+              "evidence",
+              "reviews",
+              "code_reviews",
+              "deliveries",
+              "releases",
+              "requirements",
+              "queue",
+              "daily_reports",
+              "coordinators",
+              "inspection_plans",
+              "research_jobs",
+              "current_progress",
+              "events",
+              "notifications",
+              "scans",
+              "test_chains",
+              "test_chain_versions",
+              "test_chain_runs",
+              "test_chain_baselines",
+              "requirement_groups",
+              "design_versions",
+              "evaluations",
+              "problems"
+            ]
+          },
+          "source_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cause": {
+            "type": "string",
+            "minLength": 1
+          },
+          "problem_type": {
+            "type": "string",
+            "enum": [
+              "defect",
+              "optimization",
+              "process",
+              "environment",
+              "execution",
+              "quota",
+              "waiting",
+              "unknown"
+            ]
+          },
+          "failure_kind": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "signal_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "requirement_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "window_status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "persisting",
+              "resolved",
+              "not_observed",
+              "history_incomplete"
+            ]
+          },
+          "current_status": {
+            "type": "string",
+            "minLength": 1
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "existing_requirement",
+              "candidate",
+              "investigation",
+              "environment",
+              "wait",
+              "recovered",
+              "needs_evidence",
+              "out_of_scope"
+            ]
+          },
+          "next_action": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "source_kind",
+          "source_id",
+          "title",
+          "cause",
+          "problem_type",
+          "failure_kind",
+          "evidence",
+          "evidence_ids",
+          "signal_ids",
+          "requirement_ids",
+          "window_status",
+          "current_status",
+          "disposition",
+          "next_action"
+        ]
+      }
+    },
+    "requirement_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "signal_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reproduction": {
+            "type": "string",
+            "minLength": 1
+          },
+          "impact": {
+            "type": "string",
+            "minLength": 1
+          },
+          "acceptance": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "classification": {
+            "type": "string",
+            "enum": [
+              "development",
+              "investigation",
+              "environment"
+            ]
+          },
+          "in_scope": {
+            "type": "boolean"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "resolution_probes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "pointer": {
+                  "type": "string"
+                },
+                "operator": {
+                  "type": "string",
+                  "enum": [
+                    "equals",
+                    "not_equals",
+                    "not_empty",
+                    "not_contains"
+                  ]
+                },
+                "expected": {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "pointer",
+                "operator",
+                "expected"
+              ]
+            }
+          },
+          "existing_requirement_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "signal_ids",
+          "evidence",
+          "reproduction",
+          "impact",
+          "acceptance",
+          "classification",
+          "in_scope",
+          "priority",
+          "resolution_probes",
+          "existing_requirement_id"
+        ]
+      }
     }
   },
   "required": [
@@ -48,6 +365,9 @@
     "accomplishments",
     "problems",
     "lessons",
-    "next_actions"
+    "next_actions",
+    "coverage",
+    "problem_items",
+    "requirement_candidates"
   ]
 }

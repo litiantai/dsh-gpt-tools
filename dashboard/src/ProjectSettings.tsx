@@ -243,13 +243,13 @@ function NotificationSettings({productId,reload}:{productId:string;reload:()=>Pr
       await api(`/products/${productId}/notifications/configure`,body);
       setCredential('');await saved.refetch();await reload();
       message.success('邮件通知设置已保存');
-    }catch(e){setError(e instanceof Error?e.message:'通知设置保存失败');}
+    }catch(e){setError(serializeError(e));}
     finally{setBusy(false);}
   };
   const sendTest=async()=>{
     setBusy(true);setError('');
     try{await api(`/products/${productId}/notifications/send-test`,{});await saved.refetch();message.success('测试简报已入队，将在下一轮调度发送');}
-    catch(e){setError(e instanceof Error?e.message:'测试简报入队失败');}
+    catch(e){setError(serializeError(e));}
     finally{setBusy(false);}
   };
   const columns:TableColumnsType<NotificationDelivery>=[
@@ -261,7 +261,7 @@ function NotificationSettings({productId,reload}:{productId:string;reload:()=>Pr
   ];
   return <div>
     <Alert type="info" showIcon message="邮件在本机直接发送" description="授权码只保存在本机运行时目录，不进入项目配置、操作日志或页面回显；SMTP 接受表示服务器已接收邮件，实际送达请以收件箱为准。"/>
-    {(error || saved.error) && <Alert type="error" showIcon message={error || '无法读取当前通知配置'}/>}
+    {(error || saved.error) && <Alert type="error" showIcon message={<ErrorNotice value={error || saved.error} subject="邮件服务器"/>}/>}
     <div className="project-settings-grid">
       <div><label className="muted">发件人邮箱</label><Input aria-label="发件人邮箱" placeholder={saved.data?.sender_configured?saved.data.sender_masked:'发件人邮箱'} autoComplete="off" value={sender} onChange={e=>setSender(e.target.value)} disabled={busy}/>
         <p className="muted">当前：{saved.data?.sender_configured?saved.data.sender_masked:'尚未配置'}；输入新值可替换。</p></div>

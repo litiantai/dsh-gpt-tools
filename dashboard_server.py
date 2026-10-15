@@ -701,6 +701,7 @@ def handler_for(app, port, dist):
             data,
             content_type="application/json; charset=utf-8",
             cookie=False,
+            extra_headers=None,
         ):
             if not isinstance(data,bytes) and not self.path.startswith('/api/connector/'):
                 data=present_errors(data)
@@ -720,6 +721,8 @@ def handler_for(app, port, dist):
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("Referrer-Policy", "no-referrer")
                 self.send_header("X-Frame-Options", "DENY")
+                for name, value in (extra_headers or {}).items():
+                    self.send_header(name, value)
                 if cookie:
                     self.send_header(
                         "Set-Cookie",
@@ -775,6 +778,13 @@ def handler_for(app, port, dist):
                         self.send(401, {"error": "本地会话已失效，请刷新页面"})
                         return
                     if self.command == "GET":
+                        parts = path.strip('/').split('/')
+                        if len(parts) == 5 and parts[:2] == ['api', 'daily_reports'] and parts[3] == 'artifact':
+                            from autopilot.report_artifacts import read_artifact
+                            content, content_type = read_artifact(app.autopilot.ledger, parts[2], parts[4])
+                            self.send(200, content, content_type, extra_headers={
+                                'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"})
+                            return
                         self.send(200, app.get(path[4:] + (("?" + urlparse(self.path).query) if "/intelligence" in path and urlparse(self.path).query else "")))
                         return
                     if not hmac.compare_digest(
@@ -815,7 +825,8 @@ def handler_for(app, port, dist):
                 self.send(400, {**fields,"error": fields['reason']})
             except Exception as exc:
                 app.store.event("api_error", detail={"error": str(exc)})
-                fields=failure_fields(exc,'管理服务')
+                subject = '邮件服务器' if urlparse(self.path).path.endswith('/notifications/configure') else '管理服务'
+                fields=failure_fields(exc,subject)
                 self.send(500, {**fields,"error": fields['reason']})
 
         def body(self):

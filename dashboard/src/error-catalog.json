@@ -24,8 +24,32 @@
     "suggestion": "请确认服务已启动，稍后重试。"
   },
   {
+    "code": "SMTP_AUTH_FAILED",
+    "pattern": "SMTPAuthenticationError|SMTP[^\\n]*(?:authentication failed|invalid credentials)",
+    "message": "邮件服务器登录验证未通过。",
+    "suggestion": "请检查发件人邮箱和 SMTP 授权码，并确认已开启 SMTP 服务。"
+  },
+  {
+    "code": "TLS_CONNECTION_LOST",
+    "pattern": "SSLEOFError|UNEXPECTED_EOF_WHILE_READING|EOF occurred in violation of protocol",
+    "message": "与{subject}的加密连接意外中断。",
+    "suggestion": "请检查网络、代理规则及服务端口和加密方式后重试。"
+  },
+  {
+    "code": "TLS_CERTIFICATE_INVALID",
+    "pattern": "SSLCertVerificationError|CERTIFICATE_VERIFY_FAILED|certificate verify failed",
+    "message": "无法验证{subject}的加密证书。",
+    "suggestion": "请检查服务证书、本机时间和受信任证书配置。"
+  },
+  {
+    "code": "TLS_FAILED",
+    "pattern": "SSLError|\\[SSL:|WRONG_VERSION_NUMBER|TLSV1_ALERT",
+    "message": "与{subject}的加密通信失败。",
+    "suggestion": "请检查服务端口、加密方式和网络配置后重试。"
+  },
+  {
     "code": "CONNECTION_LOST",
-    "pattern": "connection (reset|aborted|closed)|ECONNRESET|broken pipe|连接中断",
+    "pattern": "SMTPServerDisconnected|connection (?:unexpectedly )?(reset|aborted|closed)|ECONNRESET|broken pipe|连接中断",
     "message": "与{subject}的连接已中断。",
     "suggestion": "请检查服务运行情况，稍后重试。"
   },

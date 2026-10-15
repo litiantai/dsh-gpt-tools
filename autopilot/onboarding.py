@@ -177,7 +177,7 @@ def health(origin, path='/'):
         return response.status == 200
 
 
-def startup(workspace, root, config, *, runtime=None):
+def startup(workspace, root, config, *, runtime=None, local=False):
     root = Path(root); root.mkdir(parents=True, exist_ok=True)
     port = free_port(); origin = f'http://127.0.0.1:{port}'
     argv = [x.replace('{port}', str(port)).replace('{state}', str(root/'state')) for x in config['commands']['start'][0]]
@@ -185,9 +185,16 @@ def startup(workspace, root, config, *, runtime=None):
                                                   'status': 'blocked', 'origin': origin}
     log = root/'startup.log'
     try:
+        if local:
+            from .local_testing import environment as local_environment
+            env = local_environment(root, port=port, origin=f'http://127.0.0.1:{port}', runtime=runtime)
+            executable = argv
+        else:
+            env = environment(root, port, runtime=runtime)
+            executable = command(argv, root, workspace, ports=[port], runtime=runtime)
         with log.open('w') as stream:
-            proc = subprocess.Popen(command(argv, root, workspace, ports=[port], runtime=runtime), cwd=workspace,
-                                    env=environment(root, port, runtime=runtime), stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
+            proc = subprocess.Popen(executable, cwd=workspace, env=env,
+                                    stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
             deadline = time.monotonic()+config.get('startup_timeout', 30)
             while time.monotonic() < deadline:
                 if proc.poll() is not None:
@@ -205,8 +212,12 @@ def startup(workspace, root, config, *, runtime=None):
                 image = root/'startup.png'
                 script=root/'screenshot.mjs'
                 script.write_text((ROOT/'scripts/project-screenshot.mjs').read_text().replace("from '@playwright/test'", "from "+json.dumps(str(Path(workspace)/'node_modules/@playwright/test/index.mjs'))))
-                shot = run([config.get('node', 'node'), str(script), origin, str(image)],
-                           workspace, root, 'screenshot', ports=[port], timeout=30, runtime=runtime)
+                shot_argv = [config.get('node', 'node'), str(script), origin, str(image)]
+                if local:
+                    from .local_testing import run as local_run
+                    shot = local_run(shot_argv, workspace, root, 'screenshot', env=env, timeout=30)
+                else:
+                    shot = run(shot_argv, workspace, root, 'screenshot', ports=[port], timeout=30, runtime=runtime)
                 result['screenshot_check'] = shot
                 if shot['status'] != 'pass':
                     result.update(status='blocked', reason='服务已启动，但网页截图未完成')
@@ -224,33 +235,38 @@ def startup(workspace, root, config, *, runtime=None):
     return result
 
 
-def verify(workspace, root, config, *, runtime=None):
+def verify(workspace, root, config, *, runtime=None, local=False):
     checks = []
     if config.get('blockers'):
         return {'status': 'blocked', 'reason': '；'.join(config['blockers']), 'checks': checks}
     from . import quality
     try:
-        session = quality.prepare(workspace, config, root)
+        def runner(argv, cwd, folder, name, phase):
+            if local:
+                from .local_testing import environment as local_environment, run as local_run
+                env = local_environment(folder, runtime=runtime)
+                from .jvm import kind, environment as jvm_environment
+                if kind(argv):
+                    env.update(jvm_environment(folder))
+                return local_run(argv, cwd, folder, name, env=env, timeout=config.get('command_timeout', 900))
+            if phase == 'install':
+                return install_check(argv, cwd, folder, name, timeout=config.get('command_timeout', 900), runtime=runtime)
+            return run(argv, cwd, folder, name, ports=config.get('test_ports', []),
+                       timeout=config.get('command_timeout', 900), runtime=runtime)
+        session = quality.prepare(workspace, config, root, isolated=not local)
         if session is None:
             # Unconfigured roles retain the legacy command path.
             for phase in ('install', 'compile', 'typecheck', 'build', 'test', 'browser'):
                 for index, argv in enumerate(config.get('commands', {}).get(phase, [])):
-                    if phase == 'install':
+                    if phase == 'install' and not local:
                         quality.installation(argv, config.get('install_policy'))
-                    entry = (install_check(argv, workspace, root, phase+'-'+str(index), runtime=runtime)
-                             if phase == 'install' else run(argv, workspace, root, phase+'-'+str(index),
-                                ports=config.get('test_ports', []), timeout=config.get('command_timeout', 900), runtime=runtime))
+                    entry = runner(argv, workspace, root, phase+'-'+str(index), phase)
                     checks.append(entry)
                     if entry['status'] != 'pass':
                         return {'status': entry['status'], 'reason': phase+' 检查未通过', 'checks': checks}
             proof = None
         else:
-            def runner(argv, cwd, folder, name, phase):
-                if phase == 'install':
-                    return install_check(argv, cwd, folder, name, timeout=config.get('command_timeout', 900), runtime=runtime)
-                return run(argv, cwd, folder, name, ports=config.get('test_ports', []),
-                           timeout=config.get('command_timeout', 900), runtime=runtime)
-            quality.execute(session, quality.PHASES, runner)
+            quality.execute(session, quality.PHASES, runner, isolated=not local)
             proof = quality.finish(session)
             checks = proof['checks'][:]
             if proof['status'] != 'pass':
@@ -258,7 +274,7 @@ def verify(workspace, root, config, *, runtime=None):
                         'quality': proof, 'workflow': quality.summary(session, proof)}
     except (OSError, ValueError) as exc:
         return {'status': 'blocked', 'reason': str(exc), 'checks': checks}
-    checks.append(startup(workspace, root, config, runtime=runtime))
+    checks.append(startup(workspace, root, config, runtime=runtime, **({'local': True} if local else {})))
     return {'status': checks[-1]['status'], 'reason': checks[-1].get('reason', ''), 'checks': checks,
             'startup_passed': checks[-1]['status'] == 'pass', 'business_acceptance': 'pending',
             **({'quality': proof, 'workflow': quality.summary(session, proof)} if proof else {})}
@@ -337,7 +353,8 @@ def onboard(ledger, scan, body):
     name = body.get('name') or Path(scan['source']).name.removesuffix('.git')
     product = {'name': name, 'source': source, 'goal': body.get('goal') or '依据真实证据完善项目功能、可靠性和验证流程。',
                'repository': result['workspace'], 'repository_source': scan['source'], 'baseline': result['snapshot_commit'], 'schema_version': 1,
-               'adapter_spec': {'version': 1, 'kind': 'command', 'capabilities': ['probe','inspect','verify','investigate']},
+               'adapter_spec': {'version': 1, 'kind': 'command',
+                                'capabilities': ['probe','inspect','verify','investigate','master_sync','final_acceptance']},
                'adapter': [sys.executable, str(ROOT/'scripts/autopilot-adapter.py'), 'command'],
                'executor': [sys.executable, str(ROOT/'scripts/autopilot-adapter.py'), 'executor'],
                'project_config': config, 'config_scan_id': scan['id'], 'runtime_recovery': {'enabled': False}}

@@ -43,6 +43,32 @@ def target(product):
     return git(repo, 'rev-parse', 'refs/remotes/origin/'+branch)
 
 
+def update_target(request):
+    """拉取最新主分支并确认它包含本次 release 的合并提交。"""
+    product = request['product']
+    expected = target(product)
+    merged = (product.get('master_update') or {}).get('merge_sha')
+    if merged and subprocess.run(['git', '-C', product['delivery_repository'], 'merge-base',
+            '--is-ancestor', merged, expected], capture_output=True).returncode:
+        raise ValueError('最新 master 尚未包含本次 release 合并提交，等待重新拉取')
+    return expected
+
+
+def build_workspace(request, expected):
+    """在受管目录检出最新 master，构建不修改用户源码或只读工作区。"""
+    product = request['product']
+    root = Path(request['state_root'])/'master-builds'/product['id']/expected
+    root.mkdir(parents=True, exist_ok=True)
+    workspace = root/'workspace'
+    with (root/'checkout.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not workspace.exists():
+            git(product['delivery_repository'], 'worktree', 'add', '--detach', str(workspace), expected)
+        if git(workspace, 'rev-parse', 'HEAD') != expected or git(workspace, 'status', '--porcelain'):
+            raise ValueError('master 构建工作区提交不一致或源码发生变化')
+    return str(workspace)
+
+
 def identity(product, expected):
     """核对实际进程、认证监测与安装标记，旧测试实例不能充当主实例。"""
     from .project import generic
@@ -213,26 +239,35 @@ def sync(request):
     """主实例在持续空闲后原位更新，沿用发布日志与失败回滚。"""
     from .thsoctop import idle, main
     product = request['product']
-    expected = target(product)
+    expected = update_target(request)
+    receipt = {'master_update_merge_sha': (product.get('master_update') or {}).get('merge_sha'),
+               'source_commit': expected}
     try:
-        return {'status': 'pass', 'instance': identity(product, expected), 'reason': 'master 实例版本已就绪'}
+        instance = identity(product, expected)
     except (OSError, ValueError):
-        pass
+        instance = None
+    if instance:
+        if target(product) != expected:
+            return receipt | {'status': 'busy', 'reason': '核对实例期间 master 变化，等待重新更新'}
+        return receipt | {'status': 'pass', 'instance': instance, 'reason': 'master 实例版本已就绪'}
     readiness = idle(product)
     if readiness['status'] != 'pass':
-        return {'status': 'busy', 'reason': '等待主实例空闲后更新：'+readiness.get('reason', '')}
+        return receipt | {'status': 'busy', 'reason': '等待主实例空闲后更新：'+readiness.get('reason', '')}
     since = product.get('master_idle_since')
     if not since or time.time()-since < product.get('policy', {}).get('idle_seconds', 300):
-        return {'status': 'busy', 'reason': '等待主实例持续空闲后更新', 'master_idle_since': since or time.time()}
+        return receipt | {'status': 'busy', 'reason': '等待主实例持续空闲后更新', 'master_idle_since': since or time.time()}
+    receipt['source_workspace'] = build_workspace(request, expected)
     manifest = prepare(request, expected)
     if target(product) != expected:
-        return {'status': 'busy', 'reason': '准备更新期间 master 变化，等待重新核对'}
+        return receipt | {'status': 'busy', 'reason': '准备更新期间 master 变化，等待重新核对'}
     record = {'id': 'master-'+expected, 'release_id': 'master-'+expected, 'commit': expected, 'manifest': manifest,
               'master_commit': expected}
     result = main('publish', request | {'record': record})
     if result['status'] == 'pass':
+        if target(product) != expected:
+            return receipt | {'status': 'busy', 'reason': '更新期间 master 变化，等待更新最新版本'}
         result['instance'] = identity(product, expected)
-    return result
+    return result | receipt
 
 
 def pending(ledger, product):
